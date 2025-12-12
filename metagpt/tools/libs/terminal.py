@@ -1,5 +1,6 @@
 import asyncio
 import os
+import platform
 import re
 from asyncio import Queue
 from asyncio.subprocess import PIPE, STDOUT
@@ -22,7 +23,15 @@ class Terminal:
     """
 
     def __init__(self):
-        self.shell_command = ["bash"]  # FIXME: should consider windows support later
+        # Detect OS and set appropriate shell
+        if platform.system() == "Windows":
+            self.shell_command = ["cmd.exe"]
+            self.shell_executable = "cmd.exe"
+            self.is_windows = True
+        else:
+            self.shell_command = ["bash"]
+            self.shell_executable = "bash"
+            self.is_windows = False
         self.command_terminator = "\n"
         self.stdout_queue = Queue(maxsize=1000)
         self.observer = TerminalReporter()
@@ -36,23 +45,39 @@ class Terminal:
 
     async def _start_process(self):
         # Start a persistent shell process
-        self.process = await asyncio.create_subprocess_exec(
-            *self.shell_command,
-            stdin=PIPE,
-            stdout=PIPE,
-            stderr=STDOUT,
-            executable="bash",
-            env=os.environ.copy(),
-            cwd=DEFAULT_WORKSPACE_ROOT.absolute(),
-        )
+        if self.is_windows:
+            # On Windows, use create_subprocess_shell for cmd.exe
+            self.process = await asyncio.create_subprocess_shell(
+                self.shell_executable,
+                stdin=PIPE,
+                stdout=PIPE,
+                stderr=STDOUT,
+                env=os.environ.copy(),
+                cwd=DEFAULT_WORKSPACE_ROOT.absolute(),
+            )
+        else:
+            # On Unix, use create_subprocess_exec with bash
+            self.process = await asyncio.create_subprocess_exec(
+                *self.shell_command,
+                stdin=PIPE,
+                stdout=PIPE,
+                stderr=STDOUT,
+                env=os.environ.copy(),
+                cwd=DEFAULT_WORKSPACE_ROOT.absolute(),
+            )
         await self._check_state()
 
     async def _check_state(self):
         """
         Check the state of the terminal, e.g. the current directory of the terminal process. Useful for agent to understand.
         """
-        output = await self.run_command("pwd")
+        pwd_cmd = "cd" if self.is_windows else "pwd"
+        output = await self.run_command(pwd_cmd)
         logger.info("The terminal is at:", output)
+
+    def get_pwd_command(self) -> str:
+        """Get the command to print working directory based on OS."""
+        return "cd" if self.is_windows else "pwd"
 
     async def run_command(self, cmd: str, daemon=False) -> str:
         """
@@ -164,8 +189,20 @@ class Terminal:
 
     async def close(self):
         """Close the persistent shell process."""
-        self.process.stdin.close()
-        await self.process.wait()
+        if self.process and self.process.returncode is None:
+            try:
+                self.process.stdin.close()
+                await self.process.wait()
+            except Exception:
+                pass  # Ignore errors during cleanup
+
+    def __del__(self):
+        """Destructor to ensure process is terminated."""
+        if self.process and self.process.returncode is None:
+            try:
+                self.process.terminate()
+            except Exception:
+                pass  # Ignore errors during cleanup
 
 
 @register_tool(include_functions=["run"])

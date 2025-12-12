@@ -64,7 +64,8 @@ class Engineer2(RoleZero):
         Display the current terminal and editor state.
         This information will be dynamically added to the command prompt.
         """
-        current_directory = (await self.terminal.run_command("pwd")).strip()
+        pwd_cmd = self.terminal.get_pwd_command()
+        current_directory = (await self.terminal.run_command(pwd_cmd)).strip()
         self.editor._set_workdir(current_directory)
         state = {
             "editor_open_file": self.editor.current_file,

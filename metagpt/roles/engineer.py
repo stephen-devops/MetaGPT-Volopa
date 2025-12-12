@@ -305,6 +305,16 @@ class Engineer(Role):
         if not task_doc or not design_doc:
             if filename == "__init__.py":  # `__init__.py` created by `init_python_folder`
                 return None
+            # Skip MetaGPT metadata files and documentation
+            metadata_files = [
+                ".dependencies.json", ".gitignore", ".src_workspace", "requirements.txt",
+                # Skip documentation files that may appear in git changes
+                "docs/prd", "docs/system_design", "docs/task", "docs/requirement.txt",
+                "resources/prd", "resources/system_design", "resources/api_spec_and_task"
+            ]
+            # Check if filename starts with any metadata path
+            if any(filename.startswith(prefix) or filename == prefix for prefix in metadata_files):
+                return None
             logger.error(f'Detected source code "{filename}" from an unknown origin.')
             raise ValueError(f'Detected source code "{filename}" from an unknown origin.')
         context = CodingContext(
