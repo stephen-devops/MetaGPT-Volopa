@@ -165,12 +165,14 @@ examples/index_store.json
 .chroma_exp_data
 .role_memory_data
 *~$*
-workspace/*
+workspace/my-blackjack.py
+industry/*.txt
 tmp
 metagpt/roles/idea_agent.py
 .aider*
 *.bak
 *.bk
+nul
 
 # output folder
 output
