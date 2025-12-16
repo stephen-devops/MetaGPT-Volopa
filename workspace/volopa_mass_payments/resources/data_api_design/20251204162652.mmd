@@ -1,0 +1,110 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class PaymentFile {
+        +id: int
+        +user_id: int
+        +filename: string
+        +original_name: string
+        +file_size: int
+        +status: enum
+        +total_records: int
+        +valid_records: int
+        +invalid_records: int
+        +total_amount: decimal
+        +currency: string
+        +created_at: timestamp
+        +updated_at: timestamp
+        +paymentInstructions() hasMany
+        +approvals() hasMany
+        +validationErrors() hasMany
+    }
+    
+    class PaymentInstruction {
+        +id: int
+        +payment_file_id: int
+        +row_number: int
+        +beneficiary_name: string
+        +beneficiary_account: string
+        +amount: decimal
+        +currency: string
+        +settlement_method: string
+        +payment_purpose: string
+        +reference: string
+        +status: enum
+        +processed_at: timestamp
+        +paymentFile() belongsTo
+    }
+    
+    class Approval {
+        +id: int
+        +payment_file_id: int
+        +approver_id: int
+        +status: enum
+        +approved_at: timestamp
+        +comments: text
+        +paymentFile() belongsTo
+        +approver() belongsTo
+    }
+    
+    class ValidationError {
+        +id: int
+        +payment_file_id: int
+        +row_number: int
+        +field_name: string
+        +error_message: string
+        +error_code: string
+        +paymentFile() belongsTo
+    }
+    
+    class FileController {
+        -fileProcessingService: FileProcessingService
+        +upload(FileUploadRequest request) JsonResponse
+        +show(int id) JsonResponse
+        +index() JsonResponse
+        +destroy(int id) JsonResponse
+    }
+    
+    class ApprovalController {
+        -approvalService: ApprovalWorkflowService
+        +index() JsonResponse
+        +approve(ApprovalRequest request, int id) JsonResponse
+        +reject(ApprovalRequest request, int id) JsonResponse
+    }
+    
+    class PaymentController {
+        -paymentService: PaymentProcessingService
+        +index() JsonResponse
+        +show(int id) JsonResponse
+        +process(int fileId) JsonResponse
+    }
+    
+    class FileProcessingService {
+        -validationService: ValidationService
+        +processUpload(UploadedFile file, User user) PaymentFile
+        +validateCsvStructure(string filePath) bool
+        +queueProcessing(PaymentFile file) void
+        +updateFileStatus(PaymentFile file, string status) void
+    }
+    
+    class ApprovalWorkflowService {
+        +requiresApproval(PaymentFile file) bool
+        +createApprovalRequest(PaymentFile file) Approval
+        +processApproval(Approval approval, string action, User approver) bool
+        +notifyApprovers(PaymentFile file) void
+    }
+    
+    class ValidationService {
+        +validatePaymentInstructions(array instructions) array
+        +validateRow(array row, int rowNumber) array
+        +checkSettlementMethod(string method, string currency) bool
+        +validateBeneficiaryAccount(string account, string method) bool
+    }
+    
+    PaymentFile ||--o{ PaymentInstruction : contains
+    PaymentFile ||--o{ Approval : requires
+    PaymentFile ||--o{ ValidationError : has
+    FileController --> FileProcessingService : uses
+    ApprovalController --> ApprovalWorkflowService : uses
+    PaymentController --> PaymentProcessingService : uses
+    FileProcessingService --> ValidationService : uses
