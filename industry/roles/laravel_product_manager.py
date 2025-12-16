@@ -6,6 +6,9 @@
 @Desc    : Laravel Product Manager role for Volopa Mass Payments system
 """
 
+import json
+from pathlib import Path
+from typing import Dict, Any
 from metagpt.roles.product_manager import ProductManager
 
 

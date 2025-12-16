@@ -36,6 +36,7 @@ from industry.roles import (
     LaravelArchitect,
     LaravelProjectManager,
     LaravelEngineer,
+    LaravelQaEngineer,
 )
 
 
@@ -48,6 +49,7 @@ async def main():
     2. LaravelArchitect creates System Design
     3. LaravelProjectManager creates Task Breakdown
     4. LaravelEngineer writes Laravel code
+    5. LaravelQaEngineer writes PHPUnit tests
     """
 
     # Configure workspace
@@ -96,6 +98,7 @@ async def main():
         LaravelArchitect(context=ctx),
         LaravelProjectManager(context=ctx),
         LaravelEngineer(context=ctx),
+        LaravelQaEngineer(context=ctx),
     ])
 
     # Set investment (budget for LLM API calls)
@@ -173,16 +176,17 @@ Build the Volopa Mass Payments API System for uploading CSV files with up to 10,
 """
 
     # Run the team
-    # n_round should be at least 4 to allow all 4 roles to complete their work in sequence:
+    # n_round should be at least 5 to allow all 5 roles to complete their work in sequence:
     # Round 1: LaravelProductManager (PrepareDocuments + WritePRD)
     # Round 2: LaravelArchitect (WriteDesign)
     # Round 3: LaravelProjectManager (WriteTasks)
     # Round 4: LaravelEngineer (WriteCode)
+    # Round 5: LaravelQaEngineer (WriteTest)
     logger.info("Starting development workflow...")
     logger.info("=" * 60)
 
     await company.run(
-        n_round=4,
+        n_round=5,
         idea=idea,
         send_to="",  # Broadcast to all roles
         auto_archive=True,  # Archive results to git
@@ -196,6 +200,7 @@ Build the Volopa Mass Payments API System for uploading CSV files with up to 10,
     logger.info(f"  - System Design: {workspace_path}/docs/system_design/")
     logger.info(f"  - Task Breakdown: {workspace_path}/docs/task/")
     logger.info(f"  - Laravel Code: {workspace_path}/app/")
+    logger.info(f"  - PHPUnit Tests: {workspace_path}/tests/Feature/")
 
     return workspace_path
 
@@ -223,21 +228,27 @@ if __name__ == "__main__":
         │   │   └── volopa_mass_payments.md
         │   └── task/
         │       └── volopa_mass_payments.json
-        └── app/
-            ├── Http/
-            │   ├── Controllers/
-            │   ├── Requests/
-            │   └── Resources/
-            ├── Models/
-            ├── Services/
-            ├── Policies/
-            └── ...
+        ├── app/
+        │   ├── Http/
+        │   │   ├── Controllers/
+        │   │   ├── Requests/
+        │   │   └── Resources/
+        │   ├── Models/
+        │   ├── Services/
+        │   ├── Policies/
+        │   └── ...
+        └── tests/
+            └── Feature/
+                ├── MassPaymentFileTest.php
+                ├── PaymentInstructionTest.php
+                └── ...
 
     Notes:
-        - The workflow is sequential: PM → Architect → PM → Engineer
-        - Each role watches for specific messages (WritePRD, WriteDesign, WriteTasks)
+        - The workflow is sequential: PM → Architect → ProjectManager → Engineer → QA
+        - Each role watches for specific messages (WritePRD, WriteDesign, WriteTasks, WriteCode, WriteTest)
         - Documents are passed via Message.instruct_content (file paths)
         - Engineer loads all previous documents for context
-        - DOS/DONTS constraints are embedded in Engineer's system prompt
+        - QA Engineer loads requirements from industry/requirements/ JSON files
+        - DOS/DONTS constraints are embedded in Engineer's and QA's system prompts
     """
     asyncio.run(main())
