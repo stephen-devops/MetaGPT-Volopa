@@ -45,7 +45,7 @@ class LaravelQaEngineer(QaEngineer):
     """
 
     use_fixed_sop: bool = True
-    name: str = "LaravelQaEngineer"
+    name: str = "Darius"
     profile: str = "Laravel QA Engineer"
     goal: str = "Write comprehensive PHP Unit tests ensuring Laravel code follows DOS/DONTS patterns"
 

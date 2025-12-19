@@ -6,6 +6,9 @@
 @Desc    : Laravel Project Manager role for Volopa Mass Payments system
 """
 
+import json
+from pathlib import Path
+from typing import Dict, Any
 from metagpt.roles.project_manager import ProjectManager
 
 
@@ -29,7 +32,7 @@ class LaravelProjectManager(ProjectManager):
     """
 
     use_fixed_sop: bool = True
-    name: str = "LaravelPM_Eve"
+    name: str = "Manuel"
     profile: str = "Laravel Project Manager"
     goal: str = """
     Break down Laravel system design into dependency-ordered tasks following
@@ -101,6 +104,12 @@ class LaravelProjectManager(ProjectManager):
         """
         super().__init__(**kwargs)
 
+        # Load functional requirements for task breakdown guidance
+        self.requirements = self._load_requirements()
+
+        # Update constraints with task breakdown data
+        self._update_constraints_from_requirements()
+
         # With use_fixed_sop=True, set max_react_loop to 1 to execute actions once
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=1)
@@ -115,6 +124,66 @@ class LaravelProjectManager(ProjectManager):
         #   "Full API spec": "openapi: 3.0.0\n...",
         #   "Shared Knowledge": "All services use transactions..."
         # }
+
+    def _load_requirements(self) -> dict:
+        """Load user_requirements.json file for task breakdown guidance"""
+        requirements_path = Path(__file__).parent.parent / "requirements" / "user_requirements.json"
+
+        with open(requirements_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _update_constraints_from_requirements(self):
+        """Inject task breakdown guidance from functional requirements"""
+
+        # Extract sections
+        stats = self.requirements['summary_statistics']
+        frs = self.requirements['functional_requirements']
+        expected = self.requirements['expected_outputs']['LaravelProjectManager']
+
+        # Build task mapping
+        task_mapping = self._build_task_mapping(frs)
+
+        # Append to existing constraints
+        self.constraints += f"""
+
+LOADED FUNCTIONAL REQUIREMENTS FROM JSON:
+
+Task Breakdown Statistics:
+- Total FRs: {stats['total_functional_requirements']}
+- Total Sub-Requirements: {stats['total_sub_requirements']}
+- Estimated Tasks to Create: {stats['estimated_tasks']}
+- Estimated Files to Generate: {stats['estimated_files']}
+
+Task Mapping Guide (Sub-Requirement → Tasks):
+{task_mapping}
+
+Expected Output:
+{expected['content']}
+"""
+
+    def _build_task_mapping(self, frs: dict) -> str:
+        """Build mapping of sub-requirements to implementation tasks"""
+        lines = []
+        task_counter = 1
+
+        for fr_id, fr_data in frs.items():
+            lines.append(f"\n{fr_id}: {fr_data['category']}")
+
+            for sub_id, sub_req in fr_data['sub_requirements'].items():
+                lines.append(f"  {sub_id}: {sub_req['title']}")
+
+                # Extract Engineer files as task hints
+                if 'agent_tasks' in sub_req and 'Engineer' in sub_req['agent_tasks']:
+                    eng_files = sub_req['agent_tasks']['Engineer']
+                    if isinstance(eng_files, list):
+                        for file in eng_files:
+                            lines.append(f"    Task {task_counter}: Implement {file}")
+                            task_counter += 1
+                    elif isinstance(eng_files, str):
+                        lines.append(f"    Task {task_counter}: {eng_files}")
+                        task_counter += 1
+
+        return '\n'.join(lines)
 
 
 # Placeholder for future customization

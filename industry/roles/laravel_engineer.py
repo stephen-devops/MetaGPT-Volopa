@@ -6,6 +6,9 @@
 @Desc    : Laravel Engineer role for Volopa Mass Payments system
 """
 
+import json
+from pathlib import Path
+from typing import Dict, Any
 from metagpt.roles.engineer import Engineer
 from metagpt.roles.role import RoleReactMode
 
@@ -38,7 +41,7 @@ class LaravelEngineer(Engineer):
     """
 
     use_fixed_sop: bool = True
-    name: str = "LaravelEngineer"
+    name: str = "Lucas"
     profile: str = "Laravel API Developer"
     goal: str = "Write Laravel code following DOS/DONTS patterns and Volopa conventions"
 
@@ -124,6 +127,13 @@ DON'TS - Never Do These:
         """
         super().__init__(**kwargs)
 
+        # Load both architectural and technical requirements from JSON
+        self.architectural_requirements = self._load_architectural_requirements()
+        self.technical_requirements = self._load_technical_requirements()
+
+        # Update constraints with loaded patterns from both files
+        self._update_constraints_from_requirements()
+
         # Set incremental mode to False to skip WriteCodePlanAndChange phase
         # This avoids JSON parsing errors with large code blocks
         # The Engineer will go straight to WriteCode for each file
@@ -153,6 +163,147 @@ DON'TS - Never Do These:
         # - CodingContext with design_doc, task_doc, code_doc
         # - Constraints (DOS/DONTS) via self.constraints → self.llm.system_prompt
         # - RAG examples (when SearchCodeBase is implemented)
+
+    def _load_architectural_requirements(self) -> dict:
+        """Load architectural_requirements.json file for design patterns"""
+        requirements_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements.json"
+
+        with open(requirements_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _load_technical_requirements(self) -> dict:
+        """Load technical_requirements.json file for implementation syntax"""
+        requirements_path = Path(__file__).parent.parent / "requirements" / "technical_requirements.json"
+
+        with open(requirements_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _update_constraints_from_requirements(self):
+        """Inject loaded architectural and technical patterns into role constraints"""
+
+        # Extract sections from architectural requirements
+        arch_meta = self.architectural_requirements['meta']
+        mental_model = self.architectural_requirements['mental_model']
+        arch_dos = self.architectural_requirements.get('architectural_dos', {})
+        arch_donts = self.architectural_requirements.get('architectural_donts', {})
+
+        # Extract sections from technical requirements
+        tech_meta = self.technical_requirements['meta']
+        impl_workflow = self.technical_requirements.get('implementation_workflow', {})
+        syntax_patterns = self.technical_requirements.get('laravel_syntax_patterns', {})
+        impl_dos = self.technical_requirements.get('implementation_dos', {})
+        impl_donts = self.technical_requirements.get('implementation_donts', {})
+
+        # Build formatted text
+        arch_dos_text = self._format_architectural_patterns(arch_dos, "ARCHITECTURAL DOS")
+        arch_donts_text = self._format_architectural_patterns(arch_donts, "ARCHITECTURAL DONTS")
+        impl_dos_text = self._format_implementation_patterns(impl_dos, "IMPLEMENTATION DOS")
+        impl_donts_text = self._format_implementation_patterns(impl_donts, "IMPLEMENTATION DONTS")
+        syntax_text = self._format_syntax_patterns(syntax_patterns)
+
+        # Append to existing constraints
+        self.constraints += f"""
+
+LOADED REQUIREMENTS FROM JSON FILES:
+
+=== ARCHITECTURAL REQUIREMENTS (Design Patterns) ===
+Source: {arch_meta['source']}
+
+MENTAL MODEL (from Architectural Requirements):
+Flow: {mental_model['flow']}
+
+Architectural Layers:
+"""
+        # Add layer details
+        for layer_name, layer_info in mental_model['layers'].items():
+            self.constraints += f"\n- {layer_name}: {layer_info['responsibility']}"
+            self.constraints += f"\n  Pattern: {layer_info['design_pattern']}"
+
+        self.constraints += f"""
+
+{arch_dos_text}
+
+{arch_donts_text}
+
+=== TECHNICAL REQUIREMENTS (Implementation Syntax) ===
+Source: {tech_meta['source']}
+
+IMPLEMENTATION WORKFLOW:
+"""
+        if 'steps' in impl_workflow:
+            for step in impl_workflow['steps']:
+                self.constraints += f"\n{step}"
+
+        self.constraints += f"""
+
+IMPLEMENTATION CHECKLIST:
+"""
+        if 'implementation_checklist' in impl_workflow:
+            for item in impl_workflow['implementation_checklist']:
+                self.constraints += f"\n{item}"
+
+        self.constraints += f"""
+
+{syntax_text}
+
+{impl_dos_text}
+
+{impl_donts_text}
+"""
+
+    def _format_architectural_patterns(self, patterns: dict, title: str) -> str:
+        """Format architectural DOS or DONTS patterns"""
+        lines = [f"\n=== {title} ==="]
+
+        for category_key, category_data in patterns.items():
+            if isinstance(category_data, dict) and 'category' in category_data:
+                lines.append(f"\n### {category_data['category']}")
+
+                if 'requirements' in category_data:
+                    for req in category_data['requirements']:
+                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
+                        if 'design_specification' in req:
+                            lines.append(f"Design: {req['design_specification']}")
+                        if 'example' in req:
+                            lines.append(f"Example: {req['example']}")
+
+        return '\n'.join(lines)
+
+    def _format_implementation_patterns(self, patterns: dict, title: str) -> str:
+        """Format implementation DOS or DONTS patterns"""
+        lines = [f"\n=== {title} ==="]
+
+        for category_key, category_data in patterns.items():
+            if isinstance(category_data, dict) and 'category' in category_data:
+                lines.append(f"\n### {category_data['category']}")
+
+                if 'requirements' in category_data:
+                    for req in category_data['requirements']:
+                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
+                        if 'implementation_details' in req:
+                            lines.append(f"Implementation: {req['implementation_details']}")
+                        if 'code_example' in req:
+                            lines.append(f"Code: {req['code_example']}")
+
+        return '\n'.join(lines)
+
+    def _format_syntax_patterns(self, patterns: dict) -> str:
+        """Format Laravel syntax patterns"""
+        lines = ["\n=== LARAVEL SYNTAX PATTERNS ==="]
+
+        for category_key, category_data in patterns.items():
+            if isinstance(category_data, dict) and 'category' in category_data:
+                lines.append(f"\n### {category_data['category']}")
+
+                if 'requirements' in category_data:
+                    for req in category_data['requirements']:
+                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
+                        if 'syntax' in req:
+                            lines.append(f"Syntax: {req['syntax']}")
+                        if 'example' in req:
+                            lines.append(f"Example: {req['example']}")
+
+        return '\n'.join(lines)
 
     async def _think(self) -> bool:
         """Override _think to ensure correct src_path before code generation."""

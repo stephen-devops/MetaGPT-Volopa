@@ -6,6 +6,9 @@
 @Desc    : Laravel Architect role for Volopa Mass Payments system
 """
 
+import json
+from pathlib import Path
+from typing import Dict, Any
 from metagpt.roles.architect import Architect
 
 
@@ -31,7 +34,7 @@ class LaravelArchitect(Architect):
     """
 
     use_fixed_sop: bool = True
-    name: str = "LaravelArchitect"
+    name: str = "Danny"
     profile: str = "Laravel System Architect"
     goal: str = "Design Laravel API system architecture following best practices and DOS/DONTS patterns"
 
@@ -144,9 +147,86 @@ class LaravelArchitect(Architect):
         """
         super().__init__(**kwargs)
 
+        # Load architectural requirements from JSON
+        self.requirements = self._load_requirements()
+
+        # Update constraints with loaded architectural patterns
+        self._update_constraints_from_requirements()
+
         # With use_fixed_sop=True, set max_react_loop to 1 to execute actions once
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=1)
+
+    def _load_requirements(self) -> dict:
+        """Load architectural_requirements.json file"""
+        requirements_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements.json"
+
+        with open(requirements_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _update_constraints_from_requirements(self):
+        """Inject loaded architectural patterns into role constraints"""
+
+        # Extract relevant sections
+        meta = self.requirements['meta']
+        mental_model = self.requirements['mental_model']
+        arch_dos = self.requirements.get('architectural_dos', {})
+        arch_donts = self.requirements.get('architectural_donts', {})
+
+        # Build dynamic constraint text
+        dos_text = self._format_architectural_patterns(arch_dos, pattern_type="DOS")
+        donts_text = self._format_architectural_patterns(arch_donts, pattern_type="DONTS")
+
+        # Append to existing constraints
+        self.constraints += f"""
+
+LOADED ARCHITECTURAL REQUIREMENTS FROM JSON:
+
+Source: {meta['source']}
+Target Output: {meta['output']}
+
+MENTAL MODEL (Loaded from JSON):
+Flow: {mental_model['flow']}
+
+Architectural Layers:
+"""
+        # Add layer details
+        for layer_name, layer_info in mental_model['layers'].items():
+            self.constraints += f"\n- {layer_name}: {layer_info['responsibility']}"
+            self.constraints += f"\n  Pattern: {layer_info['design_pattern']}"
+
+        self.constraints += f"""
+
+ARCHITECTURAL DESIGN PATTERNS (DOS) - Loaded from JSON:
+{dos_text}
+
+ARCHITECTURAL ANTI-PATTERNS (DONTS) - Loaded from JSON:
+{donts_text}
+"""
+
+    def _format_architectural_patterns(self, patterns: dict, pattern_type: str) -> str:
+        """Format architectural DOS or DONTS patterns as text"""
+        lines = []
+
+        for category_key, category_data in patterns.items():
+            if isinstance(category_data, dict) and 'category' in category_data:
+                lines.append(f"\n### {category_data['category']}")
+
+                if 'requirements' in category_data:
+                    for req in category_data['requirements']:
+                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
+                        lines.append(f"Rationale: {req['rationale']}")
+
+                        if 'design_specification' in req:
+                            lines.append(f"Design Spec: {req['design_specification']}")
+
+                        if 'example' in req:
+                            lines.append(f"Example: {req['example']}")
+
+                        if 'volopa_specific' in req:
+                            lines.append(f"Volopa-Specific: {req['volopa_specific']}")
+
+        return '\n'.join(lines)
 
 
 # Placeholder for future customization
