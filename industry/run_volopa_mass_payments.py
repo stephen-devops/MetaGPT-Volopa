@@ -54,6 +54,50 @@ async def main():
 
     # Configure workspace
     workspace_path = Path(__file__).parent.parent / "workspace" / "volopa_mass_payments"
+
+    # FIX: Delete existing workspace to prevent "unknown origin" errors
+    # MetaGPT's Engineer role tracks which files it creates during a run.
+    # If it finds existing files from previous runs, it raises ValueError to prevent overwrites.
+    # Solution: Clean workspace before each run for a fresh start.
+    if workspace_path.exists():
+        import shutil
+        shutil.rmtree(workspace_path)
+        logger.info(f"Deleted existing workspace for fresh start: {workspace_path}")
+
+    # CRITICAL FIX: Clean git state to prevent "unknown origin" errors
+    # After deleting workspace, git still tracks files as deleted (D status).
+    # Engineer queries git status and sees these deleted files, tries to process them,
+    # then fails because there's no task document for them.
+    # Solution: Reset git state for workspace directory.
+    import subprocess
+    try:
+        # Check if workspace directory is tracked by git
+        git_check = subprocess.run(
+            ["git", "ls-files", "workspace/volopa_mass_payments"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if git_check.stdout.strip():
+            # Workspace files are tracked, unstage all changes
+            subprocess.run(
+                ["git", "reset", "HEAD", "workspace/volopa_mass_payments"],
+                cwd=project_root,
+                capture_output=True,
+                check=False
+            )
+            # Clean untracked files and remove deleted files from working tree
+            subprocess.run(
+                ["git", "clean", "-fd", "workspace/volopa_mass_payments"],
+                cwd=project_root,
+                capture_output=True,
+                check=False
+            )
+            logger.info("Reset git state for workspace directory")
+    except Exception as e:
+        logger.warning(f"Could not reset git state (non-critical): {e}")
+
     workspace_path.mkdir(parents=True, exist_ok=True)
 
     # CRITICAL FIX: Delete cached team state to ensure fresh role initialization

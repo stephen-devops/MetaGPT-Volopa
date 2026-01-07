@@ -1,4 +1,0 @@
-league/csv
-predis/predis
-laravel/sanctum
-laravel/horizon
