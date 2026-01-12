@@ -201,6 +201,3 @@ metagpt/ext/sela/results/*
 
 metagpt/ext/aflow/data
 metagpt/ext/aflow/scripts/optimized
-
-# MetaGPT generated workspace (Laravel code, docs, etc.)
-workspace/
