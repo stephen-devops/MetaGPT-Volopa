@@ -1,0 +1,60 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant Client
+    participant FC as FileController
+    participant FPS as FileProcessingService
+    participant VS as ValidationService
+    participant Queue
+    participant PFJ as ProcessPaymentFileJob
+    participant AWS as ApprovalWorkflowService
+    participant AC as ApprovalController
+    participant PC as PaymentController
+    participant PPS as PaymentProcessingService
+    
+    Client->>FC: POST /api/v1/files (CSV upload)
+    FC->>FPS: processUpload(file, user)
+    FPS->>FPS: validateCsvStructure(filePath)
+    FPS->>PaymentFile: create(metadata)
+    FPS->>Queue: dispatch(ProcessPaymentFileJob)
+    FPS-->>FC: return PaymentFile
+    FC-->>Client: 201 Created with FileResource
+    
+    Queue->>PFJ: handle()
+    PFJ->>VS: validatePaymentInstructions(csvData)
+    VS->>VS: validateRow(row, rowNumber)
+    VS->>ValidationError: create(errors)
+    VS-->>PFJ: return validation results
+    PFJ->>PaymentInstruction: createMany(validInstructions)
+    PFJ->>FPS: updateFileStatus(file, 'validated')
+    
+    PFJ->>AWS: requiresApproval(file)
+    alt requires approval
+        PFJ->>AWS: createApprovalRequest(file)
+        AWS->>Approval: create()
+        AWS->>AWS: notifyApprovers(file)
+        PFJ->>FPS: updateFileStatus(file, 'pending_approval')
+    else no approval needed
+        PFJ->>FPS: updateFileStatus(file, 'ready_for_processing')
+    end
+    
+    Client->>AC: GET /api/v1/approvals
+    AC-->>Client: 200 OK with ApprovalResource collection
+    
+    Client->>AC: POST /api/v1/approvals/{id}/approve
+    AC->>AWS: processApproval(approval, 'approve', user)
+    AWS->>Approval: update(status, approver)
+    AWS->>FPS: updateFileStatus(file, 'approved')
+    AWS-->>AC: return success
+    AC-->>Client: 200 OK with ApprovalResource
+    
+    Client->>PC: POST /api/v1/payments/{fileId}/process
+    PC->>PPS: processPayments(file)
+    PPS->>PaymentInstruction: chunk(100)
+    loop for each chunk
+        PPS->>PPS: processPaymentBatch(chunk)
+        PPS->>PaymentInstruction: update(status, processed_at)
+    end
+    PPS->>FPS: updateFileStatus(file, 'completed')
+    PPS-->>PC: return processing results
+    PC-->>Client: 200 OK with PaymentResource collection

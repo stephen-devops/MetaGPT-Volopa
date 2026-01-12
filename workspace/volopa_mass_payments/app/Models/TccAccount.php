@@ -1,0 +1,3 @@
+[
+  "app/Models/TccAccount.php"
+]

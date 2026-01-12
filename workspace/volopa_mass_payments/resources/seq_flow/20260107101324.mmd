@@ -1,0 +1,66 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant Client as API Client
+    participant Route as API Routes
+    participant Controller as MassPaymentFileController
+    participant Request as UploadMassPaymentFileRequest
+    participant Policy as MassPaymentFilePolicy
+    participant Service as MassPaymentFileService
+    participant Model as MassPaymentFile
+    participant Job as ProcessMassPaymentFileJob
+    participant CsvService as CsvValidationService
+    participant PaymentService as PaymentProcessingService
+    participant Resource as MassPaymentFileResource
+    participant Queue as Laravel Queue
+    
+    Client->>Route: POST /api/v1/mass-payment-files
+    Route->>Controller: store(UploadMassPaymentFileRequest)
+    Controller->>Request: validate()
+    Request->>Policy: authorize()
+    Policy-->>Request: true/false
+    Request-->>Controller: validated data
+    Controller->>Service: uploadFile(data, file)
+    Service->>Model: create(file_data)
+    Model-->>Service: MassPaymentFile instance
+    Service->>Queue: dispatch(ProcessMassPaymentFileJob)
+    Queue-->>Service: job queued
+    Service-->>Controller: MassPaymentFile
+    Controller->>Resource: transform(MassPaymentFile)
+    Resource-->>Controller: formatted response
+    Controller-->>Client: 201 Created with file status
+    
+    Queue->>Job: handle()
+    Job->>CsvService: validateCsvStructure(filePath)
+    CsvService-->>Job: validation results
+    Job->>CsvService: validateRowData(row, rowNumber)
+    CsvService-->>Job: row validation results
+    Job->>Model: update(validation_errors, status)
+    Job->>PaymentService: createPaymentInstructions(file)
+    PaymentService->>PaymentInstruction: create(instruction_data)
+    PaymentInstruction-->>PaymentService: PaymentInstruction
+    PaymentService-->>Job: instructions created
+    Job->>Model: update(status: 'processed')
+    
+    Client->>Route: GET /api/v1/mass-payment-files/{id}
+    Route->>Controller: show(id)
+    Controller->>Policy: view(user, file)
+    Policy-->>Controller: authorized
+    Controller->>Model: find(id)
+    Model-->>Controller: MassPaymentFile with relations
+    Controller->>Resource: transform(file)
+    Resource-->>Controller: formatted response
+    Controller-->>Client: 200 OK with file details
+    
+    Client->>Route: POST /api/v1/mass-payment-files/{id}/approve
+    Route->>Controller: approve(id, ApproveMassPaymentFileRequest)
+    Controller->>Request: validate()
+    Controller->>Policy: approve(user, file)
+    Policy-->>Controller: authorized
+    Controller->>Service: approveFile(file, approverId)
+    Service->>Model: update(approved_by, approved_at, status)
+    Model-->>Service: updated file
+    Service-->>Controller: approved file
+    Controller->>Resource: transform(file)
+    Resource-->>Controller: formatted response
+    Controller-->>Client: 200 OK with approved status
