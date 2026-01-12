@@ -7,8 +7,9 @@
 """
 
 import json
+import re
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 from metagpt.roles.product_manager import ProductManager
 
 
@@ -61,7 +62,7 @@ class LaravelProductManager(ProductManager):
         """
         super().__init__(**kwargs)
 
-        # Load functional requirements from JSON
+        # Load functional requirements from NLP markdown file
         self.requirements = self._load_requirements()
 
         # Update constraints with loaded data
@@ -76,11 +77,105 @@ class LaravelProductManager(ProductManager):
         self._prd_published = False
 
     def _load_requirements(self) -> dict:
-        """Load user_requirements.json file"""
-        requirements_path = Path(__file__).parent.parent / "requirements" / "user_requirements.json"
+        """Load user_requirements_nlp.md file and parse natural language requirements"""
+        requirements_path = Path(__file__).parent.parent / "requirements" / "user_requirements_nlp.md"
 
         with open(requirements_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            content = f.read()
+
+        return self._parse_nlp_requirements(content)
+
+    def _parse_nlp_requirements(self, content: str) -> dict:
+        """
+        Parse natural language requirements from markdown file.
+
+        Extracts:
+        - Project metadata from header
+        - Sections and their requirements
+        - Requirement numbers and text
+        """
+        # Extract project title
+        title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+        project_name = title_match.group(1).strip() if title_match else "Volopa Mass Payments"
+
+        # Extract version
+        version_match = re.search(r'\*\*Version:\*\*\s+([\d.]+)', content)
+        version = version_match.group(1) if version_match else "4.0"
+
+        # Parse sections and requirements
+        sections = {}
+        current_section = None
+        current_section_name = None
+        requirement_pattern = re.compile(r'^\*\*(\d+)\.\*\*\s+(.+)$', re.MULTILINE)
+        section_pattern = re.compile(r'^##\s+(\d+)\.\s+(.+)$', re.MULTILINE)
+        subsection_pattern = re.compile(r'^###\s+([\d.]+)\s+(.+)$', re.MULTILINE)
+
+        # Find all sections
+        for section_match in section_pattern.finditer(content):
+            section_num = section_match.group(1)
+            section_name = section_match.group(2).strip()
+            sections[f"section_{section_num}"] = {
+                "category": section_name,
+                "requirements": []
+            }
+
+        # Find all requirements and associate with sections
+        lines = content.split('\n')
+        current_section_key = None
+        current_subsection = None
+
+        for i, line in enumerate(lines):
+            # Check for section header
+            section_match = section_pattern.match(line)
+            if section_match:
+                section_num = section_match.group(1)
+                current_section_key = f"section_{section_num}"
+                current_subsection = None
+                continue
+
+            # Check for subsection header
+            subsection_match = subsection_pattern.match(line)
+            if subsection_match:
+                current_subsection = subsection_match.group(2).strip()
+                continue
+
+            # Check for requirement
+            req_match = requirement_pattern.match(line)
+            if req_match and current_section_key:
+                req_num = req_match.group(1)
+                req_text = req_match.group(2).strip()
+
+                sections[current_section_key]["requirements"].append({
+                    "id": f"REQ-{req_num}",
+                    "number": req_num,
+                    "text": req_text,
+                    "subsection": current_subsection
+                })
+
+        # Build structured requirements dictionary
+        return {
+            "project_metadata": {
+                "project_name": project_name,
+                "version": version,
+                "framework": "Laravel",
+                "php_version": "8.2",
+                "max_file_capacity": 10000,
+                "api_prefix": "/api/v1",
+                "source_file": "user_requirements_nlp.md"
+            },
+            "agent_assignments": {
+                "LaravelProductManager": {
+                    "responsibilities": [
+                        "API Endpoint Design",
+                        "Request Validation Rules",
+                        "Business Logic Requirements",
+                        "Data Models and Relationships",
+                        "Authentication and Authorization"
+                    ]
+                }
+            },
+            "functional_requirements": sections
+        }
 
     def _update_constraints_from_requirements(self):
         """Inject loaded requirements into role constraints"""
@@ -96,7 +191,7 @@ class LaravelProductManager(ProductManager):
         # Append to existing constraints
         self.constraints += f"""
 
-LOADED FUNCTIONAL REQUIREMENTS FROM JSON:
+LOADED FUNCTIONAL REQUIREMENTS FROM NLP MARKDOWN:
 
 Project: {project_meta['project_name']}
 Framework: {project_meta['framework']} (PHP {project_meta['php_version']})
@@ -114,23 +209,24 @@ EXPECTED OUTPUT SECTIONS:
         """Format all functional requirements as text for PRD creation"""
         lines = []
 
-        for fr_id, fr_data in frs.items():
-            lines.append(f"\n### {fr_id}: {fr_data['category']}")
+        for section_id, section_data in frs.items():
+            lines.append(f"\n### {section_data['category']}")
 
-            for sub_id, sub_req in fr_data['sub_requirements'].items():
-                lines.append(f"\n**{sub_id}**: {sub_req['title']}")
-                lines.append(f"Requirement: {sub_req['requirement']}")
+            # Group requirements by subsection
+            subsections = {}
+            for req in section_data['requirements']:
+                subsection = req.get('subsection', 'General')
+                if subsection not in subsections:
+                    subsections[subsection] = []
+                subsections[subsection].append(req)
 
-                if 'criteria' in sub_req:
-                    lines.append("Criteria:")
-                    for criterion in sub_req['criteria']:
-                        lines.append(f"  - {criterion}")
+            # Format requirements by subsection
+            for subsection, reqs in subsections.items():
+                if subsection and subsection != 'General':
+                    lines.append(f"\n#### {subsection}")
 
-                if 'columns_required' in sub_req:
-                    lines.append(f"Columns: {len(sub_req['columns_required'])} required columns")
-
-                if 'validations' in sub_req:
-                    lines.append(f"Validations: {len(sub_req['validations'])} validation rules")
+                for req in reqs:
+                    lines.append(f"\n**{req['id']}**: {req['text']}")
 
         return '\n'.join(lines)
 

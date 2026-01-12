@@ -7,6 +7,7 @@
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any
 from metagpt.roles.project_manager import ProjectManager
@@ -104,7 +105,7 @@ class LaravelProjectManager(ProjectManager):
         """
         super().__init__(**kwargs)
 
-        # Load functional requirements for task breakdown guidance
+        # Load functional requirements from NLP markdown file for task breakdown guidance
         self.requirements = self._load_requirements()
 
         # Update constraints with task breakdown data
@@ -126,19 +127,106 @@ class LaravelProjectManager(ProjectManager):
         # }
 
     def _load_requirements(self) -> dict:
-        """Load user_requirements.json file for task breakdown guidance"""
-        requirements_path = Path(__file__).parent.parent / "requirements" / "user_requirements.json"
+        """Load user_requirements_nlp.md file and parse functional requirements"""
+        requirements_path = Path(__file__).parent.parent / "requirements" / "user_requirements_nlp.md"
 
         with open(requirements_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            content = f.read()
+
+        return self._parse_nlp_requirements(content)
+
+    def _parse_nlp_requirements(self, content: str) -> dict:
+        """
+        Parse natural language requirements from markdown file.
+
+        Extracts:
+        - Project metadata from header
+        - Sections and their requirements
+        - Requirement numbers and text
+        """
+        # Extract project title
+        title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+        project_name = title_match.group(1).strip() if title_match else "Volopa Mass Payments"
+
+        # Extract version
+        version_match = re.search(r'\*\*Version:\*\*\s+([\d.]+)', content)
+        version = version_match.group(1) if version_match else "4.0"
+
+        # Parse sections and requirements
+        sections = {}
+        requirement_pattern = re.compile(r'^\*\*(\d+)\.\*\*\s+(.+)$', re.MULTILINE)
+        section_pattern = re.compile(r'^##\s+(\d+)\.\s+(.+)$', re.MULTILINE)
+        subsection_pattern = re.compile(r'^###\s+([\d.]+)\s+(.+)$', re.MULTILINE)
+
+        # Find all sections
+        for section_match in section_pattern.finditer(content):
+            section_num = section_match.group(1)
+            section_name = section_match.group(2).strip()
+            sections[f"section_{section_num}"] = {
+                "category": section_name,
+                "requirements": []
+            }
+
+        # Find all requirements and associate with sections
+        lines = content.split('\n')
+        current_section_key = None
+        current_subsection = None
+
+        for i, line in enumerate(lines):
+            # Check for section header
+            section_match = section_pattern.match(line)
+            if section_match:
+                section_num = section_match.group(1)
+                current_section_key = f"section_{section_num}"
+                current_subsection = None
+                continue
+
+            # Check for subsection header
+            subsection_match = subsection_pattern.match(line)
+            if subsection_match:
+                current_subsection = subsection_match.group(2).strip()
+                continue
+
+            # Check for requirement
+            req_match = requirement_pattern.match(line)
+            if req_match and current_section_key:
+                req_num = req_match.group(1)
+                req_text = req_match.group(2).strip()
+
+                sections[current_section_key]["requirements"].append({
+                    "id": f"REQ-{req_num}",
+                    "number": req_num,
+                    "text": req_text,
+                    "subsection": current_subsection
+                })
+
+        # Build structured requirements dictionary
+        return {
+            "project_metadata": {
+                "project_name": project_name,
+                "version": version,
+                "framework": "Laravel",
+                "php_version": "8.2",
+                "max_file_capacity": 10000,
+                "api_prefix": "/api/v1",
+                "source_file": "user_requirements_nlp.md"
+            },
+            "summary_statistics": {
+                "total_functional_requirements": len(sections),
+                "total_requirements": sum(len(s["requirements"]) for s in sections.values()),
+                "estimated_tasks": "~40-50",
+                "estimated_files": "~40"
+            },
+            "functional_requirements": sections
+        }
 
     def _update_constraints_from_requirements(self):
         """Inject task breakdown guidance from functional requirements"""
 
         # Extract sections
+        project_meta = self.requirements['project_metadata']
         stats = self.requirements['summary_statistics']
         frs = self.requirements['functional_requirements']
-        expected = self.requirements['expected_outputs']['LaravelProjectManager']
 
         # Build task mapping
         task_mapping = self._build_task_mapping(frs)
@@ -146,42 +234,45 @@ class LaravelProjectManager(ProjectManager):
         # Append to existing constraints
         self.constraints += f"""
 
-LOADED FUNCTIONAL REQUIREMENTS FROM JSON:
+LOADED FUNCTIONAL REQUIREMENTS FROM NLP MARKDOWN:
+
+Project: {project_meta['project_name']} v{project_meta['version']}
+Framework: {project_meta['framework']} (PHP {project_meta['php_version']})
+Max Capacity: {project_meta['max_file_capacity']} payment rows per file
+API Prefix: {project_meta['api_prefix']}
 
 Task Breakdown Statistics:
-- Total FRs: {stats['total_functional_requirements']}
-- Total Sub-Requirements: {stats['total_sub_requirements']}
+- Total Requirement Sections: {stats['total_functional_requirements']}
+- Total Requirements: {stats['total_requirements']}
 - Estimated Tasks to Create: {stats['estimated_tasks']}
 - Estimated Files to Generate: {stats['estimated_files']}
 
-Task Mapping Guide (Sub-Requirement → Tasks):
+Task Mapping Guide (Requirements by Section):
 {task_mapping}
-
-Expected Output:
-{expected['content']}
 """
 
     def _build_task_mapping(self, frs: dict) -> str:
-        """Build mapping of sub-requirements to implementation tasks"""
+        """Build mapping of requirements to implementation tasks"""
         lines = []
-        task_counter = 1
 
-        for fr_id, fr_data in frs.items():
-            lines.append(f"\n{fr_id}: {fr_data['category']}")
+        for section_id, section_data in frs.items():
+            lines.append(f"\n### {section_data['category']}")
 
-            for sub_id, sub_req in fr_data['sub_requirements'].items():
-                lines.append(f"  {sub_id}: {sub_req['title']}")
+            # Group requirements by subsection
+            subsections = {}
+            for req in section_data['requirements']:
+                subsection = req.get('subsection', 'General')
+                if subsection not in subsections:
+                    subsections[subsection] = []
+                subsections[subsection].append(req)
 
-                # Extract Engineer files as task hints
-                if 'agent_tasks' in sub_req and 'Engineer' in sub_req['agent_tasks']:
-                    eng_files = sub_req['agent_tasks']['Engineer']
-                    if isinstance(eng_files, list):
-                        for file in eng_files:
-                            lines.append(f"    Task {task_counter}: Implement {file}")
-                            task_counter += 1
-                    elif isinstance(eng_files, str):
-                        lines.append(f"    Task {task_counter}: {eng_files}")
-                        task_counter += 1
+            # Format requirements by subsection
+            for subsection, reqs in subsections.items():
+                if subsection and subsection != 'General':
+                    lines.append(f"\n#### {subsection}")
+
+                for req in reqs:
+                    lines.append(f"  {req['id']}: {req['text']}")
 
         return '\n'.join(lines)
 
