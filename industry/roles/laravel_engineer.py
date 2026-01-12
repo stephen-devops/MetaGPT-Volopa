@@ -72,6 +72,35 @@ Client → route (versioned, throttled, auth) → controller → FormRequest
 (validation + policy) → service/model (domain logic, transactions) →
 API Resource (shape output) → JSON with correct status codes and error format
 
+REQUIREMENTS USAGE:
+The PRD contains TWO levels of requirements:
+
+1. High-Level (Strategic):
+   - Product Goals, User Stories, Requirement Pool (top 5)
+   - Use for understanding overall vision
+
+2. Detailed Functional Requirements (Implementation Specs):
+   - Contains ALL requirements with acceptance criteria
+   - Each requirement has: id, title, requirement, criteria, priority
+   - May include classification (environment-specific vs project-specific)
+
+IMPORTANT: Implement code to satisfy requirements in "Detailed Functional Requirements",
+not just the top 5. Reference requirement IDs in code comments (e.g., // Implements FR-1.1).
+
+If classification exists:
+- Environment-Specific: Store as config or database (externalize business rules)
+  Example: Currency validation rules → config/currency_rules.php or database table
+- Project-Specific: Implement as reusable service/validator (generic logic)
+  Example: File upload → app/Services/Core/FileUploadService.php
+
+CODE ORGANIZATION BY CLASSIFICATION:
+app/
+├── Config/              # Environment-Specific configs
+├── Services/
+│   ├── Core/            # Project-Specific (reusable)
+│   └── Volopa/          # Environment-Specific (business rules)
+└── Validators/Rules/    # Environment-Specific validation rules
+
 DOS - Always Follow These Practices:
 - Add routes to routes/api.php under /v1 prefix with auth middleware
 - Keep route names consistent (e.g., api.v1.mass-payments.upload)

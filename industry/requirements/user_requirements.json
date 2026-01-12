@@ -1,15 +1,22 @@
 {
   "project_metadata": {
     "project_name": "Volopa Mass Payments API",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "created_date": "2025-12-04",
-    "last_modified": "2025-12-09",
+    "last_modified": "2026-01-12",
     "description": "Laravel API system for uploading CSV files with up to 10,000 payment instructions",
-    "source_document": "Mass Payments PPTX",
+    "source_documents": [
+      "Mass Payments PPTX",
+      "natural_language_requirements_v4.md",
+      "requirements_classification_v4.md"
+    ],
     "framework": "Laravel 10+",
     "php_version": "8.2+",
     "api_prefix": "/api/v1",
-    "max_file_capacity": 10000
+    "max_file_capacity": 10000,
+    "total_requirements": 76,
+    "environment_specific_requirements": 29,
+    "project_specific_requirements": 47
   },
 
   "agent_assignments": {
@@ -17,10 +24,12 @@
       "consumes": ["all_functional_requirements"],
       "output": "docs/prd/volopa_mass_payments.md",
       "responsibilities": [
-        "Transform ALL FR into Product Requirements Document (PRD)",
+        "Transform ALL 76 functional requirements into Product Requirements Document (PRD)",
         "Define business requirements, user stories, acceptance criteria",
         "Specify API endpoints and validation rules at business level",
-        "Prioritize requirements (P0, P1, P2)"
+        "Prioritize requirements (P0, P1, P2)",
+        "Include Detailed Functional Requirements section with all requirements",
+        "Include Requirements Classification Summary (environment-specific vs project-specific)"
       ],
       "constraints_source": "business_level_laravel_awareness"
     },
@@ -31,7 +40,9 @@
         "Design system architecture, data models, API structure",
         "Design database schema with relationships",
         "Design service layer and validation architecture",
-        "Specify transaction boundaries, N+1 prevention, pagination, caching"
+        "Specify transaction boundaries, N+1 prevention, pagination, caching",
+        "Design environment-specific requirements as configurable",
+        "Design project-specific requirements as reusable core logic"
       ],
       "constraints_source": "dos_and_donts.pdf (architectural patterns)"
     },
@@ -40,7 +51,7 @@
       "output": "docs/task/volopa_mass_payments.json",
       "responsibilities": [
         "Create task breakdown for implementation",
-        "Map 42 sub-requirements to ~50 implementation tasks",
+        "Map 76 requirements to implementation tasks",
         "Define task dependencies and execution order"
       ],
       "constraints_source": "task_breakdown_methodology"
@@ -51,886 +62,892 @@
       "responsibilities": [
         "Implement all tasks from ProjectManager",
         "Write Laravel code following DOS/DONTS patterns",
-        "Generate controllers, models, services, migrations, tests"
+        "Generate controllers, models, services, migrations, tests",
+        "Store environment-specific logic as config or database",
+        "Implement project-specific logic as reusable services"
       ],
       "constraints_source": "dos_and_donts.pdf (full)"
+    },
+    "LaravelQaEngineer": {
+      "consumes": ["all_requirements", "system_design", "prd", "source_code"],
+      "output": "tests/ directory",
+      "responsibilities": [
+        "Write tests covering ALL 76 requirements",
+        "Test environment-specific business rules and configuration",
+        "Test project-specific generic behavior and edge cases",
+        "Reference requirement IDs in test method names"
+      ],
+      "constraints_source": "testing_best_practices"
     }
   },
 
   "functional_requirements": {
-    "FR-1": {
-      "category": "Template Management",
-      "primary_owner": "LaravelEngineer",
-      "dependencies": ["Architect (API design)", "PM (business requirements)"],
-      "sub_requirements": {
-        "FR-1.1": {
-          "title": "Download Recipient CSV Template",
-          "requirement": "User can download a CSV file containing their current list of recipients",
-          "criteria": [
-            "Download filtered by single currency selection",
-            "Template pre-populated with existing recipient data from database",
-            "Includes all required column headers"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define business requirement for template download",
-            "Architect": "Design GET /api/v1/recipients/template endpoint",
-            "ProjectManager": "Create task: Implement recipient template download endpoint",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/RecipientTemplateController.php",
-              "app/Services/TemplateGeneratorService.php",
-              "app/Http/Resources/RecipientTemplateResource.php"
-            ]
-          }
+    "Section_1_File_Template_Management": {
+      "section_name": "File Template Management",
+      "description": "Requirements for downloading, structuring, and providing guidance for CSV payment templates",
+      "total_requirements": 11,
+      "requirements": {
+        "REQ-001": {
+          "requirement": "The system shall allow business users to initiate bulk payment processing through the Volopa platform using a file upload journey.",
+          "classification": "environment-specific",
+          "classification_rationale": "References specific Volopa platform",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Users can access mass payments feature from Volopa platform",
+            "File upload journey is initiated through designated navigation path"
+          ]
         },
-        "FR-1.2": {
-          "title": "CSV Template Structure",
-          "requirement": "System generates CSV template with predefined columns and structure",
-          "columns_required": [
-            "Recipient ID",
-            "Client Recipient ID",
-            "Recipient Name",
-            "Recipient Bank Country",
-            "Recipient Account Currency (single currency)",
-            "Available Settlement Methods (Priority; Regular; Priority and Regular)",
-            "Recipient Email Address",
-            "CC Email Address",
-            "Payment Amount (blank for user input)",
-            "Settlement Method (dropdown values: Priority, Regular)",
-            "Payment Reason",
-            "Payments Reference",
-            "Purpose of Payment Code (dropdown, dependent on Bank Country and Account Currency)",
-            "Invoice Number (required if Account Currency is INR)",
-            "Invoice Date (required if Account Currency is INR)",
-            "Incorporation_number (required for business Recipients with TRY)"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Document CSV column specifications in PRD",
-            "Architect": "Design template structure and data mapping",
-            "ProjectManager": "Create task: Define CSV template columns and validation rules",
-            "Engineer": [
-              "app/Services/TemplateGeneratorService.php (column definitions)",
-              "config/mass_payments.php (template configuration)"
-            ]
-          }
+        "REQ-002": {
+          "requirement": "The system shall provide users with the ability to download a CSV template for mass payments from the Payments section of the platform.",
+          "classification": "environment-specific",
+          "classification_rationale": "References Volopa's platform navigation structure",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Download link available in Payments section",
+            "CSV template is generated and downloadable"
+          ]
         },
-        "FR-1.3": {
-          "title": "Template Row Capacity",
-          "requirement": "CSV template supports up to 10,000 payment rows per file",
-          "criteria": ["System enforces maximum row limit during validation"],
-          "agent_tasks": {
-            "ProductManager": "Define 10,000 row limit requirement",
-            "Architect": "Design validation constraints",
-            "ProjectManager": "Create task: Add row limit validation to upload",
-            "Engineer": ["app/Http/Requests/UploadMassPaymentFileRequest.php (max rows validation)"]
-          }
+        "REQ-003": {
+          "requirement": "The system shall allow users to download recipient lists filtered by a single currency at a time.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa-specific currency handling rule",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Currency filter available on template download",
+            "Only recipients matching selected currency are included"
+          ]
+        },
+        "REQ-004": {
+          "requirement": "The system shall include up-to-date recipient information in downloaded templates to minimize manual data entry.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard usability practice",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Template pre-populated with current recipient data",
+            "Data is synchronized from database at download time"
+          ]
+        },
+        "REQ-005": {
+          "requirement": "The system shall include the following recipient information fields in downloaded templates: Recipient ID, Client Recipient ID, Recipient Name, Recipient Bank Country, Recipient Account Currency, Available Settlement Methods, Recipient Email Address, and CC Email Address.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's specific recipient data structure",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "All 8 recipient fields are present in template",
+            "Fields are properly labeled and ordered"
+          ]
+        },
+        "REQ-006": {
+          "requirement": "The system shall include the following payment fields in the template for user completion: Payment Amount, Settlement Method, Payment Reason, Payments Reference, Purpose of Payment Code, Invoice Number, Invoice Date, and Incorporation Number.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's payment data model",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "All 8 payment fields are present in template",
+            "Fields are clearly marked for user input"
+          ]
+        },
+        "REQ-007": {
+          "requirement": "The system shall indicate which fields require dropdown selection versus free-text entry in the template guidance.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard form design principle",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Field types are documented in template guidance",
+            "Dropdown fields show available values"
+          ]
+        },
+        "REQ-008": {
+          "requirement": "The system shall pre-populate Available Settlement Methods for each recipient (values: Priority, Regular, or Priority and Regular).",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's settlement method business logic",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Settlement methods pre-populated from recipient configuration",
+            "Values match: Priority, Regular, or Priority and Regular"
+          ]
+        },
+        "REQ-009": {
+          "requirement": "The system shall provide users with comprehensive guidance or instructions explaining how to complete the payment file template correctly.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard help system",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "User guide available and accessible",
+            "Guide covers all template fields"
+          ]
+        },
+        "REQ-010": {
+          "requirement": "The system shall provide contextual help or tooltips explaining field requirements and validation rules.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard inline help pattern",
+          "priority": "P2",
+          "acceptance_criteria": [
+            "Tooltips or help text available for each field",
+            "Validation rules explained clearly"
+          ]
+        },
+        "REQ-011": {
+          "requirement": "The system shall clearly indicate when specific fields are mandatory based on payment currency or recipient type.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard form validation UX",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Mandatory fields marked with indicator",
+            "Currency/type-specific requirements documented"
+          ]
         }
       }
     },
 
-    "FR-2": {
-      "category": "File Upload",
-      "primary_owner": "LaravelEngineer",
-      "dependencies": ["Architect (API design)", "PM (UI/UX requirements)"],
-      "sub_requirements": {
-        "FR-2.1": {
-          "title": "Upload Interface",
-          "requirement": "User can upload completed payment CSV files",
-          "criteria": [
-            "Drag-and-drop box functionality (frontend - out of scope for API)",
-            "Alternative upload button (frontend - out of scope for API)",
-            "Accepts .csv file format only"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define upload interface requirements (drag-drop, button)",
-            "Architect": "Design POST /api/v1/mass-payments/upload endpoint",
-            "ProjectManager": "Create task: Implement file upload endpoint with CSV validation",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@store",
-              "app/Http/Requests/UploadMassPaymentFileRequest.php",
-              "app/Services/FileUploadService.php"
-            ]
-          }
+    "Section_2_Data_Entry_Conditional_Requirements": {
+      "section_name": "Data Entry and Conditional Requirements",
+      "description": "Requirements for payment data entry and currency-specific mandatory fields",
+      "total_requirements": 8,
+      "requirements": {
+        "REQ-012": {
+          "requirement": "The system shall allow users to enter payment details such as amounts, settlement methods, references, and reasons directly into the CSV template.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard data entry capability",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "All payment fields are editable in CSV",
+            "Data formats are clearly specified"
+          ]
         },
-        "FR-2.2": {
-          "title": "Upload Location",
-          "requirement": "File upload feature accessible from designated navigation path",
-          "location": "Payments >> Batch Payments >> File Uploads (API route: /api/v1/mass-payments)",
-          "agent_tasks": {
-            "ProductManager": "Document navigation path in PRD",
-            "Architect": "Design route structure (routes/api.php)",
-            "ProjectManager": "Create task: Add API routes for mass payments",
-            "Engineer": ["routes/api.php (versioned routes under /api/v1/mass-payments)"]
-          }
+        "REQ-013": {
+          "requirement": "The system shall allow users to specify settlement method by selecting from dropdown options: Priority or Regular.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's two-tier settlement model",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Settlement method accepts Priority or Regular",
+            "Invalid values are rejected during validation"
+          ]
+        },
+        "REQ-014": {
+          "requirement": "The system shall allow users to specify Purpose of Payment Code from a dropdown list dependent on recipient Bank Country and Account Currency.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's compliance with international payment codes",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Purpose codes filtered by country and currency",
+            "Invalid codes rejected during validation"
+          ]
+        },
+        "REQ-015": {
+          "requirement": "The system shall require Invoice Number when the recipient account currency is INR (Indian Rupee).",
+          "classification": "environment-specific",
+          "classification_rationale": "India-specific regulatory requirement",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Invoice Number mandatory for INR payments",
+            "Validation fails if INR payment missing Invoice Number"
+          ]
+        },
+        "REQ-016": {
+          "requirement": "The system shall require Invoice Date when the recipient account currency is INR (Indian Rupee).",
+          "classification": "environment-specific",
+          "classification_rationale": "India-specific regulatory requirement",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Invoice Date mandatory for INR payments",
+            "Validation fails if INR payment missing Invoice Date"
+          ]
+        },
+        "REQ-017": {
+          "requirement": "The system shall require Incorporation Number for business recipients when the account currency is TRY (Turkish Lira).",
+          "classification": "environment-specific",
+          "classification_rationale": "Turkey-specific regulatory requirement",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Incorporation Number mandatory for TRY business recipients",
+            "Validation fails if requirement not met"
+          ]
+        },
+        "REQ-018": {
+          "requirement": "The system shall allow users to include recipient email addresses for payment notifications.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard notification field",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Recipient email field available",
+            "Email format validated"
+          ]
+        },
+        "REQ-019": {
+          "requirement": "The system shall allow users to include CC email addresses for additional payment notification recipients.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard CC field pattern",
+          "priority": "P2",
+          "acceptance_criteria": [
+            "CC email field available",
+            "Multiple CC addresses supported"
+          ]
         }
       }
     },
 
-    "FR-3": {
-      "category": "File Validation",
-      "primary_owner": "LaravelEngineer (Services)",
-      "dependencies": ["Architect (validation architecture)", "PM (validation rules)"],
-      "sub_requirements": {
-        "FR-3.1": {
-          "title": "Format Validation",
-          "requirement": "System validates uploaded file format",
-          "checks": [
-            "File is CSV format",
-            "File structure matches template",
-            "Required columns are present",
-            "Column headers match expected names"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define CSV format requirements",
-            "Architect": "Design validation service architecture",
-            "ProjectManager": "Create task: Implement CSV format validation",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@validateFormat",
-              "app/Http/Requests/UploadMassPaymentFileRequest.php (file type validation)"
-            ]
-          }
+    "Section_3_File_Upload_Size_Constraints": {
+      "section_name": "File Upload and Size Constraints",
+      "description": "Requirements for file upload interface and capacity limits",
+      "total_requirements": 6,
+      "requirements": {
+        "REQ-020": {
+          "requirement": "The system shall allow users to upload completed payment files using a drag-and-drop area or file selection option.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard upload UX pattern",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Drag-and-drop upload supported",
+            "File browser selection supported"
+          ]
         },
-        "FR-3.2": {
-          "title": "Size Validation",
-          "requirement": "System enforces maximum file size",
-          "criteria": ["File does not exceed 10,000 payment rows"],
-          "agent_tasks": {
-            "ProductManager": "Define 10,000 row limit",
-            "Architect": "Design validation constraints",
-            "ProjectManager": "Create task: Implement row count validation",
-            "Engineer": ["app/Services/CsvValidationService.php@validateSize"]
-          }
+        "REQ-021": {
+          "requirement": "The system shall display clear visual feedback during the file upload process.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard UX feedback pattern",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Progress indicator shown during upload",
+            "Status messages displayed"
+          ]
         },
-        "FR-3.3": {
-          "title": "Data Validation",
-          "requirement": "System validates each row's data integrity",
-          "checks": [
-            "Valid email format for recipient and CC addresses",
-            "Valid country codes (ISO standard)",
-            "Valid currency codes (ISO standard)",
-            "Valid Purpose of Payment codes (context-dependent on country/currency)",
-            "Settlement method matches recipient's available methods",
-            "Payment amount is numeric and positive",
-            "Recipient ID exists in system database"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define data integrity rules",
-            "Architect": "Design validation rules per field type",
-            "ProjectManager": "Create task: Implement row-level data validation",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@validateData",
-              "app/Rules/ValidCurrencyCode.php",
-              "app/Rules/ValidCountryCode.php",
-              "app/Rules/ValidPurposeCode.php"
-            ]
-          }
+        "REQ-022": {
+          "requirement": "The system shall support up to 10,000 payment instructions within a single uploaded file.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's defined business limit",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Files with up to 10,000 rows accepted",
+            "System processes all valid rows"
+          ]
         },
-        "FR-3.4": {
-          "title": "Conditional Field Validation",
-          "requirement": "System enforces currency-specific mandatory fields",
-          "rules": [
-            "INR payments: Invoice Number AND Invoice Date are mandatory",
-            "TRY business recipients: Incorporation Number is mandatory"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define currency-specific validation rules",
-            "Architect": "Design conditional validation logic",
-            "ProjectManager": "Create task: Implement currency-specific validation",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@validateConditionalFields",
-              "app/Rules/InrInvoiceRequired.php",
-              "app/Rules/TryIncorporationRequired.php"
-            ]
-          }
+        "REQ-023": {
+          "requirement": "The system shall restrict each uploaded payment file to contain payments in one currency only.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa business rule for processing efficiency",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Single currency validation enforced",
+            "Multi-currency files rejected"
+          ]
         },
-        "FR-3.5": {
-          "title": "Validation Error Reporting",
-          "requirement": "System provides detailed validation error feedback",
-          "criteria": [
-            "Row number where error occurred",
-            "Column/field name with error",
-            "Provided value that failed validation",
-            "Error description/message",
-            "Downloadable error report"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define error message format requirements",
-            "Architect": "Design error response structure",
-            "ProjectManager": "Create task: Implement validation error collection and reporting",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@collectErrors",
-              "app/Http/Resources/ValidationErrorResource.php"
-            ]
-          }
+        "REQ-024": {
+          "requirement": "The system shall reject files exceeding the maximum payment limit of 10,000 rows.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's processing capacity constraint",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Files with >10,000 rows rejected",
+            "Clear error message provided"
+          ]
+        },
+        "REQ-025": {
+          "requirement": "The system shall prevent duplicate uploads of the same payment file.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard data integrity control",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Duplicate detection implemented",
+            "User notified if duplicate detected"
+          ]
         }
       }
     },
 
-    "FR-4": {
-      "category": "File Review & Summary",
-      "primary_owner": "LaravelEngineer (Controllers + Resources)",
-      "dependencies": ["Architect (API response design)", "PM (summary requirements)"],
-      "sub_requirements": {
-        "FR-4.1": {
-          "title": "Upload Summary Display",
-          "requirement": "System displays summary of uploaded file after validation",
-          "information_shown": [
-            "Total number of payments in file",
-            "Breakdown by currency",
-            "Count of valid payments",
-            "Count of errored payments",
-            "Error details with row references"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define summary information requirements",
-            "Architect": "Design API response structure",
-            "ProjectManager": "Create task: Create file summary API endpoint",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@show",
-              "app/Http/Resources/MassPaymentFileSummaryResource.php"
-            ]
-          }
+    "Section_4_File_Validation_Error_Handling": {
+      "section_name": "File Validation and Error Handling",
+      "description": "Requirements for comprehensive file and data validation with error reporting",
+      "total_requirements": 12,
+      "requirements": {
+        "REQ-026": {
+          "requirement": "The system shall validate that uploaded files are in the correct CSV format before processing.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard file format validation",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "CSV format validation performed",
+            "Non-CSV files rejected"
+          ]
         },
-        "FR-4.2": {
-          "title": "Error Navigation",
-          "requirement": "User can view detailed list of validation errors",
-          "criteria": [
-            "Clickable link to error details (API returns errors endpoint)",
-            "Shows specific rows with errors",
-            "Displays which fields failed validation"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define error detail access requirements",
-            "Architect": "Design GET /api/v1/mass-payments/{id}/errors endpoint",
-            "ProjectManager": "Create task: Implement file errors list endpoint",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@errors",
-              "app/Http/Resources/FileErrorResource.php"
-            ]
-          }
+        "REQ-027": {
+          "requirement": "The system shall validate that all required fields and columns are present in the uploaded file.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard structural validation",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Required columns checked",
+            "Missing columns reported as errors"
+          ]
         },
-        "FR-4.3": {
-          "title": "File Summary Review",
-          "requirement": "User can review file summary before proceeding",
-          "actions_available": [
-            "Cancel upload",
-            "Proceed with valid payments (if errors exist but some records are valid)",
-            "View error list"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define review actions (cancel, proceed)",
-            "Architect": "Design state transition logic",
-            "ProjectManager": "Create task: Implement file action endpoints (cancel, proceed)",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@cancel",
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@proceed"
-            ]
-          }
+        "REQ-028": {
+          "requirement": "The system shall validate the file structure matches the expected template format.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard template matching",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Template structure validated",
+            "Structure mismatches reported"
+          ]
+        },
+        "REQ-029": {
+          "requirement": "The system shall validate uploaded data for correctness, including proper email formats, valid country codes, currency codes, purpose codes, and payment methods.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard data validation patterns",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Email format validation",
+            "Country and currency code validation",
+            "Purpose code and payment method validation"
+          ]
+        },
+        "REQ-030": {
+          "requirement": "The system shall validate that recipient IDs exist in the system before allowing file processing.",
+          "classification": "environment-specific",
+          "classification_rationale": "Integration with Volopa's recipient database",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Recipient ID lookup performed",
+            "Non-existent IDs rejected"
+          ]
+        },
+        "REQ-031": {
+          "requirement": "The system shall validate that payment amounts are positive numeric values in the correct format.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard numeric validation",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Amount is numeric",
+            "Amount is positive",
+            "Decimal precision validated"
+          ]
+        },
+        "REQ-032": {
+          "requirement": "The system shall validate that settlement methods match the available options for each recipient.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's compliance with recipient-specific payment rails",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Settlement method validated against recipient configuration",
+            "Mismatches reported as errors"
+          ]
+        },
+        "REQ-033": {
+          "requirement": "The system shall validate that all mandatory fields contain values based on currency and recipient type requirements.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard required field validation",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Required field validation enforced",
+            "Empty required fields reported"
+          ]
+        },
+        "REQ-034": {
+          "requirement": "The system shall identify and report validation errors with clear information including row number, column name, provided value, and specific error description.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard error reporting pattern",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Error reports include row number",
+            "Error reports include column name and value",
+            "Error description is clear and actionable"
+          ]
+        },
+        "REQ-035": {
+          "requirement": "The system shall allow users to download or view a detailed list of validation errors.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard error export capability",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Error list is viewable",
+            "Error list is downloadable"
+          ]
+        },
+        "REQ-036": {
+          "requirement": "The system shall allow users to correct errors and re-upload the payment file.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard correction workflow",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Re-upload is supported",
+            "Previous errors are cleared on re-upload"
+          ]
+        },
+        "REQ-037": {
+          "requirement": "The system shall allow users to proceed with processing valid payments even if some rows contain errors.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard partial processing pattern",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Partial success processing supported",
+            "Valid rows processed, invalid rows skipped"
+          ]
         }
       }
     },
 
-    "FR-5": {
-      "category": "File Status Management",
-      "primary_owner": "LaravelEngineer (Models + Controllers)",
-      "dependencies": ["Architect (status state machine design)", "PM (status requirements)"],
-      "sub_requirements": {
-        "FR-5.1": {
-          "title": "Upload Status Tracking",
-          "requirement": "User can check status of uploaded files",
-          "statuses": [
-            "Uploading",
-            "Validating",
-            "Validation Failed",
-            "Validation Successful",
-            "Pending Approval",
-            "Approved",
-            "Completed",
-            "Deleted"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define status states and transitions",
-            "Architect": "Design status enum and state machine",
-            "ProjectManager": "Create tasks: (1) Create MassPaymentFile model with status enum, (2) Implement status transition logic",
-            "Engineer": [
-              "app/Models/MassPaymentFile.php",
-              "app/Enums/MassPaymentFileStatus.php (8 states)",
-              "database/migrations/xxxx_create_mass_payment_files_table.php"
-            ]
-          }
+    "Section_5_File_Summary_Review": {
+      "section_name": "File Summary and Review",
+      "description": "Requirements for displaying file summaries and review before processing",
+      "total_requirements": 4,
+      "requirements": {
+        "REQ-038": {
+          "requirement": "The system shall provide a summary view of each uploaded file, including total number of payments, valid payments, errored payments, and currency breakdown.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard summary dashboard pattern",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Summary shows total, valid, and errored counts",
+            "Currency breakdown displayed"
+          ]
         },
-        "FR-5.2": {
-          "title": "File Status Query",
-          "requirement": "User can retrieve current status of any uploaded file",
-          "criteria": ["Real-time or near-real-time status updates"],
-          "agent_tasks": {
-            "ProductManager": "Define real-time status update requirement",
-            "Architect": "Design GET /api/v1/mass-payments/{id}/status endpoint",
-            "ProjectManager": "Create task: Implement status query endpoint",
-            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@status"]
-          }
+        "REQ-039": {
+          "requirement": "The system shall display the file name and upload timestamp in the file summary.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard file metadata display",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "File name shown",
+            "Upload timestamp shown"
+          ]
         },
-        "FR-5.3": {
-          "title": "File History",
-          "requirement": "User can view all uploaded files for their client account",
-          "criteria": [
-            "List shows file name, upload date, status, record counts",
-            "Filterable and sortable",
-            "Paginated for large lists"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define file listing requirements (pagination, filtering)",
-            "Architect": "Design GET /api/v1/mass-payments endpoint with query params",
-            "ProjectManager": "Create task: Implement paginated file list endpoint",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@index",
-              "app/Http/Resources/MassPaymentFileResource.php"
-            ]
-          }
+        "REQ-040": {
+          "requirement": "The system shall display the funding currency associated with each payment file.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's multi-currency account structure",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Funding currency displayed in summary"
+          ]
+        },
+        "REQ-041": {
+          "requirement": "The system shall allow users to review uploaded file summaries before proceeding or cancelling.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard confirmation workflow",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Summary review page available",
+            "Proceed and cancel actions available"
+          ]
         }
       }
     },
 
-    "FR-6": {
-      "category": "Approval Workflow",
-      "primary_owner": "LaravelEngineer (Services + Policies)",
-      "dependencies": ["Architect (workflow design)", "PM (approval logic)"],
-      "sub_requirements": {
-        "FR-6.1": {
-          "title": "Approval Requirement Check",
-          "requirement": "System determines if approval is required based on currency rules",
-          "workflow": [
-            "If approval NOT required → Upload completed immediately",
-            "If approval IS required → Trigger approval workflow"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define currency-based approval rules",
-            "Architect": "Design approval workflow logic",
-            "ProjectManager": "Create task: Implement approval requirement check service",
-            "Engineer": [
-              "app/Services/ApprovalWorkflowService.php@checkApprovalRequired",
-              "app/Models/CurrencyApprovalRule.php"
-            ]
-          }
+    "Section_6_Approval_Workflow": {
+      "section_name": "Approval Workflow",
+      "description": "Requirements for approval determination, notification, and process management",
+      "total_requirements": 10,
+      "requirements": {
+        "REQ-042": {
+          "requirement": "The system shall enforce client-specific approval requirements based on currency and transaction rules.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's configurable approval policy",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Approval rules configurable per client",
+            "Currency-based rules enforced"
+          ]
         },
-        "FR-6.2": {
-          "title": "Approver Notification",
-          "requirement": "System notifies all designated approvers when file requires approval",
-          "criteria": [
-            "Bell icon notification in UI (notification sent to frontend via API)",
-            "Notification dispatched to all approvers simultaneously"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define notification requirements",
-            "Architect": "Design notification dispatch architecture",
-            "ProjectManager": "Create task: Implement approver notification system",
-            "Engineer": [
-              "app/Notifications/MassPaymentApprovalRequired.php",
-              "app/Services/ApprovalWorkflowService.php@notifyApprovers"
-            ]
-          }
+        "REQ-043": {
+          "requirement": "The system shall automatically determine whether uploaded payments require approval based on predefined business rules.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's risk management framework",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Approval determination automated",
+            "Business rules applied consistently"
+          ]
         },
-        "FR-6.3": {
-          "title": "First Approver Action",
-          "requirement": "First approver to respond gets redirected to Payment Confirmation Page",
-          "criteria": [
-            "Locks file for approval by first responder",
-            "Prevents duplicate approvals",
-            "Creates payment from file"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define first-approver-wins logic",
-            "Architect": "Design file locking mechanism",
-            "ProjectManager": "Create task: Implement approval locking and redirect logic",
-            "Engineer": [
-              "app/Services/ApprovalWorkflowService.php@lockForApproval",
-              "app/Http/Controllers/Api/V1/ApprovalController.php@approve"
-            ]
-          }
+        "REQ-044": {
+          "requirement": "The system shall send bell icon notifications to all authorized approvers when a payment file requires approval.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's notification mechanism",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Bell icon notifications sent",
+            "All approvers notified"
+          ]
         },
-        "FR-6.4": {
-          "title": "Subsequent Approver Handling",
-          "requirement": "Approvers clicking after first approver see different view",
-          "criteria": [
-            "Redirected to Draft Payments Page (API returns different response)",
-            "Informed that payment was already picked/approved"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define subsequent approver experience",
-            "Architect": "Design approval status check logic",
-            "ProjectManager": "Create task: Implement subsequent approver handling",
-            "Engineer": [
-              "app/Services/ApprovalWorkflowService.php@checkApprovalStatus",
-              "app/Http/Controllers/Api/V1/ApprovalController.php@checkStatus"
-            ]
-          }
+        "REQ-045": {
+          "requirement": "The system shall ensure that notifications are sent immediately upon successful file validation when approval is required.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard notification timing",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Notifications sent immediately after validation",
+            "No delays in notification delivery"
+          ]
         },
-        "FR-6.5": {
-          "title": "Approve File Action",
-          "requirement": "Authorized approver can approve validated payment file",
-          "criteria": [
-            "Only users with approval permissions can approve",
-            "File must be in 'Pending Approval' status",
-            "Approval moves file to next processing stage"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define approval action requirements",
-            "Architect": "Design POST /api/v1/mass-payments/{id}/approve endpoint",
-            "ProjectManager": "Create task: Implement file approval endpoint with policy",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/ApprovalController.php@approve",
-              "app/Policies/MassPaymentFilePolicy.php@approve",
-              "app/Http/Requests/ApproveMassPaymentFileRequest.php"
-            ]
-          }
+        "REQ-046": {
+          "requirement": "The system shall ensure that only one approver can act on a payment file at a time.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard concurrency control",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Concurrency control implemented",
+            "Locking mechanism prevents duplicate approvals"
+          ]
+        },
+        "REQ-047": {
+          "requirement": "The system shall inform other approvers when a payment file has already been picked up for approval.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard concurrent access messaging",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Status message shown to subsequent approvers",
+            "Clear indication file is already in progress"
+          ]
+        },
+        "REQ-048": {
+          "requirement": "The system shall ensure that only authorized users can approve payment files.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard authorization control",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Authorization check performed",
+            "Unauthorized users blocked from approving"
+          ]
+        },
+        "REQ-049": {
+          "requirement": "The system shall prevent the same user who uploaded a file from also approving it.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's separation of duties policy",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Uploader identity tracked",
+            "Self-approval blocked"
+          ]
+        },
+        "REQ-050": {
+          "requirement": "The system shall redirect the first approver to click the notification to a Payment Confirmation Page to complete the payment creation.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's specific approval workflow screens",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "First approver redirected to Payment Confirmation Page",
+            "Payment creation initiated"
+          ]
+        },
+        "REQ-051": {
+          "requirement": "The system shall redirect subsequent approvers who click after another approver has picked up the file to the Draft Payments Page.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's concurrent approval handling",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Subsequent approvers redirected to Draft Payments Page",
+            "Informational message displayed"
+          ]
         }
       }
     },
 
-    "FR-7": {
-      "category": "Payment Instructions Creation",
-      "primary_owner": "LaravelEngineer (Services + Models)",
-      "dependencies": ["Architect (data model design)", "PM (payment creation logic)"],
-      "sub_requirements": {
-        "FR-7.1": {
-          "title": "Generate Payment Instructions",
-          "requirement": "System converts validated CSV rows into payment instruction records",
-          "criteria": [
-            "Each valid row becomes a payment instruction",
-            "Links to existing beneficiary records",
-            "Stores all payment metadata (amount, reference, reason, purpose code)",
-            "Maintains relationship to source upload file"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define payment instruction creation requirements",
-            "Architect": "Design PaymentInstruction model and relationships",
-            "ProjectManager": "Create tasks: (1) Create PaymentInstruction model, (2) Implement CSV to payment instruction conversion service",
-            "Engineer": [
-              "app/Models/PaymentInstruction.php",
-              "app/Services/PaymentInstructionService.php@createFromCsv",
-              "database/migrations/xxxx_create_payment_instructions_table.php"
-            ]
-          }
+    "Section_7_Status_Tracking_File_Management": {
+      "section_name": "Status Tracking and File Management",
+      "description": "Requirements for file status visibility, history, and lifecycle management",
+      "total_requirements": 11,
+      "requirements": {
+        "REQ-052": {
+          "requirement": "The system shall track payment files through the following states: Draft, Validating, Validation Failed, Awaiting Approval, Approved, Processing, Completed, and Failed.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's defined state machine",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "8 states tracked",
+            "State transitions enforced"
+          ]
         },
-        "FR-7.2": {
-          "title": "Beneficiary Linking",
-          "requirement": "System links payment instructions to existing beneficiary records",
-          "criteria": [
-            "Uses Recipient ID to match beneficiaries",
-            "Validates beneficiary still exists and is active",
-            "Stores client-specific payee ID if provided"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define beneficiary linking requirements",
-            "Architect": "Design relationship structure",
-            "ProjectManager": "Create task: Implement beneficiary linking logic",
-            "Engineer": [
-              "app/Services/PaymentInstructionService.php@linkBeneficiary",
-              "app/Models/PaymentInstruction.php (belongsTo relationship to TccBeneficiary)"
-            ]
-          }
+        "REQ-053": {
+          "requirement": "The system shall allow users to view the current processing status of uploaded payment files.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard status visibility",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Current status displayed",
+            "Status accessible from file list"
+          ]
+        },
+        "REQ-054": {
+          "requirement": "The system shall display clear status indicators (e.g., icons, colors) to distinguish between different file states.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard status visualization",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Icons or colors used for status",
+            "Visual distinction between states"
+          ]
+        },
+        "REQ-055": {
+          "requirement": "The system shall allow users to track progress while uploaded files are being validated or processed.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard progress tracking",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Progress tracking available",
+            "Real-time or near-real-time updates"
+          ]
+        },
+        "REQ-056": {
+          "requirement": "The system shall display processing progress for large payment files, including percentage complete or estimated time remaining.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard progress indicator pattern",
+          "priority": "P2",
+          "acceptance_criteria": [
+            "Percentage or time estimate shown",
+            "Progress updates regularly"
+          ]
+        },
+        "REQ-057": {
+          "requirement": "The system shall allow users to view a list of all previously uploaded payment files associated with their account.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard file history view",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "File history list available",
+            "List scoped to user's account"
+          ]
+        },
+        "REQ-058": {
+          "requirement": "The system shall maintain a complete history of all payment files processed by each client.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard record retention",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Complete file history maintained",
+            "No data loss"
+          ]
+        },
+        "REQ-059": {
+          "requirement": "The system shall allow users to filter file lists by status (e.g., draft, pending approval, completed).",
+          "classification": "project-specific",
+          "classification_rationale": "Standard list filtering",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Status filter available",
+            "Multiple status filters supported"
+          ]
+        },
+        "REQ-060": {
+          "requirement": "The system shall allow users to delete payment files that are still in draft or failed validation states.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's file lifecycle policy",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Delete available for draft/failed files",
+            "Deletion confirmed with user"
+          ]
+        },
+        "REQ-061": {
+          "requirement": "The system shall prevent users from deleting payment files that have already been approved or completed.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's audit and immutability rules",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Delete blocked for approved/completed files",
+            "Clear error message shown"
+          ]
+        },
+        "REQ-062": {
+          "requirement": "The system shall allow users to cancel file processing while in the validation stage.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard cancellation capability",
+          "priority": "P2",
+          "acceptance_criteria": [
+            "Cancel available during validation",
+            "Processing stops immediately"
+          ]
         }
       }
     },
 
-    "FR-8": {
-      "category": "Data Retrieval & Queries",
-      "primary_owner": "LaravelEngineer (Controllers + Repositories)",
-      "dependencies": ["Architect (API endpoint design)", "PM (query requirements)"],
-      "sub_requirements": {
-        "FR-8.1": {
-          "title": "Get Beneficiaries by Currency",
-          "requirement": "User can retrieve list of recipients filtered by currency",
-          "criteria": [
-            "Single currency filter",
-            "Returns active beneficiaries only",
-            "Includes all required beneficiary details for template"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define beneficiary filtering requirements",
-            "Architect": "Design GET /api/v1/beneficiaries?currency={code} endpoint",
-            "ProjectManager": "Create task: Implement beneficiary query endpoint",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/BeneficiaryController.php@index",
-              "app/Http/Resources/BeneficiaryResource.php"
-            ]
-          }
+    "Section_8_User_Permissions_Security": {
+      "section_name": "User Permissions and Security",
+      "description": "Requirements for role-based access control and separation of duties",
+      "total_requirements": 2,
+      "requirements": {
+        "REQ-063": {
+          "requirement": "The system shall restrict file upload, approval, and deletion capabilities to authorized users based on their assigned roles.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard RBAC pattern",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Role-based permissions enforced",
+            "Unauthorized actions blocked"
+          ]
         },
-        "FR-8.2": {
-          "title": "Get Beneficiaries by File",
-          "requirement": "User can retrieve all beneficiaries associated with specific upload file",
-          "criteria": ["Returns beneficiaries linked to payment instructions in that file"],
-          "agent_tasks": {
-            "ProductManager": "Define file-specific beneficiary query",
-            "Architect": "Design GET /api/v1/mass-payments/{id}/beneficiaries endpoint",
-            "ProjectManager": "Create task: Implement file beneficiaries endpoint",
-            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@beneficiaries"]
-          }
-        },
-        "FR-8.3": {
-          "title": "Get Draft Files",
-          "requirement": "User can view all files pending approval for their client",
-          "criteria": [
-            "Shows files in 'Pending Approval' status",
-            "Displays file summary information",
-            "Sortable by upload date"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define draft file listing requirements",
-            "Architect": "Design GET /api/v1/mass-payments?status=pending_approval endpoint",
-            "ProjectManager": "Create task: Add draft file filtering to index endpoint",
-            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@index (status filter)"]
-          }
-        },
-        "FR-8.4": {
-          "title": "Get File Errors List",
-          "requirement": "User can retrieve detailed error list for failed validation",
-          "criteria": [
-            "Shows row-by-row errors",
-            "Includes field names and error descriptions",
-            "Exportable format (CSV/JSON)"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define error export requirements",
-            "Architect": "Design GET /api/v1/mass-payments/{id}/errors endpoint",
-            "ProjectManager": "Create task: Implement file errors export endpoint",
-            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@errors"]
-          }
+        "REQ-064": {
+          "requirement": "The system shall enforce separation of duties by preventing uploaders from approving their own payment files.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard SoD control",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Self-approval prevented",
+            "SoD enforced system-wide"
+          ]
         }
       }
     },
 
-    "FR-9": {
-      "category": "File Management Actions",
-      "primary_owner": "LaravelEngineer (Controllers + Services)",
-      "dependencies": ["Architect (state management)", "PM (action permissions)"],
-      "sub_requirements": {
-        "FR-9.1": {
-          "title": "Delete File",
-          "requirement": "User can delete uploaded payment files",
-          "criteria": [
-            "Can delete files in draft or error status",
-            "Cannot delete files already approved/in progress",
-            "Soft delete or hard delete based on business rules",
-            "Audit trail maintained"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define delete permissions and constraints",
-            "Architect": "Design DELETE /api/v1/mass-payments/{id} endpoint",
-            "ProjectManager": "Create task: Implement file deletion with policy",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/MassPaymentController.php@destroy",
-              "app/Policies/MassPaymentFilePolicy.php@delete"
-            ]
-          }
+    "Section_9_Notifications_User_Communication": {
+      "section_name": "Notifications and User Communication",
+      "description": "Requirements for notifying users of validation results and payment processing",
+      "total_requirements": 3,
+      "requirements": {
+        "REQ-065": {
+          "requirement": "The system shall notify the file uploader when file validation is complete.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard process completion notification",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Notification sent to uploader",
+            "Notification includes validation result"
+          ]
         },
-        "FR-9.2": {
-          "title": "Update File Status",
-          "requirement": "System can update file status based on processing stages",
-          "criteria": [
-            "Status transitions follow defined workflow",
-            "Status changes are logged with timestamps",
-            "Users can query current status"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define status transition rules",
-            "Architect": "Design status transition service",
-            "ProjectManager": "Create task: Implement status transition service with logging",
-            "Engineer": [
-              "app/Services/FileStatusService.php@updateStatus",
-              "app/Models/MassPaymentFileStatusHistory.php",
-              "database/migrations/xxxx_create_mass_payment_file_status_histories_table.php"
-            ]
-          }
+        "REQ-066": {
+          "requirement": "The system shall notify the file uploader of validation failures with actionable guidance.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard error notification",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Failure notification sent",
+            "Actionable guidance included"
+          ]
+        },
+        "REQ-067": {
+          "requirement": "The system shall send email notifications to recipients and CC addresses once payments are successfully processed.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's customer communication requirement",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Email sent to recipient",
+            "CC addresses included",
+            "Email sent after successful processing"
+          ]
         }
       }
     },
 
-    "FR-10": {
-      "category": "Multi-Currency Support",
-      "primary_owner": "LaravelEngineer (Validation + Models)",
-      "dependencies": ["Architect (multi-currency design)", "PM (currency requirements)"],
-      "sub_requirements": {
-        "FR-10.1": {
-          "title": "Single Currency Per File",
-          "requirement": "Each upload file contains payments for only one currency",
-          "criteria": [
-            "Template downloaded for specific currency",
-            "Validation enforces single currency per file",
-            "File summary shows currency breakdown"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define single currency constraint",
-            "Architect": "Design currency validation and storage",
-            "ProjectManager": "Create task: Implement single currency validation",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@validateSingleCurrency",
-              "app/Models/MassPaymentFile.php (currency field)"
-            ]
-          }
+    "Section_10_Audit_Traceability": {
+      "section_name": "Audit and Traceability",
+      "description": "Requirements for activity logging and audit trail maintenance",
+      "total_requirements": 3,
+      "requirements": {
+        "REQ-068": {
+          "requirement": "The system shall record the timestamp and user identity for all file uploads, approvals, and status changes.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's audit requirements",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Timestamp recorded for all actions",
+            "User identity captured"
+          ]
         },
-        "FR-10.2": {
-          "title": "Currency-Specific Validation",
-          "requirement": "System applies different validation rules based on payment currency",
-          "examples": [
-            "INR requires invoice details",
-            "TRY business payments require incorporation number",
-            "Purpose codes vary by currency and country combination"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define currency-specific rules",
-            "Architect": "Design validation rule architecture",
-            "ProjectManager": "Create task: Implement currency-specific validation rules",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@applyCurrencyRules",
-              "app/Rules/InrInvoiceRequired.php",
-              "app/Rules/TryIncorporationRequired.php",
-              "app/Rules/ValidPurposeCode.php (currency + country dependent)"
-            ]
-          }
+        "REQ-069": {
+          "requirement": "The system shall maintain a complete audit trail of all actions taken on each payment file.",
+          "classification": "environment-specific",
+          "classification_rationale": "Volopa's regulatory compliance requirement",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Complete audit trail maintained",
+            "No gaps in audit log"
+          ]
+        },
+        "REQ-070": {
+          "requirement": "The system shall allow authorized users to view the audit history for any payment file.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard audit log access",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Audit history viewable",
+            "Access restricted to authorized users"
+          ]
         }
       }
     },
 
-    "FR-11": {
-      "category": "User Guidance",
-      "primary_owner": "LaravelProductManager (Documentation)",
-      "dependencies": ["Engineer (optional API endpoints for guidance data)"],
-      "sub_requirements": {
-        "FR-11.1": {
-          "title": "User Guide Access",
-          "requirement": "System provides access to user guide for completing payment file template",
-          "criteria": [
-            "Clickable link in upload journey (frontend links to guide)",
-            "Guide explains each field requirement",
-            "Includes examples and validation rules"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Create user guide content in PRD",
-            "Architect": "Design guidance data structure (optional API endpoint)",
-            "ProjectManager": "Create task: Add user guide content/endpoint",
-            "Engineer": [
-              "app/Http/Controllers/Api/V1/UserGuideController.php@show (optional)",
-              "resources/docs/mass_payment_guide.md"
-            ]
-          }
+    "Section_11_User_Experience_Guidance": {
+      "section_name": "User Experience and Guidance",
+      "description": "Requirements for help documentation, examples, and user feedback",
+      "total_requirements": 6,
+      "requirements": {
+        "REQ-071": {
+          "requirement": "The system shall provide accessible user guides explaining the complete mass payment workflow.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard documentation requirement",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "User guide available",
+            "Complete workflow documented"
+          ]
         },
-        "FR-11.2": {
-          "title": "Template Instructions",
-          "requirement": "Upload interface provides step-by-step guidance",
-          "steps": [
-            "Download file template (GET /api/v1/recipients/template?currency=EUR)",
-            "Fill in template with payment information (with link to user guide)",
-            "Upload completed file (POST /api/v1/mass-payments)",
-            "Review file summary (GET /api/v1/mass-payments/{id})"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define upload journey steps in PRD",
-            "Architect": "Design step-by-step API flow",
-            "ProjectManager": "Create task: Document API usage flow",
-            "Engineer": [
-              "API documentation (OpenAPI/Swagger spec)",
-              "README with API usage examples"
-            ]
-          }
-        }
-      }
-    },
-
-    "FR-12": {
-      "category": "Error Handling",
-      "primary_owner": "LaravelEngineer (Services + Resources)",
-      "dependencies": ["Architect (error response design)", "PM (error UX requirements)"],
-      "sub_requirements": {
-        "FR-12.1": {
-          "title": "Validation Failure Workflow",
-          "requirement": "When validation fails, user must fix errors and re-upload",
-          "criteria": [
-            "Clear error messages displayed",
-            "User cannot proceed with invalid file",
-            "File remains in 'Validation Failed' status until corrected"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define error handling workflow",
-            "Architect": "Design error response structure (422 status)",
-            "ProjectManager": "Create task: Implement validation error response handling",
-            "Engineer": [
-              "app/Http/Resources/ValidationErrorResource.php",
-              "app/Services/CsvValidationService.php (error collection)"
-            ]
-          }
+        "REQ-072": {
+          "requirement": "The system shall provide examples of correctly completed payment file templates.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard help documentation",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Example templates provided",
+            "Examples are accurate"
+          ]
         },
-        "FR-12.2": {
-          "title": "Partial Success Handling",
-          "requirement": "System handles files with mix of valid and invalid rows",
-          "criteria": [
-            "Shows count of valid vs. errored payments",
-            "Allows user to proceed with valid payments only",
-            "Provides error details for failed rows"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define partial success behavior",
-            "Architect": "Design partial success response structure",
-            "ProjectManager": "Create task: Implement partial success handling",
-            "Engineer": [
-              "app/Services/CsvValidationService.php@handlePartialSuccess",
-              "app/Http/Resources/PartialSuccessResource.php"
-            ]
-          }
-        }
-      }
-    },
-
-    "FR-13": {
-      "category": "Asynchronous Processing",
-      "primary_owner": "LaravelEngineer (Jobs + Queues)",
-      "dependencies": ["Architect (async architecture)", "PM (processing requirements)"],
-      "sub_requirements": {
-        "FR-13.1": {
-          "title": "Background Job Processing",
-          "requirement": "CSV validation runs as background job",
-          "criteria": [
-            "User receives immediate upload confirmation",
-            "Validation runs asynchronously",
-            "User can check status via polling or notifications"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define async processing requirements",
-            "Architect": "Design job queue architecture",
-            "ProjectManager": "Create tasks: (1) Create validation job for async processing, (2) Configure queue worker for file processing",
-            "Engineer": [
-              "app/Jobs/ValidateMassPaymentFileJob.php",
-              "app/Services/CsvValidationService.php (called by job)",
-              "config/queue.php (queue configuration)"
-            ]
-          }
+        "REQ-073": {
+          "requirement": "The system shall provide error resolution guidance for common validation failures.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard troubleshooting documentation",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Error resolution guide available",
+            "Common errors covered"
+          ]
         },
-        "FR-13.2": {
-          "title": "Progress Tracking",
-          "requirement": "User can monitor progress of file processing",
-          "criteria": [
-            "Status updates available in real-time or near-real-time",
-            "Shows current processing stage",
-            "Estimated completion time (optional)"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define progress tracking requirements",
-            "Architect": "Design progress update mechanism",
-            "ProjectManager": "Create task: Implement job progress tracking",
-            "Engineer": [
-              "app/Jobs/ValidateMassPaymentFileJob.php (progress updates)",
-              "app/Models/MassPaymentFile.php (progress field)",
-              "app/Http/Resources/FileProgressResource.php"
-            ]
-          }
-        }
-      }
-    },
-
-    "FR-14": {
-      "category": "Integration Requirements",
-      "primary_owner": "LaravelArchitect (Integration Design)",
-      "dependencies": ["Engineer (Implementation)"],
-      "sub_requirements": {
-        "FR-14.1": {
-          "title": "Admin Platform Integration",
-          "requirement": "Mass Payment feature integrates with admin.volopa platform",
-          "criteria": [
-            "Accessible from main navigation (frontend concern)",
-            "Consistent UI/UX with platform (frontend concern)",
-            "Single sign-on authentication (API enforces via middleware)"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define integration requirements in PRD",
-            "Architect": "Design authentication and navigation integration",
-            "ProjectManager": "Create task: Configure API authentication middleware",
-            "Engineer": [
-              "routes/api.php (auth middleware configuration)",
-              "app/Http/Middleware/VolopaAuthenticate.php (if custom auth)"
-            ]
-          }
+        "REQ-074": {
+          "requirement": "The system shall provide immediate visual feedback for all user actions (upload, validate, approve, delete).",
+          "classification": "project-specific",
+          "classification_rationale": "Standard UI feedback pattern",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Feedback shown for all actions",
+            "Feedback is immediate"
+          ]
         },
-        "FR-14.2": {
-          "title": "Existing Data Integration",
-          "requirement": "System integrates with existing Volopa data models",
-          "models": [
-            "TccBeneficiary (recipients)",
-            "TccAccount (client accounts)",
-            "TccPaymentPurposeCode (purpose codes)",
-            "ClientFeatures (feature flags)",
-            "User (authentication)"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Document existing data models in PRD",
-            "Architect": "Design relationships to existing models",
-            "ProjectManager": "Create tasks for each model integration",
-            "Engineer": [
-              "app/Models/PaymentInstruction.php (relationships to existing models)",
-              "app/Models/MassPaymentFile.php (relationships to TccAccount)"
-            ]
-          }
-        }
-      }
-    },
-
-    "FR-15": {
-      "category": "Security & Access Control",
-      "primary_owner": "LaravelEngineer (Policies + Middleware)",
-      "dependencies": ["Architect (security design)", "PM (access control requirements)"],
-      "sub_requirements": {
-        "FR-15.1": {
-          "title": "Client Data Isolation",
-          "requirement": "Users can only access their own client's data",
-          "criteria": [
-            "All queries filtered by client_id",
-            "No cross-client data visibility",
-            "Enforced at API level"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define data isolation requirements",
-            "Architect": "Design client_id filtering architecture",
-            "ProjectManager": "Create task: Implement global client_id scope",
-            "Engineer": [
-              "app/Models/MassPaymentFile.php (global scope for client_id)",
-              "app/Http/Middleware/EnforceClientIsolation.php"
-            ]
-          }
+        "REQ-075": {
+          "requirement": "The system shall display success confirmations when files are successfully uploaded, validated, or approved.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard success messaging",
+          "priority": "P1",
+          "acceptance_criteria": [
+            "Success messages displayed",
+            "Messages are clear and positive"
+          ]
         },
-        "FR-15.2": {
-          "title": "Role-Based Actions",
-          "requirement": "Different user roles have different permissions",
-          "roles": [
-            "Uploader: Can download templates, upload files, view status",
-            "Approver: Can approve files, view pending approvals",
-            "Admin: Full access to all client files (if applicable)"
-          ],
-          "agent_tasks": {
-            "ProductManager": "Define user roles and permissions",
-            "Architect": "Design RBAC architecture",
-            "ProjectManager": "Create tasks: (1) Implement role-based policies, (2) Add role checks to all endpoints",
-            "Engineer": [
-              "app/Policies/MassPaymentFilePolicy.php",
-              "app/Http/Middleware/CheckRole.php",
-              "app/Models/User.php (role methods)"
-            ]
-          }
+        "REQ-076": {
+          "requirement": "The system shall display clear error messages when operations fail, with guidance on next steps.",
+          "classification": "project-specific",
+          "classification_rationale": "Standard error messaging UX",
+          "priority": "P0",
+          "acceptance_criteria": [
+            "Error messages are clear",
+            "Next steps guidance provided"
+          ]
         }
       }
     }
   },
 
-  "summary_statistics": {
-    "total_functional_requirements": 15,
-    "total_sub_requirements": 42,
-    "estimated_tasks": 50,
-    "estimated_files": 40,
-    "key_user_journeys": 3,
-    "key_journeys": ["Download Template", "Upload CSV", "Review & Approve"],
-    "validation_types": 5,
-    "validation_categories": ["Format", "Size", "Data", "Conditional", "Business Rules"],
-    "file_statuses": 8,
-    "status_list": ["Uploading", "Validating", "Validation Failed", "Validation Successful", "Pending Approval", "Approved", "Completed", "Deleted"],
-    "maximum_capacity": 10000,
-    "capacity_description": "10,000 payment rows per CSV file"
+  "requirements_classification_summary": {
+    "total_requirements": 76,
+    "environment_specific": {
+      "count": 29,
+      "percentage": 38,
+      "description": "Requirements unique to Volopa's business context, regulatory environment, currency handling rules, or specific business processes"
+    },
+    "project_specific": {
+      "count": 47,
+      "percentage": 62,
+      "description": "General functionality patterns common to bulk payment processing systems, transferable to other similar systems"
+    },
+    "architectural_implications": "Environment-specific requirements should be externalized as business rules (currency validations, approval policies, data model specifics) from core processing logic. This enables easier configuration changes and potential reuse.",
+    "testing_strategy": "Environment-specific requirements require business rule testing and market-specific test scenarios. Project-specific requirements can leverage standard test patterns and shared test frameworks."
   },
 
   "technical_constraints": {
@@ -948,23 +965,64 @@
       "jobs": "app/Jobs/",
       "notifications": "app/Notifications/"
     },
+    "code_organization_by_classification": {
+      "environment_specific": [
+        "app/Config/ - Environment-Specific configs",
+        "app/Services/Volopa/ - Volopa-specific business rules",
+        "app/Validators/Rules/ - Environment-Specific validation rules",
+        "config/mass_payments.php - Currency rules, approval policies"
+      ],
+      "project_specific": [
+        "app/Services/Core/ - Reusable core services",
+        "app/Http/Controllers/Api/V1/ - Generic API controllers",
+        "app/Models/ - Generic models (can be extended)"
+      ]
+    },
     "volopa_specific": {
       "authentication": ["OAuth2", "WSSE"],
       "tenant_isolation": "client_id on all tables",
-      "currency_rules": "Currency-specific approval workflows",
+      "currency_rules": "Currency-specific approval workflows (REQ-042, REQ-043)",
+      "settlement_methods": ["Priority", "Regular", "Priority and Regular"],
+      "purpose_codes": "Dependent on Bank Country and Account Currency",
+      "regulatory_requirements": {
+        "INR": "Invoice Number and Invoice Date required",
+        "TRY": "Incorporation Number required for business recipients"
+      },
       "multi_tenant": true
     }
+  },
+
+  "summary_statistics": {
+    "total_sections": 11,
+    "total_requirements": 76,
+    "environment_specific_requirements": 29,
+    "project_specific_requirements": 47,
+    "priority_breakdown": {
+      "P0": "Core functionality (approx. 40 requirements)",
+      "P1": "Important features (approx. 28 requirements)",
+      "P2": "Nice to have (approx. 8 requirements)"
+    },
+    "key_user_journeys": 3,
+    "key_journeys": ["Download Template", "Upload & Validate CSV", "Review & Approve"],
+    "validation_types": 5,
+    "validation_categories": ["Format", "Structure", "Data", "Conditional", "Business Rules"],
+    "file_statuses": 8,
+    "status_list": ["Draft", "Validating", "Validation Failed", "Awaiting Approval", "Approved", "Processing", "Completed", "Failed"],
+    "maximum_capacity": 10000,
+    "capacity_description": "10,000 payment rows per CSV file"
   },
 
   "expected_outputs": {
     "LaravelProductManager": {
       "file": "docs/prd/volopa_mass_payments.md",
       "sections": [
-        "Business Requirements (15 FRs)",
-        "User Stories (mapped to FRs)",
+        "Business Requirements (76 requirements across 11 sections)",
+        "User Stories (mapped to requirements)",
         "Acceptance Criteria",
         "API Endpoint Specifications",
-        "Security and Compliance Requirements"
+        "Security and Compliance Requirements",
+        "Detailed Functional Requirements (ALL 76 requirements with priorities and classification)",
+        "Requirements Classification Summary"
       ]
     },
     "LaravelArchitect": {
@@ -978,28 +1036,38 @@
         "Validation Architecture",
         "Async Job Architecture",
         "Integration with Existing Volopa Models",
-        "Security Design (client isolation, RBAC)"
+        "Security Design (client isolation, RBAC)",
+        "Environment-Specific vs Project-Specific Design Patterns"
       ]
     },
     "LaravelProjectManager": {
       "file": "docs/task/volopa_mass_payments.json",
-      "content": "Task breakdown mapping 42 sub-requirements to ~50 implementation tasks with dependencies"
+      "content": "Task breakdown mapping 76 requirements to implementation tasks with dependencies"
     },
     "LaravelEngineer": {
       "directory": "app/",
       "files": {
         "models": 8,
         "controllers": 5,
-        "services": 6,
+        "services": 8,
         "form_requests": 4,
         "policies": 2,
         "api_resources": 8,
         "jobs": 2,
         "migrations": 5,
-        "validation_rules": 6,
-        "routes": 1
+        "validation_rules": 8,
+        "routes": 1,
+        "config": 1
       },
-      "total_files": 47
+      "total_files": 52,
+      "organization": "Environment-specific code in app/Services/Volopa/ and config/, project-specific code in app/Services/Core/"
+    },
+    "LaravelQaEngineer": {
+      "directory": "tests/",
+      "test_coverage": "ALL 76 requirements",
+      "test_naming": "test_{requirement_id}_{description}",
+      "environment_specific_tests": "Business rules and configuration (29 requirements)",
+      "project_specific_tests": "Generic behavior and edge cases (47 requirements)"
     }
   }
 }

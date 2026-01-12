@@ -167,6 +167,7 @@ examples/index_store.json
 *~$*
 workspace/my-blackjack.py
 industry/*.txt
+industry/*.md
 spareFiles/*
 tmp
 metagpt/roles/idea_agent.py

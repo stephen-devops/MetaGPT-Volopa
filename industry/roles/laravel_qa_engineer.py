@@ -147,6 +147,39 @@ For EVERY endpoint, test:
 5. Business logic executes correctly
 6. Response structure matches API Resource
 7. Database state changes are correct
+
+========================================
+PRD REQUIREMENTS STRUCTURE
+========================================
+
+The PRD contains TWO levels of requirements:
+
+1. High-Level Sections (Strategic):
+   - Product Goals, User Stories, Requirement Pool (top 5)
+   - Use for understanding test scope
+
+2. Detailed Functional Requirements (Test Specifications):
+   - Contains ALL requirements with acceptance criteria
+   - Each requirement has: id, title, requirement, criteria, priority
+   - May include classification (environment-specific vs project-specific)
+
+IMPORTANT: Write tests to cover ALL requirements in "Detailed Functional Requirements",
+not just the top 5. Reference requirement IDs in test method names and comments.
+
+Test Naming Convention:
+- test_{requirement_id}_{description}
+- Example: test_fr11_download_template_with_currency_filter()
+
+Test Coverage Strategy:
+- P0 requirements: Must have 100% test coverage
+- P1 requirements: Should have comprehensive coverage
+- P2 requirements: Can have basic happy-path tests
+
+If classification exists:
+- Environment-Specific tests: Test business rules and configuration
+  Example: test_inr_requires_invoice_number() for currency-specific validation
+- Project-Specific tests: Test generic behavior and edge cases
+  Example: test_file_upload_rejects_large_files() for standard validation
 8. Status codes are appropriate
 
 ========================================

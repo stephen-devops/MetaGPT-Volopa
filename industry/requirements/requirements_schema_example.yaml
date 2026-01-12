@@ -1,0 +1,1330 @@
+# Requirements Schema Example - TYPE (6-way) + CONTEXT (2-way)
+# Complex example demonstrating all classification patterns
+# Version: 3.0.0
+# Created: 2026-01-12
+
+project_metadata:
+  project_name: "Volopa Mass Payments API"
+  version: "3.0.0"
+  created_date: "2026-01-12"
+  framework: "Laravel 10+"
+  php_version: "8.2+"
+  api_prefix: "/api/v1"
+  max_file_capacity: 10000
+
+  # Statistics
+  total_statements: 89
+  environment_specific_count: 34
+  project_specific_count: 55
+
+  # Type distribution
+  type_breakdown:
+    intent: 8
+    requirement: 42
+    constraint: 18
+    flow: 12
+    interface: 6
+    design: 3
+
+  # Context distribution
+  context_breakdown:
+    environment_specific: 34  # 38%
+    project_specific: 55      # 62%
+
+  # Routing destinations
+  routing_breakdown:
+    pm_input: 50              # Intent + Requirement
+    context: 72               # Requirement + Constraint + Flow + Interface
+    architect_seeds: 15       # Design + Complex Flows
+
+# ============================================================================
+# INTENT STATEMENTS (High-level Goals and Vision)
+# TYPE: Intent | ROUTING: PM Input
+# ============================================================================
+
+intent_statements:
+  - id: INT-001
+    statement: "Enable business users to initiate bulk payment processing through the Volopa platform"
+    type: Intent
+    context: Environment-specific
+    context_rationale: "References Volopa's specific platform and business user persona"
+    routing: [PM_Input]
+    business_value: "Reduces manual payment processing time by 80%"
+    user_persona: "Volopa business users (finance teams)"
+
+  - id: INT-002
+    statement: "Provide seamless file upload and validation workflow for payment files"
+    type: Intent
+    context: Project-specific
+    context_rationale: "Generic UX goal applicable to any file processing system"
+    routing: [PM_Input]
+    business_value: "Improves user satisfaction and reduces errors"
+
+  - id: INT-003
+    statement: "Support efficient payment approval processes with notification system"
+    type: Intent
+    context: Environment-specific
+    context_rationale: "Volopa's specific approval workflow requirements"
+    routing: [PM_Input]
+    business_value: "Ensures financial controls and audit compliance"
+
+  - id: INT-004
+    statement: "Enable processing of high-volume payment batches up to 10,000 rows"
+    type: Intent
+    context: Environment-specific
+    context_rationale: "Volopa's defined capacity requirement based on business needs"
+    routing: [PM_Input]
+    business_value: "Supports enterprise clients with large payment volumes"
+
+  - id: INT-005
+    statement: "Provide comprehensive validation with clear error reporting"
+    type: Intent
+    context: Project-specific
+    context_rationale: "Universal data quality goal for any validation system"
+    routing: [PM_Input]
+    business_value: "Reduces rework and improves data accuracy"
+
+  - id: INT-006
+    statement: "Support multi-currency payment processing with regulatory compliance"
+    type: Intent
+    context: Environment-specific
+    context_rationale: "Volopa's international payment focus with specific currencies"
+    routing: [PM_Input]
+    business_value: "Enables global payment operations across 50+ currencies"
+
+  - id: INT-007
+    statement: "Maintain complete audit trail for regulatory compliance"
+    type: Intent
+    context: Environment-specific
+    context_rationale: "Volopa's specific regulatory requirements in fintech"
+    routing: [PM_Input]
+    business_value: "Ensures compliance with financial regulations and audits"
+
+  - id: INT-008
+    statement: "Provide real-time status tracking for payment processing"
+    type: Intent
+    context: Project-specific
+    context_rationale: "Standard transparency expectation for async operations"
+    routing: [PM_Input]
+    business_value: "Reduces support inquiries and improves user confidence"
+
+# ============================================================================
+# REQUIREMENTS (User-Facing Capabilities)
+# TYPE: Requirement | ROUTING: PM Input + Context
+# ============================================================================
+
+requirements:
+
+  # File Template Management
+  - id: REQ-001
+    statement: "Users can download CSV template for mass payments from Payments section"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "References Volopa's platform navigation structure"
+    category: "File Template Management"
+    priority: P0
+    user_story: "As a business user, I want to download a CSV template so that I can prepare payment data in the correct format"
+    acceptance_criteria:
+      - "Download link visible in Payments >> Batch Payments section"
+      - "CSV template is generated dynamically"
+      - "Template download succeeds with 200 status"
+    routing: [PM_Input, Context]
+
+  - id: REQ-002
+    statement: "Users can download recipient lists filtered by a single currency"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "Volopa's specific currency handling rule and single-currency constraint"
+    category: "File Template Management"
+    priority: P0
+    user_story: "As a business user, I want to filter recipients by currency so that I can comply with single-currency file rules"
+    acceptance_criteria:
+      - "Currency filter dropdown available on template download page"
+      - "Only recipients matching selected currency are included in template"
+      - "Pre-populated recipient data includes all required fields"
+    routing: [PM_Input, Context]
+    related_constraints: [CON-006]
+
+  - id: REQ-003
+    statement: "System pre-populates recipient information in downloaded templates to minimize manual entry"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard usability practice for any template generation system"
+    category: "File Template Management"
+    priority: P1
+    user_story: "As a business user, I want recipient information pre-filled so that I only need to enter payment amounts"
+    acceptance_criteria:
+      - "Recipient ID, Name, Bank Country, Account Currency pre-populated"
+      - "Available Settlement Methods pre-populated from recipient configuration"
+      - "Email addresses pre-populated when available"
+    routing: [PM_Input, Context]
+
+  - id: REQ-004
+    statement: "Users can enter payment details including amounts, settlement methods, and references into CSV"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Generic data entry capability for any payment system"
+    category: "Data Entry"
+    priority: P0
+    user_story: "As a business user, I want to enter payment amounts and references so that I can specify payment instructions"
+    acceptance_criteria:
+      - "Payment Amount field accepts positive decimal values"
+      - "Settlement Method accepts Priority or Regular"
+      - "Payment Reference accepts alphanumeric text up to 255 characters"
+    routing: [PM_Input, Context]
+
+  - id: REQ-005
+    statement: "Users can specify Purpose of Payment Code from dropdown dependent on Bank Country and Currency"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "Volopa's compliance with international payment purpose codes by country/currency"
+    category: "Data Entry"
+    priority: P0
+    user_story: "As a business user, I want to select appropriate payment purpose codes so that I comply with regulatory requirements"
+    acceptance_criteria:
+      - "Purpose codes filtered by recipient's Bank Country and Account Currency"
+      - "Invalid codes are rejected during validation"
+      - "Purpose code list sourced from Volopa's compliance database"
+    routing: [PM_Input, Context]
+    related_constraints: [CON-010, CON-011]
+
+  - id: REQ-006
+    statement: "Users can upload completed payment files using drag-and-drop or file browser"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard upload UX pattern for any web application"
+    category: "File Upload"
+    priority: P0
+    user_story: "As a business user, I want to upload my payment file easily so that I can submit payments quickly"
+    acceptance_criteria:
+      - "Drag-and-drop area accepts CSV files"
+      - "File browser fallback available"
+      - "Visual feedback shown during upload"
+      - "Progress indicator displays upload percentage"
+    routing: [PM_Input, Context]
+
+  - id: REQ-007
+    statement: "Users can view detailed validation errors with row number, column, value, and error description"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard error reporting pattern for data validation systems"
+    category: "Error Handling"
+    priority: P0
+    user_story: "As a business user, I want clear error messages so that I can quickly fix data issues"
+    acceptance_criteria:
+      - "Each error shows: row number, column name, provided value, error description"
+      - "Errors are grouped by row for easy correction"
+      - "Error list is downloadable as CSV"
+    routing: [PM_Input, Context]
+
+  - id: REQ-008
+    statement: "Users can correct errors and re-upload payment file"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard correction workflow for any validation system"
+    category: "Error Handling"
+    priority: P0
+    user_story: "As a business user, I want to fix errors and resubmit so that I don't have to start over"
+    acceptance_criteria:
+      - "Re-upload replaces previous file submission"
+      - "Previous validation errors are cleared"
+      - "New validation runs on re-uploaded file"
+    routing: [PM_Input, Context]
+
+  - id: REQ-009
+    statement: "Users can view file summary showing total, valid, and errored payment counts"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard summary dashboard for batch processing systems"
+    category: "File Review"
+    priority: P0
+    user_story: "As a business user, I want to see a summary so that I understand file processing status"
+    acceptance_criteria:
+      - "Summary displays: total rows, valid rows, errored rows"
+      - "Currency breakdown shown"
+      - "File name and upload timestamp displayed"
+    routing: [PM_Input, Context]
+
+  - id: REQ-010
+    statement: "Users can review file summary before proceeding or cancelling"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard confirmation step for any submission workflow"
+    category: "File Review"
+    priority: P0
+    user_story: "As a business user, I want to review before submitting so that I can verify correctness"
+    acceptance_criteria:
+      - "Review page shows complete file summary"
+      - "Proceed button advances to approval/processing"
+      - "Cancel button discards file"
+    routing: [PM_Input, Context]
+
+  - id: REQ-011
+    statement: "Users receive bell icon notifications when payment files require approval"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "Volopa's specific notification mechanism (bell icon in platform)"
+    category: "Approval Workflow"
+    priority: P0
+    user_story: "As an approver, I want immediate notification so that I can approve payments promptly"
+    acceptance_criteria:
+      - "Bell icon notification sent to all authorized approvers"
+      - "Notification includes file name and uploader identity"
+      - "Clicking notification navigates to approval page"
+    routing: [PM_Input, Context]
+
+  - id: REQ-012
+    statement: "First approver to click notification is redirected to Payment Confirmation Page"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "Volopa's specific approval workflow screens and page names"
+    category: "Approval Workflow"
+    priority: P0
+    user_story: "As an approver, I want to be the first to process approval so that payments are expedited"
+    acceptance_criteria:
+      - "First approver sees Payment Confirmation Page"
+      - "File is locked for other approvers"
+      - "Payment creation can be completed"
+    routing: [PM_Input, Context]
+    related_requirements: [REQ-013]
+
+  - id: REQ-013
+    statement: "Subsequent approvers are redirected to Draft Payments Page with informational message"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "Volopa's concurrent approval handling and page structure"
+    category: "Approval Workflow"
+    priority: P1
+    user_story: "As a subsequent approver, I want clear feedback so that I know someone else is handling approval"
+    acceptance_criteria:
+      - "Subsequent approvers redirected to Draft Payments Page"
+      - "Message indicates file is being processed by another approver"
+      - "No duplicate approval possible"
+    routing: [PM_Input, Context]
+
+  - id: REQ-014
+    statement: "Users can view current processing status of uploaded payment files"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard status visibility for any async processing system"
+    category: "Status Tracking"
+    priority: P0
+    user_story: "As a business user, I want to check status so that I know when processing is complete"
+    acceptance_criteria:
+      - "Status displayed on file list page"
+      - "Status values: Draft, Validating, Awaiting Approval, Approved, Processing, Completed, Failed"
+      - "Status updates in real-time or near-real-time"
+    routing: [PM_Input, Context]
+    related_flows: [FLOW-002]
+
+  - id: REQ-015
+    statement: "Users can track progress while files are being validated or processed"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard progress tracking for long-running operations"
+    category: "Status Tracking"
+    priority: P1
+    user_story: "As a business user, I want progress updates so that I know processing is active"
+    acceptance_criteria:
+      - "Progress indicator shown during validation"
+      - "Percentage complete or estimated time displayed"
+      - "Progress updates every 2-5 seconds"
+    routing: [PM_Input, Context]
+
+  - id: REQ-016
+    statement: "Users can view list of all previously uploaded payment files"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard file history view for document management systems"
+    category: "File Management"
+    priority: P0
+    user_story: "As a business user, I want to see file history so that I can track past submissions"
+    acceptance_criteria:
+      - "File list shows all files for user's client"
+      - "List includes: filename, upload date, status, uploader"
+      - "List is paginated (20 items per page)"
+    routing: [PM_Input, Context]
+
+  - id: REQ-017
+    statement: "Users can filter file lists by status"
+    type: Requirement
+    context: Project-specific
+    context_rationale: "Standard list filtering for any data table"
+    category: "File Management"
+    priority: P1
+    user_story: "As a business user, I want to filter by status so that I can find specific files quickly"
+    acceptance_criteria:
+      - "Status filter dropdown available"
+      - "Multiple status selections supported"
+      - "Filter updates list dynamically"
+    routing: [PM_Input, Context]
+
+  - id: REQ-018
+    statement: "Users can delete payment files in Draft or Failed validation states"
+    type: Requirement
+    context: Environment-specific
+    context_rationale: "Volopa's file lifecycle policy allowing deletion only for incomplete files"
+    category: "File Management"
+    priority: P1
+    user_story: "As a business user, I want to delete failed files so that I can clean up my workspace"
+    acceptance_criteria:
+      - "Delete button available for Draft and Failed files"
+      - "Confirmation dialog shown before deletion"
+      - "Deleted files removed from list"
+    routing: [PM_Input, Context]
+    related_constraints: [CON-015]
+
+# Additional requirements REQ-019 through REQ-042 would follow similar pattern...
+# For brevity, showing representative examples from each category
+
+# ============================================================================
+# CONSTRAINTS (Business Rules, Limits, Validation Rules)
+# TYPE: Constraint | ROUTING: Context
+# ============================================================================
+
+constraints:
+
+  # Capacity and Size Limits
+  - id: CON-001
+    statement: "System shall support up to 10,000 payment rows per file"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's business-defined capacity limit based on infrastructure and processing time"
+    category: "Capacity Limits"
+    priority: P0
+    enforcement: "Hard limit"
+    validation_rule: "row_count <= 10000"
+    error_message: "File exceeds maximum limit of 10,000 payment rows"
+    routing: [Context]
+    impact: "Critical - affects system scalability and performance design"
+
+  - id: CON-002
+    statement: "System shall reject files exceeding 10,000 rows immediately upon upload"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's processing capacity enforcement policy"
+    category: "Capacity Limits"
+    priority: P0
+    enforcement: "Pre-validation check"
+    validation_rule: "if row_count > 10000 then reject with 422 status"
+    error_message: "File rejected: contains {row_count} rows, maximum is 10,000"
+    routing: [Context]
+
+  - id: CON-003
+    statement: "Each uploaded file restricted to contain payments in one currency only"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa business rule for processing efficiency and settlement grouping"
+    category: "Data Rules"
+    priority: P0
+    enforcement: "Validation rule"
+    validation_rule: "count(distinct currency) == 1"
+    error_message: "File contains multiple currencies. Only single currency per file allowed."
+    routing: [Context]
+    impact: "Affects settlement processing and batch grouping logic"
+
+  - id: CON-004
+    statement: "Payment amounts must be positive numeric values"
+    type: Constraint
+    context: Project-specific
+    context_rationale: "Universal business logic - negative payments don't make sense"
+    category: "Data Validation"
+    priority: P0
+    enforcement: "Field validation"
+    validation_rule: "payment_amount > 0 AND is_numeric(payment_amount)"
+    error_message: "Payment amount must be a positive number"
+    routing: [Context]
+
+  - id: CON-005
+    statement: "Payment amounts must have maximum 2 decimal places"
+    type: Constraint
+    context: Project-specific
+    context_rationale: "Standard currency precision for monetary values"
+    category: "Data Validation"
+    priority: P0
+    enforcement: "Field validation"
+    validation_rule: "decimal_places(payment_amount) <= 2"
+    error_message: "Payment amount cannot have more than 2 decimal places"
+    routing: [Context]
+
+  # Currency-Specific Mandatory Fields
+  - id: CON-006
+    statement: "INR payments must include Invoice Number"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "India-specific regulatory requirement for cross-border payments"
+    category: "Regulatory Requirements"
+    priority: P0
+    enforcement: "Conditional validation"
+    validation_rule: "if currency == 'INR' then invoice_number IS NOT NULL AND invoice_number != ''"
+    error_message: "Invoice Number is mandatory for INR payments"
+    routing: [Context]
+    regulatory_source: "Reserve Bank of India (RBI) regulations"
+    countries_affected: ["India"]
+
+  - id: CON-007
+    statement: "INR payments must include Invoice Date"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "India-specific regulatory requirement for cross-border payments"
+    category: "Regulatory Requirements"
+    priority: P0
+    enforcement: "Conditional validation"
+    validation_rule: "if currency == 'INR' then invoice_date IS NOT NULL AND is_valid_date(invoice_date)"
+    error_message: "Invoice Date is mandatory for INR payments and must be valid date"
+    routing: [Context]
+    regulatory_source: "Reserve Bank of India (RBI) regulations"
+
+  - id: CON-008
+    statement: "TRY business recipients must include Incorporation Number"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Turkey-specific regulatory requirement for business payments"
+    category: "Regulatory Requirements"
+    priority: P0
+    enforcement: "Conditional validation"
+    validation_rule: "if currency == 'TRY' AND recipient_type == 'business' then incorporation_number IS NOT NULL"
+    error_message: "Incorporation Number is mandatory for Turkish Lira business recipient payments"
+    routing: [Context]
+    regulatory_source: "Turkish financial regulations"
+    countries_affected: ["Turkey"]
+
+  # Data Integrity Rules
+  - id: CON-009
+    statement: "Recipient IDs must exist in Volopa system before file processing"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Integration with Volopa's recipient database and data model"
+    category: "Data Integrity"
+    priority: P0
+    enforcement: "Database lookup validation"
+    validation_rule: "recipient_id EXISTS IN recipients WHERE client_id = current_client"
+    error_message: "Recipient ID {recipient_id} not found in system"
+    routing: [Context]
+
+  - id: CON-010
+    statement: "Settlement method must match recipient's available options"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's compliance with recipient-specific payment rails configuration"
+    category: "Data Integrity"
+    priority: P0
+    enforcement: "Cross-reference validation"
+    validation_rule: "settlement_method IN recipient.available_settlement_methods"
+    error_message: "Settlement method '{method}' not available for recipient {recipient_id}"
+    routing: [Context]
+
+  - id: CON-011
+    statement: "Purpose of Payment Code must be valid for recipient's Bank Country and Currency"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's compliance with country/currency-specific payment codes"
+    category: "Data Integrity"
+    priority: P0
+    enforcement: "Reference data validation"
+    validation_rule: "purpose_code EXISTS IN payment_purpose_codes WHERE country = recipient.bank_country AND currency = recipient.currency"
+    error_message: "Purpose code '{code}' is not valid for {country}/{currency}"
+    routing: [Context]
+
+  # Security and Authorization Rules
+  - id: CON-012
+    statement: "Users cannot approve their own uploaded payment files"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's separation of duties policy for financial controls"
+    category: "Security"
+    priority: P0
+    enforcement: "Authorization check"
+    validation_rule: "approver_id != uploader_id"
+    error_message: "You cannot approve your own payment file"
+    routing: [Context]
+    compliance_requirement: "SOD (Separation of Duties)"
+
+  - id: CON-013
+    statement: "Only authorized approvers can approve payment files"
+    type: Constraint
+    context: Project-specific
+    context_rationale: "Standard role-based access control pattern"
+    category: "Security"
+    priority: P0
+    enforcement: "Policy check"
+    validation_rule: "current_user HAS PERMISSION 'approve_payments'"
+    error_message: "Unauthorized: You do not have permission to approve payment files"
+    routing: [Context]
+
+  - id: CON-014
+    statement: "All database queries must filter by client_id for tenant isolation"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's multi-tenant architecture and data isolation model"
+    category: "Security"
+    priority: P0
+    enforcement: "Global scope on models"
+    validation_rule: "WHERE client_id = current_client_id (applied to all queries)"
+    routing: [Context]
+    implementation_note: "Use Laravel global scopes on all tenant-scoped models"
+
+  # File Lifecycle Rules
+  - id: CON-015
+    statement: "Approved or Completed files cannot be deleted"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's audit and immutability requirements for processed payments"
+    category: "File Lifecycle"
+    priority: P0
+    enforcement: "Authorization check"
+    validation_rule: "if status IN ['Approved', 'Processing', 'Completed'] then DENY deletion"
+    error_message: "Cannot delete file in {status} state. Only Draft or Failed files can be deleted."
+    routing: [Context]
+    compliance_requirement: "Audit trail preservation"
+
+  - id: CON-016
+    statement: "Uploaded files must be in CSV format"
+    type: Constraint
+    context: Project-specific
+    context_rationale: "Standard file format choice for tabular data exchange"
+    category: "File Format"
+    priority: P0
+    enforcement: "File type validation"
+    validation_rule: "file_extension IN ['.csv'] AND mime_type == 'text/csv'"
+    error_message: "Invalid file format. Only CSV files are accepted."
+    routing: [Context]
+
+  - id: CON-017
+    statement: "CSV files must contain all required columns in correct order"
+    type: Constraint
+    context: Environment-specific
+    context_rationale: "Volopa's defined CSV template structure"
+    category: "File Format"
+    priority: P0
+    enforcement: "Structure validation"
+    validation_rule: "csv_headers == expected_template_headers"
+    error_message: "CSV structure mismatch. Please use the provided template."
+    routing: [Context]
+    expected_columns: ["Recipient ID", "Payment Amount", "Settlement Method", "Payment Reference", "Purpose Code", "Invoice Number", "Invoice Date", "Incorporation Number"]
+
+  - id: CON-018
+    statement: "Email addresses must be valid format"
+    type: Constraint
+    context: Project-specific
+    context_rationale: "Universal email validation for any system"
+    category: "Data Validation"
+    priority: P0
+    enforcement: "Field validation"
+    validation_rule: "matches_regex(email, RFC5322_EMAIL_PATTERN)"
+    error_message: "Invalid email format: {email}"
+    routing: [Context]
+
+# ============================================================================
+# FLOWS (Sequences, State Transitions, Workflows)
+# TYPE: Flow | ROUTING: Context + Architect Seeds (if complex)
+# ============================================================================
+
+flows:
+
+  - id: FLOW-001
+    statement: "After upload completes, system validates file asynchronously via queue job"
+    type: Flow
+    context: Project-specific
+    context_rationale: "Standard async processing pattern for large file operations"
+    category: "Upload Workflow"
+    priority: P0
+    sequence:
+      - step: 1
+        action: "User uploads CSV file via drag-and-drop or file browser"
+        actor: "Business User"
+      - step: 2
+        action: "API endpoint receives file, stores in temporary location"
+        actor: "MassPaymentController"
+      - step: 3
+        action: "File record created in database with status 'Draft'"
+        actor: "MassPaymentService"
+      - step: 4
+        action: "201 Created response returned immediately with file ID"
+        actor: "API"
+      - step: 5
+        action: "ValidatePaymentFileJob dispatched to queue"
+        actor: "MassPaymentService"
+      - step: 6
+        action: "User receives status update when validation completes"
+        actor: "Notification System"
+    trigger: "File upload completion"
+    outcome: "File queued for validation, user notified"
+    routing: [Context]
+    design_considerations:
+      - "Prevents timeout for large files (10k rows)"
+      - "Provides immediate user feedback"
+      - "Enables status polling pattern"
+
+  - id: FLOW-002
+    statement: "Payment file status transitions through defined state machine"
+    type: Flow
+    context: Environment-specific
+    context_rationale: "Volopa's specific state machine design with 8 distinct states"
+    category: "Status Management"
+    priority: P0
+    states:
+      - Draft
+      - Validating
+      - Validation_Failed
+      - Awaiting_Approval
+      - Approved
+      - Processing
+      - Completed
+      - Failed
+    state_transitions:
+      - from: "Draft"
+        to: "Validating"
+        trigger: "Validation job starts"
+      - from: "Validating"
+        to: "Validation_Failed"
+        trigger: "Validation errors detected"
+      - from: "Validating"
+        to: "Awaiting_Approval"
+        trigger: "Validation succeeds AND approval required"
+      - from: "Validating"
+        to: "Processing"
+        trigger: "Validation succeeds AND no approval required"
+      - from: "Validation_Failed"
+        to: "Draft"
+        trigger: "User re-uploads corrected file"
+      - from: "Awaiting_Approval"
+        to: "Approved"
+        trigger: "Approver approves file"
+      - from: "Approved"
+        to: "Processing"
+        trigger: "Payment creation job starts"
+      - from: "Processing"
+        to: "Completed"
+        trigger: "All payments created successfully"
+      - from: "Processing"
+        to: "Failed"
+        trigger: "Payment creation encounters error"
+    routing: [Context, Architect_Seeds]
+    design_considerations:
+      - "State transitions must be atomic"
+      - "Audit log entry created for each transition"
+      - "Invalid transitions should be prevented at database level"
+
+  - id: FLOW-003
+    statement: "Approval notification sent to all approvers, first to click gets exclusive access"
+    type: Flow
+    context: Environment-specific
+    context_rationale: "Volopa's concurrent approval handling with race condition management"
+    category: "Approval Workflow"
+    priority: P0
+    sequence:
+      - step: 1
+        action: "File status transitions to 'Awaiting_Approval'"
+        actor: "System"
+      - step: 2
+        action: "System identifies all authorized approvers for client"
+        actor: "ApprovalService"
+      - step: 3
+        action: "Bell icon notification sent to all approvers simultaneously"
+        actor: "NotificationService"
+      - step: 4
+        action: "First approver clicks notification"
+        actor: "Approver 1"
+      - step: 5
+        action: "System locks file and redirects to Payment Confirmation Page"
+        actor: "System"
+      - step: 6
+        action: "Subsequent approver clicks notification"
+        actor: "Approver 2"
+      - step: 7
+        action: "System detects file is locked, redirects to Draft Payments Page with message"
+        actor: "System"
+    trigger: "File validation completes with approval requirement"
+    outcome: "One approver gains exclusive access, others informed"
+    routing: [Context, Architect_Seeds]
+    race_condition_handling: "Database row locking with `locked_by_user_id` and `locked_at` timestamp"
+    design_considerations:
+      - "Race condition between concurrent approvers"
+      - "Lock timeout strategy needed (e.g., 15 minutes)"
+      - "Lock release on approver abandonment"
+
+  - id: FLOW-004
+    statement: "When validation fails, user receives notification with error details and can re-upload"
+    type: Flow
+    context: Project-specific
+    context_rationale: "Standard error correction workflow for validation systems"
+    category: "Error Handling"
+    priority: P0
+    sequence:
+      - step: 1
+        action: "Validation job detects errors"
+        actor: "ValidatePaymentFileJob"
+      - step: 2
+        action: "File status updated to 'Validation_Failed'"
+        actor: "System"
+      - step: 3
+        action: "Error records saved to database (row, column, value, error)"
+        actor: "ValidationErrorService"
+      - step: 4
+        action: "Notification sent to uploader with error summary"
+        actor: "NotificationService"
+      - step: 5
+        action: "User views error details on file detail page"
+        actor: "Business User"
+      - step: 6
+        action: "User downloads error list as CSV"
+        actor: "Business User"
+      - step: 7
+        action: "User corrects errors in original CSV"
+        actor: "Business User"
+      - step: 8
+        action: "User re-uploads corrected file (replaces previous upload)"
+        actor: "Business User"
+      - step: 9
+        action: "Flow returns to FLOW-001 (async validation)"
+        actor: "System"
+    trigger: "Validation errors detected"
+    outcome: "User corrects and resubmits file"
+    routing: [Context]
+
+  - id: FLOW-005
+    statement: "CSV template generation filters recipients by currency and pre-populates data"
+    type: Flow
+    context: Environment-specific
+    context_rationale: "Volopa's specific template generation with currency filtering"
+    category: "Template Generation"
+    priority: P0
+    sequence:
+      - step: 1
+        action: "User navigates to Payments >> Batch Payments"
+        actor: "Business User"
+      - step: 2
+        action: "User clicks 'Download Template' and selects currency filter"
+        actor: "Business User"
+      - step: 3
+        action: "API queries recipients WHERE client_id = current_client AND currency = selected_currency"
+        actor: "RecipientService"
+      - step: 4
+        action: "System generates CSV with pre-populated recipient data"
+        actor: "TemplateGenerationService"
+      - step: 5
+        action: "CSV includes headers + recipient rows with empty payment fields"
+        actor: "System"
+      - step: 6
+        action: "CSV file returned as download (200 OK with Content-Disposition: attachment)"
+        actor: "API"
+    trigger: "User requests template download with currency filter"
+    outcome: "User receives pre-populated CSV template"
+    routing: [Context]
+    performance_consideration: "For clients with >1000 recipients, consider async generation with download link"
+
+  # Additional flows FLOW-006 through FLOW-012 would follow similar pattern...
+
+# ============================================================================
+# INTERFACES (API Endpoints, CSV Structure, UI Touchpoints)
+# TYPE: Interface | ROUTING: Context + PM Input (if user-facing)
+# ============================================================================
+
+interfaces:
+
+  # API Endpoints
+  - id: INT-001
+    statement: "POST /api/v1/mass-payments to upload payment file"
+    type: Interface
+    context: Project-specific
+    context_rationale: "RESTful API standard for resource creation"
+    category: "API Endpoints"
+    priority: P0
+    http_method: POST
+    endpoint: "/api/v1/mass-payments"
+    authentication: "Required (OAuth2/WSSE middleware)"
+    request_format:
+      content_type: "multipart/form-data"
+      fields:
+        - name: "file"
+          type: "file"
+          required: true
+          description: "CSV file containing payment instructions"
+        - name: "description"
+          type: "string"
+          required: false
+          description: "Optional file description"
+    response_format:
+      success:
+        status_code: 201
+        body:
+          id: "integer (file ID)"
+          status: "string (Draft)"
+          filename: "string"
+          uploaded_at: "timestamp"
+          uploaded_by: "integer (user ID)"
+      error:
+        status_code: 422
+        body:
+          message: "Validation error message"
+          errors: "object with field-specific errors"
+    routing: [Context]
+    rate_limiting: "100 requests per hour per client"
+
+  - id: INT-002
+    statement: "GET /api/v1/mass-payments/{id} to retrieve file details and status"
+    type: Interface
+    context: Project-specific
+    context_rationale: "RESTful API standard for resource retrieval"
+    category: "API Endpoints"
+    priority: P0
+    http_method: GET
+    endpoint: "/api/v1/mass-payments/{id}"
+    authentication: "Required (OAuth2/WSSE middleware)"
+    path_parameters:
+      - name: "id"
+        type: "integer"
+        description: "Mass payment file ID"
+    response_format:
+      success:
+        status_code: 200
+        body:
+          id: "integer"
+          filename: "string"
+          status: "string (8 possible values)"
+          total_rows: "integer"
+          valid_rows: "integer"
+          error_rows: "integer"
+          currency: "string (3-letter code)"
+          uploaded_at: "timestamp"
+          uploaded_by: "object (user details)"
+          validation_errors: "array (if status = Validation_Failed)"
+      error_404:
+        status_code: 404
+        body:
+          message: "Mass payment file not found"
+    routing: [Context]
+    authorization: "User must belong to same client_id as file"
+
+  - id: INT-003
+    statement: "GET /api/v1/mass-payments to list all files with pagination and filtering"
+    type: Interface
+    context: Project-specific
+    context_rationale: "RESTful API standard for collection listing"
+    category: "API Endpoints"
+    priority: P0
+    http_method: GET
+    endpoint: "/api/v1/mass-payments"
+    authentication: "Required (OAuth2/WSSE middleware)"
+    query_parameters:
+      - name: "status"
+        type: "string"
+        required: false
+        description: "Filter by status (comma-separated for multiple)"
+      - name: "page"
+        type: "integer"
+        required: false
+        default: 1
+        description: "Page number for pagination"
+      - name: "per_page"
+        type: "integer"
+        required: false
+        default: 20
+        description: "Items per page (max 100)"
+    response_format:
+      success:
+        status_code: 200
+        body:
+          data: "array of file objects"
+          meta:
+            current_page: "integer"
+            per_page: "integer"
+            total: "integer"
+            last_page: "integer"
+    routing: [Context]
+    performance: "Paginated with default 20 items per page, eager load relationships"
+
+  - id: INT-004
+    statement: "GET /api/v1/templates/mass-payment-csv to download CSV template"
+    type: Interface
+    context: Environment-specific
+    context_rationale: "Volopa-specific template endpoint with currency filtering"
+    category: "API Endpoints"
+    priority: P0
+    http_method: GET
+    endpoint: "/api/v1/templates/mass-payment-csv"
+    authentication: "Required (OAuth2/WSSE middleware)"
+    query_parameters:
+      - name: "currency"
+        type: "string"
+        required: true
+        description: "3-letter currency code to filter recipients"
+    response_format:
+      success:
+        status_code: 200
+        content_type: "text/csv"
+        headers:
+          Content-Disposition: "attachment; filename=\"mass_payment_template_{currency}_{date}.csv\""
+        body: "CSV file with headers + pre-populated recipient rows"
+    routing: [Context, PM_Input]
+
+  # CSV File Structure
+  - id: INT-005
+    statement: "CSV template structure with 16 columns in specific order"
+    type: Interface
+    context: Environment-specific
+    context_rationale: "Volopa's defined payment data model and required fields"
+    category: "CSV Structure"
+    priority: P0
+    file_format: "CSV (UTF-8 encoding)"
+    columns:
+      - name: "Recipient ID"
+        type: "integer"
+        required: true
+        pre_populated: true
+        description: "Volopa internal recipient identifier"
+      - name: "Client Recipient ID"
+        type: "string"
+        required: false
+        pre_populated: true
+        description: "Client's own reference for recipient"
+      - name: "Recipient Name"
+        type: "string"
+        required: true
+        pre_populated: true
+        description: "Full name of recipient"
+      - name: "Recipient Bank Country"
+        type: "string (2-letter code)"
+        required: true
+        pre_populated: true
+        description: "Country where recipient bank is located"
+      - name: "Recipient Account Currency"
+        type: "string (3-letter code)"
+        required: true
+        pre_populated: true
+        description: "Currency of recipient's bank account"
+      - name: "Available Settlement Methods"
+        type: "string"
+        required: false
+        pre_populated: true
+        description: "Priority, Regular, or Priority and Regular"
+      - name: "Recipient Email Address"
+        type: "string (email)"
+        required: false
+        pre_populated: true
+        description: "Email for payment notification"
+      - name: "CC Email Address"
+        type: "string (email)"
+        required: false
+        pre_populated: false
+        description: "Additional notification recipient"
+      - name: "Payment Amount"
+        type: "decimal (2 places)"
+        required: true
+        pre_populated: false
+        description: "Amount to pay (positive number)"
+      - name: "Settlement Method"
+        type: "string"
+        required: true
+        pre_populated: false
+        description: "Priority or Regular (must match Available Settlement Methods)"
+      - name: "Payment Reason"
+        type: "string"
+        required: false
+        pre_populated: false
+        description: "Free text description of payment purpose"
+      - name: "Payment Reference"
+        type: "string (max 255)"
+        required: false
+        pre_populated: false
+        description: "Client's reference for payment tracking"
+      - name: "Purpose of Payment Code"
+        type: "string"
+        required: true
+        pre_populated: false
+        description: "Code from dropdown dependent on Bank Country and Currency"
+      - name: "Invoice Number"
+        type: "string"
+        required: "conditional (required if currency = INR)"
+        pre_populated: false
+        description: "Invoice number for INR payments"
+      - name: "Invoice Date"
+        type: "date (YYYY-MM-DD)"
+        required: "conditional (required if currency = INR)"
+        pre_populated: false
+        description: "Invoice date for INR payments"
+      - name: "Incorporation Number"
+        type: "string"
+        required: "conditional (required if currency = TRY and recipient_type = business)"
+        pre_populated: false
+        description: "Business incorporation number for TRY payments"
+    routing: [Context, PM_Input]
+    validation_order: "Validate structure → Validate data types → Validate business rules → Validate cross-field constraints"
+
+  # UI Navigation Touchpoints
+  - id: INT-006
+    statement: "Batch Payments feature accessible from Payments >> Batch Payments navigation menu"
+    type: Interface
+    context: Environment-specific
+    context_rationale: "Volopa platform's specific menu structure and navigation"
+    category: "UI Navigation"
+    priority: P0
+    navigation_path: "Payments >> Batch Payments"
+    screen_name: "Batch Payments Dashboard"
+    access_control: "Requires 'mass_payments' permission"
+    routing: [Context, PM_Input]
+
+# ============================================================================
+# DESIGN CHOICES (Architectural Patterns, Technical Decisions)
+# TYPE: Design | ROUTING: Architect Seeds
+# ============================================================================
+
+design_choices:
+
+  - id: DES-001
+    statement: "Use Laravel Queue Jobs for async file validation and processing"
+    type: Design
+    context: Project-specific
+    context_rationale: "Standard Laravel pattern for background processing"
+    category: "Async Processing"
+    priority: P0
+    rationale: "Prevents timeout for 10k row files; enables immediate user response; provides retry capability"
+    pattern: "Job Queue Pattern"
+    implementation:
+      - "ValidatePaymentFileJob - runs validation asynchronously"
+      - "ProcessPaymentFileJob - creates payments asynchronously"
+      - "Queue: 'mass-payments' with dedicated workers"
+      - "Failed jobs logged to 'failed_jobs' table for manual intervention"
+    alternatives_considered:
+      - name: "Synchronous processing"
+        rejected_reason: "Causes timeout and poor UX for large files"
+      - name: "External queue system (RabbitMQ, Redis)"
+        rejected_reason: "Laravel's built-in queue sufficient for current scale"
+    routing: [Architect_Seeds]
+
+  - id: DES-002
+    statement: "Design thin controllers with service layer for business logic"
+    type: Design
+    context: Project-specific
+    context_rationale: "Universal separation of concerns pattern for MVC applications"
+    category: "Architecture Pattern"
+    priority: P0
+    rationale: "Improves testability, reusability, and maintainability; keeps controllers focused on HTTP concerns"
+    pattern: "Service Layer Pattern"
+    implementation:
+      - "Controllers: Handle HTTP (validation, authorization, response formatting)"
+      - "Services: Contain business logic (domain operations, orchestration)"
+      - "Models: Data access and relationships only"
+    code_organization:
+      - "app/Http/Controllers/Api/V1/MassPaymentController.php - thin controller"
+      - "app/Services/MassPaymentService.php - business logic"
+      - "app/Services/ValidationService.php - validation orchestration"
+    routing: [Architect_Seeds]
+
+  - id: DES-003
+    statement: "Design global scope on all models for client_id filtering (tenant isolation)"
+    type: Design
+    context: Environment-specific
+    context_rationale: "Volopa's specific multi-tenant data model requiring automatic client isolation"
+    category: "Multi-Tenancy"
+    priority: P0
+    rationale: "Ensures data isolation between clients; prevents accidental cross-tenant data access; reduces boilerplate WHERE clauses"
+    pattern: "Global Scope Pattern (Laravel)"
+    implementation:
+      - "Create ClientScopeTrait with global scope"
+      - "Apply trait to all tenant-scoped models (MassPaymentFile, PaymentInstruction, etc.)"
+      - "Global scope automatically adds WHERE client_id = current_client to all queries"
+      - "Scope can be bypassed with ->withoutGlobalScope('client') for admin operations"
+    security_impact: "Critical - prevents data leakage between tenants"
+    routing: [Architect_Seeds, Context]
+
+# ============================================================================
+# ROUTING TABLE (How Statements Route to Output Files)
+# ============================================================================
+
+routing_table:
+
+  pm_input_md:
+    description: "Clean narrative for ProductManager to create PRD"
+    statement_types: [Intent, Requirement]
+    contexts: [Environment-specific, Project-specific]
+    total_statements: 50
+    format: "Markdown"
+    structure:
+      - "## Project Intent (8 intent statements)"
+      - "## User Requirements by Category (42 requirement statements)"
+      - "## User-Facing Interfaces (select interface statements)"
+
+  project_context_yaml:
+    description: "Canonical structured truth for all agents"
+    statement_types: [Requirement, Constraint, Flow, Interface]
+    contexts: [Environment-specific, Project-specific]
+    total_statements: 72
+    format: "YAML"
+    structure:
+      - "requirements: (requirements with routing to Context)"
+      - "constraints: (all constraint statements)"
+      - "flows: (all flow statements)"
+      - "interfaces: (all interface statements)"
+      - "design_mandates: (environment-specific non-negotiable designs)"
+
+  architect_seeds_md:
+    description: "Design hints, conflicts, and open questions for Architect"
+    statement_types: [Design, Flow]
+    conditions: "Complex flows or unresolved design questions"
+    contexts: [Environment-specific, Project-specific]
+    total_statements: 15
+    format: "Markdown"
+    structure:
+      - "## Design Patterns (3 design choice statements)"
+      - "## Complex Flows (flows requiring architectural decisions)"
+      - "## Open Questions (unresolved ambiguities)"
+      - "## Mandated Choices (non-negotiable environment-specific designs)"
+
+# ============================================================================
+# CLASSIFICATION SUMMARY & STATISTICS
+# ============================================================================
+
+classification_summary:
+
+  by_type:
+    intent: 8
+    requirement: 42
+    constraint: 18
+    flow: 12
+    interface: 6
+    design: 3
+    total: 89
+
+  by_context:
+    environment_specific: 34  # 38%
+    project_specific: 55      # 62%
+    total: 89
+
+  by_context_and_type:
+    intent:
+      environment_specific: 4
+      project_specific: 4
+    requirement:
+      environment_specific: 16
+      project_specific: 26
+    constraint:
+      environment_specific: 12
+      project_specific: 6
+    flow:
+      environment_specific: 3
+      project_specific: 9
+    interface:
+      environment_specific: 3
+      project_specific: 3
+    design:
+      environment_specific: 1
+      project_specific: 2
+
+  by_routing_destination:
+    pm_input: 50
+    context: 72
+    architect_seeds: 15
+    # Note: Some statements route to multiple destinations
+
+  by_priority:
+    P0: 67  # Critical functionality
+    P1: 18  # Important features
+    P2: 4   # Nice to have
+
+  by_category:
+    File_Template_Management: 8
+    Data_Entry: 5
+    File_Upload: 4
+    Error_Handling: 6
+    File_Review: 4
+    Approval_Workflow: 8
+    Status_Tracking: 6
+    File_Management: 8
+    Capacity_Limits: 3
+    Data_Validation: 8
+    Regulatory_Requirements: 6
+    Data_Integrity: 5
+    Security: 5
+    File_Lifecycle: 3
+    Upload_Workflow: 3
+    Status_Management: 2
+    API_Endpoints: 4
+    CSV_Structure: 1
+    UI_Navigation: 1
+    Async_Processing: 1
+    Architecture_Pattern: 1
+    Multi_Tenancy: 1
+
+# ============================================================================
+# VALIDATION METRICS
+# ============================================================================
+
+validation_metrics:
+  completeness_checks:
+    - check: "All statements have type classification"
+      status: "PASS"
+      count: "89/89"
+    - check: "All statements have context classification"
+      status: "PASS"
+      count: "89/89"
+    - check: "All statements have context_rationale"
+      status: "PASS"
+      count: "89/89"
+    - check: "All statements have routing destination"
+      status: "PASS"
+      count: "89/89"
+
+  distribution_checks:
+    - check: "Environment-specific percentage within expected range (20-40%)"
+      status: "PASS"
+      value: "38%"
+    - check: "Intent statements present"
+      status: "PASS"
+      count: 8
+    - check: "Requirements form majority of statements"
+      status: "PASS"
+      percentage: "47%"
+
+  quality_checks:
+    - check: "Context rationales are substantive (>20 chars)"
+      status: "PASS"
+      count: "89/89"
+    - check: "Constraints have validation_rule defined"
+      status: "PASS"
+      count: "18/18"
+    - check: "Flows have sequence or state_transitions defined"
+      status: "PASS"
+      count: "12/12"
+    - check: "Interfaces have endpoint or structure details"
+      status: "PASS"
+      count: "6/6"
+
+# ============================================================================
+# USAGE NOTES
+# ============================================================================
+
+usage_notes:
+  for_product_manager:
+    - "Read Intent and Requirement statements from this file"
+    - "Intent statements provide vision and business value"
+    - "Requirement statements with routing to PM_Input are your input"
+    - "Transform these into PRD with user stories and acceptance criteria"
+    - "Ignore Design and Flow details - those are for Architect"
+
+  for_architect:
+    - "Read all statement types - comprehensive view needed"
+    - "Constraints define hard rules your design must satisfy"
+    - "Flows show sequences your architecture must support"
+    - "Interfaces define contracts your API must implement"
+    - "Design statements in architect_seeds are starting points for decisions"
+    - "Environment-specific constraints: externalize as config/business rules"
+    - "Project-specific patterns: implement as reusable core logic"
+
+  for_engineer:
+    - "Read Constraints, Flows, Interfaces, and Design statements"
+    - "Constraints map directly to validation rules in FormRequests"
+    - "Flows map to service methods and job sequences"
+    - "Interfaces map to routes, controllers, and API Resources"
+    - "Design statements define code organization patterns"
+    - "Environment-specific: place in app/Services/Volopa/ or config/"
+    - "Project-specific: place in app/Services/Core/ and standard Laravel locations"
+
+  for_qa_engineer:
+    - "Each statement with validation_rule becomes a test case"
+    - "Each flow sequence becomes an integration test"
+    - "Each constraint with error_message needs negative test"
+    - "Test IDs should reference statement IDs (e.g., test_CON_001)"
+    - "Environment-specific: test business rules and configuration"
+    - "Project-specific: test generic behavior and edge cases"
