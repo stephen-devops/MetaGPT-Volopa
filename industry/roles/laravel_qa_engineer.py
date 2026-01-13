@@ -7,10 +7,10 @@
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Dict, Any
 from metagpt.roles.qa_engineer import QaEngineer
-from metagpt.actions import WriteTest
 
 
 class LaravelQaEngineer(QaEngineer):
@@ -61,22 +61,130 @@ class LaravelQaEngineer(QaEngineer):
         self._build_test_constraints()
 
     def _load_architectural_requirements(self) -> Dict[str, Any]:
-        """Load architectural design patterns to test"""
-        json_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements.json"
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        """Load architectural design patterns to test from NLP markdown"""
+        md_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements_nlp.md"
+        with open(md_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Simple extraction for QA Engineer - we mainly need the mental model
+        return {
+            "meta": {
+                "source": "architectural_requirements_nlp.md",
+                "title": "Laravel Architectural Requirements"
+            },
+            "mental_model": {
+                "flow": "Client → route → controller → FormRequest → service/model → API Resource → JSON",
+                "layers": {
+                    "routing_layer": {"responsibility": "API versioning, auth"},
+                    "controller_layer": {"responsibility": "Route requests"},
+                    "validation_layer": {"responsibility": "Validation & auth"},
+                    "domain_layer": {"responsibility": "Business logic"},
+                    "response_layer": {"responsibility": "Output transform"}
+                }
+            },
+            "content": content
+        }
 
     def _load_technical_requirements(self) -> Dict[str, Any]:
-        """Load implementation patterns to test"""
-        json_path = Path(__file__).parent.parent / "requirements" / "technical_requirements.json"
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        """Load implementation patterns to test from NLP markdown"""
+        md_path = Path(__file__).parent.parent / "requirements" / "technical_requirements_nlp.md"
+        with open(md_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        return {
+            "meta": {
+                "source": "technical_requirements_nlp.md",
+                "title": "Laravel Technical Implementation Requirements"
+            },
+            "content": content
+        }
 
     def _load_user_requirements(self) -> Dict[str, Any]:
-        """Load functional requirements to test"""
-        json_path = Path(__file__).parent.parent / "requirements" / "user_requirements.json"
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        """Load functional requirements to test from NLP markdown"""
+        md_path = Path(__file__).parent.parent / "requirements" / "user_requirements_nlp.md"
+        with open(md_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        return self._parse_user_requirements(content)
+
+    def _parse_user_requirements(self, content: str) -> Dict[str, Any]:
+        """
+        Parse user requirements from NLP markdown file.
+
+        Extracts:
+        - Project metadata
+        - Sections and requirements for test coverage
+        """
+        # Extract project title
+        title_match = re.search(r'^#\s+(.+)$', content, re.MULTILINE)
+        project_name = title_match.group(1).strip() if title_match else "Volopa Mass Payments"
+
+        # Parse sections and requirements
+        sections = {}
+        requirement_pattern = re.compile(r'^\*\*(\d+)\.\*\*\s+(.+)$', re.MULTILINE)
+        section_pattern = re.compile(r'^##\s+(\d+)\.\s+(.+)$', re.MULTILINE)
+        subsection_pattern = re.compile(r'^###\s+([\d.]+)\s+(.+)$', re.MULTILINE)
+
+        # Find all sections
+        for section_match in section_pattern.finditer(content):
+            section_num = section_match.group(1)
+            section_name = section_match.group(2).strip()
+            sections[f"FR-{section_num}"] = {
+                "category": section_name,
+                "sub_requirements": {}
+            }
+
+        # Find all requirements and associate with sections
+        lines = content.split('\n')
+        current_section_key = None
+        current_subsection = None
+        req_counter = 0
+
+        for i, line in enumerate(lines):
+            # Check for section header
+            section_match = section_pattern.match(line)
+            if section_match:
+                section_num = section_match.group(1)
+                current_section_key = f"FR-{section_num}"
+                current_subsection = None
+                req_counter = 0
+                continue
+
+            # Check for subsection header
+            subsection_match = subsection_pattern.match(line)
+            if subsection_match:
+                current_subsection = subsection_match.group(2).strip()
+                continue
+
+            # Check for requirement
+            req_match = requirement_pattern.match(line)
+            if req_match and current_section_key:
+                req_num = req_match.group(1)
+                req_text = req_match.group(2).strip()
+                req_counter += 1
+
+                sub_req_id = f"{current_section_key}.{req_counter}"
+                sections[current_section_key]["sub_requirements"][sub_req_id] = {
+                    "title": req_text,
+                    "criteria": [req_text],  # Use requirement text as criterion
+                    "subsection": current_subsection
+                }
+
+        # Count total sub-requirements
+        total_sub_reqs = sum(len(s["sub_requirements"]) for s in sections.values())
+
+        # Build structured dictionary compatible with existing test constraint builder
+        return {
+            "project_metadata": {
+                "project_name": project_name,
+                "source_file": "user_requirements_nlp.md"
+            },
+            "summary_statistics": {
+                "total_functional_requirements": len(sections),
+                "total_sub_requirements": total_sub_reqs
+            },
+            "functional_requirements": sections
+        }
 
     def _build_test_constraints(self):
         """

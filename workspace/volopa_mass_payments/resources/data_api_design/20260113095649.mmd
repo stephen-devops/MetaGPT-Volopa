@@ -1,0 +1,108 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class MassPaymentFileController {
+        +index(Request): JsonResponse
+        +store(UploadMassPaymentFileRequest): JsonResponse
+        +show(string, MassPaymentFile): JsonResponse
+        +approve(ApproveMassPaymentFileRequest, MassPaymentFile): JsonResponse
+        +destroy(MassPaymentFile): JsonResponse
+    }
+    class PaymentInstructionController {
+        +index(Request): JsonResponse
+        +store(CreatePaymentInstructionRequest): JsonResponse
+        +show(string, PaymentInstruction): JsonResponse
+    }
+    class TemplateController {
+        +download(Request): Response
+    }
+    class UploadMassPaymentFileRequest {
+        +authorize(): bool
+        +rules(): array
+        +messages(): array
+    }
+    class ApproveMassPaymentFileRequest {
+        +authorize(): bool
+        +rules(): array
+    }
+    class MassPaymentFileService {
+        +create(array, UploadedFile): MassPaymentFile
+        +approve(MassPaymentFile, User): bool
+        +processValidation(MassPaymentFile): void
+        +delete(MassPaymentFile): bool
+    }
+    class CsvValidationService {
+        +validateFile(UploadedFile): array
+        +validateRow(array, int): array
+        +checkCurrencyRules(string, array): bool
+    }
+    class PaymentProcessingService {
+        +createInstructions(MassPaymentFile, array): Collection
+        +processPayments(MassPaymentFile): bool
+    }
+    class MassPaymentFile {
+        +id: string
+        +client_id: string
+        +tcc_account_id: string
+        +filename: string
+        +status: enum
+        +total_amount: decimal
+        +currency: string
+        +created_at: timestamp
+        +updated_at: timestamp
+        +tccAccount(): BelongsTo
+        +paymentInstructions(): HasMany
+        +approvals(): HasMany
+    }
+    class PaymentInstruction {
+        +id: string
+        +mass_payment_file_id: string
+        +beneficiary_id: string
+        +amount: decimal
+        +currency: string
+        +purpose_code: string
+        +created_at: timestamp
+        +massPaymentFile(): BelongsTo
+        +beneficiary(): BelongsTo
+    }
+    class Beneficiary {
+        +id: string
+        +client_id: string
+        +name: string
+        +account_number: string
+        +bank_code: string
+        +country: string
+        +created_at: timestamp
+        +paymentInstructions(): HasMany
+    }
+    class MassPaymentFileResource {
+        +toArray(Request): array
+    }
+    class PaymentInstructionResource {
+        +toArray(Request): array
+    }
+    class MassPaymentFilePolicy {
+        +view(User, MassPaymentFile): bool
+        +create(User): bool
+        +approve(User, MassPaymentFile): bool
+        +delete(User, MassPaymentFile): bool
+    }
+    class ValidateMassPaymentFileJob {
+        +handle(CsvValidationService): void
+    }
+    class ProcessPaymentInstructionsJob {
+        +handle(PaymentProcessingService): void
+    }
+    
+    MassPaymentFileController --> MassPaymentFileService
+    MassPaymentFileController --> MassPaymentFileResource
+    MassPaymentFileController --> UploadMassPaymentFileRequest
+    MassPaymentFileController --> ApproveMassPaymentFileRequest
+    MassPaymentFileService --> MassPaymentFile
+    MassPaymentFileService --> ValidateMassPaymentFileJob
+    MassPaymentFileService --> CsvValidationService
+    MassPaymentFile --> PaymentInstruction
+    MassPaymentFile --> TccAccount
+    PaymentInstruction --> Beneficiary
+    ValidateMassPaymentFileJob --> CsvValidationService
+    ProcessPaymentInstructionsJob --> PaymentProcessingService

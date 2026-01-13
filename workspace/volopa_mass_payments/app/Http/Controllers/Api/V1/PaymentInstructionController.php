@@ -8,13 +8,18 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\CreatePaymentInstructionRequest;
 use App\Http\Resources\PaymentInstructionResource;
-use App\Services\PaymentProcessingService;
 use App\Models\PaymentInstruction;
+use App\Services\PaymentProcessingService;
+use App\Policies\PaymentInstructionPolicy;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Validation\ValidationException;
+use Exception;
 
 class PaymentInstructionController extends Controller
 {
@@ -24,478 +29,434 @@ class PaymentInstructionController extends Controller
     private PaymentProcessingService $paymentProcessingService;
 
     /**
-     * Default pagination size for payment instruction lists.
+     * Default pagination size.
      */
-    private const DEFAULT_PER_PAGE = 20;
+    private const DEFAULT_PER_PAGE = 15;
 
     /**
-     * Maximum pagination size allowed.
+     * Maximum pagination size.
      */
     private const MAX_PER_PAGE = 100;
 
     /**
-     * Allowed sort fields for payment instruction queries.
+     * Cache TTL for payment instruction lists in seconds.
      */
-    private const ALLOWED_SORT_FIELDS = [
-        'id',
-        'amount',
-        'currency',
-        'status',
-        'row_number',
-        'created_at',
-        'updated_at',
-        'processed_at'
-    ];
-
-    /**
-     * Allowed filter fields for payment instruction queries.
-     */
-    private const ALLOWED_FILTER_FIELDS = [
-        'status',
-        'currency',
-        'mass_payment_file_id',
-        'beneficiary_id',
-        'purpose_code'
-    ];
+    private const CACHE_TTL = 300;
 
     /**
      * Create a new controller instance.
+     *
+     * @param PaymentProcessingService $paymentProcessingService
      */
     public function __construct(PaymentProcessingService $paymentProcessingService)
     {
         $this->paymentProcessingService = $paymentProcessingService;
+        
+        // Apply auth middleware to all methods
         $this->middleware('auth:api');
-        $this->middleware('throttle:60,1');
+        
+        // Apply throttle middleware
+        $this->middleware('throttle:120,1');
+        
+        // Apply client scoping middleware
+        $this->middleware('client.scope');
+        
+        // Apply permissions middleware
+        $this->middleware('permission:payment_instructions.view')->only(['index', 'show']);
+        $this->middleware('permission:payment_instructions.create')->only(['store']);
+        $this->middleware('permission:payment_instructions.update')->only(['update']);
+        $this->middleware('permission:payment_instructions.delete')->only(['destroy']);
     }
 
     /**
-     * Get a paginated list of payment instructions.
+     * Display a listing of payment instructions.
      *
      * @param Request $request
-     * @return JsonResponse
+     * @return JsonResponse|AnonymousResourceCollection
      */
-    public function index(Request $request): JsonResponse
+    public function index(Request $request): JsonResponse|AnonymousResourceCollection
     {
+        Log::info('Payment instructions index requested', [
+            'user_id' => $request->user()?->id,
+            'client_id' => $request->user()?->client_id,
+            'query_params' => $request->query()
+        ]);
+
         try {
-            Log::info('Payment instructions list requested', [
-                'user_id' => Auth::id(),
-                'client_id' => Auth::user()->client_id,
-                'filters' => $request->only(self::ALLOWED_FILTER_FIELDS)
-            ]);
+            // Authorize the request
+            Gate::authorize('viewAny', PaymentInstruction::class);
 
-            // Build query with filters and relationships
-            $query = PaymentInstruction::with(['beneficiary', 'massPaymentFile']);
+            // Validate query parameters
+            $validated = $this->validateIndexRequest($request);
 
-            // Apply filters
-            $this->applyFilters($query, $request);
-
-            // Apply sorting
-            $this->applySorting($query, $request);
+            // Build query with filters
+            $query = $this->buildIndexQuery($request, $validated);
 
             // Get pagination parameters
-            $perPage = $this->getPerPageParameter($request);
+            $perPage = min((int) $validated['per_page'] ?? self::DEFAULT_PER_PAGE, self::MAX_PER_PAGE);
+            $page = (int) $validated['page'] ?? 1;
 
-            // Execute query with pagination
-            $instructions = $query->paginate($perPage);
+            // Create cache key for this query
+            $cacheKey = $this->generateIndexCacheKey($request, $validated, $perPage, $page);
+
+            // Get cached results or execute query
+            $result = Cache::remember($cacheKey, self::CACHE_TTL, function () use ($query, $perPage) {
+                return $query->paginate($perPage);
+            });
 
             Log::info('Payment instructions retrieved successfully', [
-                'total' => $instructions->total(),
-                'per_page' => $instructions->perPage(),
-                'current_page' => $instructions->currentPage(),
-                'user_id' => Auth::id()
+                'user_id' => $request->user()->id,
+                'client_id' => $request->user()->client_id,
+                'total_count' => $result->total(),
+                'per_page' => $perPage,
+                'current_page' => $result->currentPage()
             ]);
 
-            // Transform to resource collection
-            return response()->json([
-                'data' => PaymentInstructionResource::collection($instructions->items()),
-                'meta' => [
-                    'current_page' => $instructions->currentPage(),
-                    'from' => $instructions->firstItem(),
-                    'last_page' => $instructions->lastPage(),
-                    'per_page' => $instructions->perPage(),
-                    'to' => $instructions->lastItem(),
-                    'total' => $instructions->total(),
-                    'links' => [
-                        'first' => $instructions->url(1),
-                        'last' => $instructions->url($instructions->lastPage()),
-                        'prev' => $instructions->previousPageUrl(),
-                        'next' => $instructions->nextPageUrl(),
+            return PaymentInstructionResource::collection($result)
+                ->additional([
+                    'meta' => [
+                        'filters_applied' => $this->getAppliedFilters($validated),
+                        'available_statuses' => PaymentInstruction::getAvailableStatuses(),
+                        'available_currencies' => $this->getAvailableCurrencies($request->user()->client_id),
+                        'timestamp' => now()->toISOString()
                     ]
-                ],
-                'links' => [
-                    'first' => $instructions->url(1),
-                    'last' => $instructions->url($instructions->lastPage()),
-                    'prev' => $instructions->previousPageUrl(),
-                    'next' => $instructions->nextPageUrl(),
-                ]
-            ], 200);
+                ]);
 
-        } catch (\Exception $e) {
-            Log::error('Error retrieving payment instructions', [
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id(),
-                'filters' => $request->only(self::ALLOWED_FILTER_FIELDS)
+        } catch (ValidationException $e) {
+            Log::warning('Payment instructions index validation failed', [
+                'user_id' => $request->user()?->id,
+                'errors' => $e->errors()
             ]);
 
             return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+
+        } catch (Exception $e) {
+            Log::error('Payment instructions index failed', [
+                'user_id' => $request->user()?->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
                 'message' => 'Failed to retrieve payment instructions',
-                'error' => 'retrieval_error'
+                'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * Create a new payment instruction.
+     * Store a newly created payment instruction.
      *
      * @param CreatePaymentInstructionRequest $request
      * @return JsonResponse
      */
     public function store(CreatePaymentInstructionRequest $request): JsonResponse
     {
+        Log::info('Creating new payment instruction', [
+            'user_id' => $request->user()->id,
+            'client_id' => $request->user()->client_id,
+            'beneficiary_id' => $request->input('beneficiary_id'),
+            'amount' => $request->input('amount'),
+            'currency' => $request->input('currency')
+        ]);
+
         try {
-            Log::info('Creating payment instruction', [
-                'user_id' => Auth::id(),
-                'mass_payment_file_id' => $request->validated('mass_payment_file_id'),
-                'beneficiary_id' => $request->validated('beneficiary_id'),
-                'amount' => $request->validated('amount'),
-                'currency' => $request->validated('currency')
-            ]);
+            $validated = $request->validated();
+            $user = $request->user();
 
-            // Get validated data
-            $validatedData = $request->validated();
-
-            // Create payment instruction using the service
-            $instruction = $this->paymentProcessingService->createSinglePaymentInstruction($validatedData);
-
-            if (!$instruction) {
-                Log::warning('Payment instruction creation returned null', [
-                    'user_id' => Auth::id(),
-                    'data' => $validatedData
+            // Create payment instruction using transaction
+            $paymentInstruction = DB::transaction(function () use ($validated, $user) {
+                // Prepare payment instruction data
+                $instructionData = array_merge($validated, [
+                    'client_id' => $user->client_id,
+                    'status' => PaymentInstruction::STATUS_PENDING,
+                    'created_by' => $user->id
                 ]);
 
-                return response()->json([
-                    'message' => 'Failed to create payment instruction',
-                    'error' => 'creation_failed'
-                ], 500);
-            }
+                // Create the payment instruction
+                $instruction = PaymentInstruction::create($instructionData);
 
-            // Load relationships for complete resource response
-            $instruction->load(['beneficiary', 'massPaymentFile']);
+                // Calculate processing fee if applicable
+                if ($instruction->amount > 0) {
+                    $processingFee = $this->calculateProcessingFee(
+                        $instruction->amount,
+                        $instruction->currency
+                    );
+                    
+                    if ($processingFee > 0) {
+                        $instruction->update(['processing_fee' => $processingFee]);
+                    }
+                }
+
+                return $instruction;
+            });
+
+            // Load relationships for response
+            $paymentInstruction->load(['beneficiary', 'massPaymentFile']);
+
+            // Clear related caches
+            $this->clearRelatedCaches($user->client_id);
 
             Log::info('Payment instruction created successfully', [
-                'instruction_id' => $instruction->id,
-                'user_id' => Auth::id(),
-                'amount' => $instruction->amount,
-                'currency' => $instruction->currency
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $user->id,
+                'client_id' => $user->client_id,
+                'amount' => $paymentInstruction->amount,
+                'currency' => $paymentInstruction->currency
             ]);
 
-            return response()->json([
-                'data' => new PaymentInstructionResource($instruction),
-                'message' => 'Payment instruction created successfully'
-            ], 201);
+            return (new PaymentInstructionResource($paymentInstruction))
+                ->additional([
+                    'meta' => [
+                        'message' => 'Payment instruction created successfully',
+                        'timestamp' => now()->toISOString()
+                    ]
+                ])
+                ->response()
+                ->setStatusCode(201);
 
-        } catch (\Exception $e) {
-            Log::error('Error creating payment instruction', [
+        } catch (Exception $e) {
+            Log::error('Failed to create payment instruction', [
+                'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
-                'user_id' => Auth::id(),
-                'data' => $request->validated()
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
+                'success' => false,
                 'message' => 'Failed to create payment instruction',
-                'error' => 'creation_error'
+                'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * Get a specific payment instruction by ID.
+     * Display the specified payment instruction.
      *
-     * @param int $id Payment instruction ID
+     * @param Request $request
+     * @param PaymentInstruction $paymentInstruction
      * @return JsonResponse
      */
-    public function show(int $id): JsonResponse
+    public function show(Request $request, PaymentInstruction $paymentInstruction): JsonResponse
     {
-        try {
-            Log::info('Payment instruction details requested', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
+        Log::info('Payment instruction show requested', [
+            'instruction_id' => $paymentInstruction->id,
+            'user_id' => $request->user()->id,
+            'client_id' => $request->user()->client_id
+        ]);
 
-            // Find payment instruction with relationships
-            $instruction = PaymentInstruction::with(['beneficiary', 'massPaymentFile'])
-                                           ->findOrFail($id);
+        try {
+            // Authorize the request
+            Gate::authorize('view', $paymentInstruction);
+
+            // Load relationships based on request
+            $relationships = $this->determineRelationshipsToLoad($request);
+            $paymentInstruction->load($relationships);
 
             Log::info('Payment instruction retrieved successfully', [
-                'instruction_id' => $id,
-                'status' => $instruction->status,
-                'amount' => $instruction->amount,
-                'currency' => $instruction->currency,
-                'user_id' => Auth::id()
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $request->user()->id,
+                'status' => $paymentInstruction->status,
+                'amount' => $paymentInstruction->amount,
+                'currency' => $paymentInstruction->currency
+            ]);
+
+            return (new PaymentInstructionResource($paymentInstruction))
+                ->additional([
+                    'meta' => [
+                        'timestamp' => now()->toISOString(),
+                        'relationships_loaded' => $relationships
+                    ]
+                ])
+                ->response();
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve payment instruction', [
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage()
             ]);
 
             return response()->json([
-                'data' => new PaymentInstructionResource($instruction)
-            ], 200);
-
-        } catch (ModelNotFoundException $e) {
-            Log::warning('Payment instruction not found', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Payment instruction not found',
-                'error' => 'not_found'
-            ], 404);
-
-        } catch (\Exception $e) {
-            Log::error('Error retrieving payment instruction', [
-                'instruction_id' => $id,
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
+                'success' => false,
                 'message' => 'Failed to retrieve payment instruction',
-                'error' => 'retrieval_error'
+                'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * Update a payment instruction.
+     * Update the specified payment instruction.
      *
      * @param CreatePaymentInstructionRequest $request
-     * @param int $id Payment instruction ID
+     * @param PaymentInstruction $paymentInstruction
      * @return JsonResponse
      */
-    public function update(CreatePaymentInstructionRequest $request, int $id): JsonResponse
+    public function update(CreatePaymentInstructionRequest $request, PaymentInstruction $paymentInstruction): JsonResponse
     {
+        Log::info('Updating payment instruction', [
+            'instruction_id' => $paymentInstruction->id,
+            'user_id' => $request->user()->id,
+            'current_status' => $paymentInstruction->status
+        ]);
+
         try {
-            Log::info('Updating payment instruction', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
+            // Authorize the request
+            Gate::authorize('update', $paymentInstruction);
 
-            // Find the payment instruction
-            $instruction = PaymentInstruction::findOrFail($id);
+            // Validate that instruction can be updated
+            $this->validateInstructionCanBeUpdated($paymentInstruction);
 
-            // Check if instruction can be updated
-            if (!$instruction->canBeUpdated()) {
-                Log::warning('Attempted to update non-updatable payment instruction', [
-                    'instruction_id' => $id,
-                    'current_status' => $instruction->status,
-                    'user_id' => Auth::id()
-                ]);
+            $validated = $request->validated();
+            $user = $request->user();
 
-                return response()->json([
-                    'message' => 'Payment instruction cannot be updated in its current status',
-                    'error' => 'update_not_allowed',
-                    'current_status' => $instruction->status
-                ], 422);
-            }
+            // Update payment instruction using transaction
+            $paymentInstruction = DB::transaction(function () use ($paymentInstruction, $validated, $user) {
+                // Update the payment instruction
+                $paymentInstruction->update(array_merge($validated, [
+                    'updated_by' => $user->id,
+                    'updated_at' => now()
+                ]));
 
-            // Get validated data
-            $validatedData = $request->validated();
+                // Recalculate processing fee if amount or currency changed
+                if (isset($validated['amount']) || isset($validated['currency'])) {
+                    $processingFee = $this->calculateProcessingFee(
+                        $paymentInstruction->amount,
+                        $paymentInstruction->currency
+                    );
+                    
+                    $paymentInstruction->update(['processing_fee' => $processingFee]);
+                }
 
-            // Remove fields that shouldn't be updated
-            unset($validatedData['mass_payment_file_id']); // Don't allow changing parent file
-            unset($validatedData['row_number']); // Don't allow changing row number
+                return $paymentInstruction;
+            });
 
-            // Update the instruction
-            $instruction->update($validatedData);
+            // Load relationships for response
+            $paymentInstruction->load(['beneficiary', 'massPaymentFile']);
 
-            // Reload with relationships
-            $instruction->load(['beneficiary', 'massPaymentFile']);
+            // Clear related caches
+            $this->clearRelatedCaches($user->client_id);
 
             Log::info('Payment instruction updated successfully', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $user->id,
+                'amount' => $paymentInstruction->amount,
+                'currency' => $paymentInstruction->currency
+            ]);
+
+            return (new PaymentInstructionResource($paymentInstruction))
+                ->additional([
+                    'meta' => [
+                        'message' => 'Payment instruction updated successfully',
+                        'timestamp' => now()->toISOString()
+                    ]
+                ])
+                ->response();
+
+        } catch (ValidationException $e) {
+            Log::warning('Payment instruction update validation failed', [
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $request->user()->id,
+                'errors' => $e->errors()
             ]);
 
             return response()->json([
-                'data' => new PaymentInstructionResource($instruction),
-                'message' => 'Payment instruction updated successfully'
-            ], 200);
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
 
-        } catch (ModelNotFoundException $e) {
-            Log::warning('Payment instruction not found for update', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Payment instruction not found',
-                'error' => 'not_found'
-            ], 404);
-
-        } catch (\Exception $e) {
-            Log::error('Error updating payment instruction', [
-                'instruction_id' => $id,
+        } catch (Exception $e) {
+            Log::error('Failed to update payment instruction', [
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
-                'user_id' => Auth::id()
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
+                'success' => false,
                 'message' => 'Failed to update payment instruction',
-                'error' => 'update_error'
+                'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * Delete a payment instruction.
+     * Remove the specified payment instruction.
      *
-     * @param int $id Payment instruction ID
+     * @param Request $request
+     * @param PaymentInstruction $paymentInstruction
      * @return JsonResponse
      */
-    public function destroy(int $id): JsonResponse
+    public function destroy(Request $request, PaymentInstruction $paymentInstruction): JsonResponse
     {
+        Log::info('Deleting payment instruction', [
+            'instruction_id' => $paymentInstruction->id,
+            'user_id' => $request->user()->id,
+            'current_status' => $paymentInstruction->status
+        ]);
+
         try {
-            Log::info('Deleting payment instruction', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
+            // Authorize the request
+            Gate::authorize('delete', $paymentInstruction);
 
-            // Find the payment instruction
-            $instruction = PaymentInstruction::findOrFail($id);
+            // Validate that instruction can be deleted
+            $this->validateInstructionCanBeDeleted($paymentInstruction);
 
-            // Check if instruction can be deleted
-            if (!$instruction->canBeDeleted()) {
-                Log::warning('Attempted to delete non-deletable payment instruction', [
-                    'instruction_id' => $id,
-                    'current_status' => $instruction->status,
-                    'user_id' => Auth::id()
+            $user = $request->user();
+
+            // Delete payment instruction using transaction
+            DB::transaction(function () use ($paymentInstruction, $user) {
+                // If instruction is processing, try to cancel it first
+                if ($paymentInstruction->status === PaymentInstruction::STATUS_PROCESSING) {
+                    $this->paymentProcessingService->cancelPaymentInstruction(
+                        $paymentInstruction,
+                        'Cancelled by user request'
+                    );
+                }
+
+                // Mark as deleted
+                $paymentInstruction->update([
+                    'status' => PaymentInstruction::STATUS_CANCELLED,
+                    'failure_reason' => 'Cancelled by user request',
+                    'updated_by' => $user->id
                 ]);
 
-                return response()->json([
-                    'message' => 'Payment instruction cannot be deleted in its current status',
-                    'error' => 'delete_not_allowed',
-                    'current_status' => $instruction->status
-                ], 422);
-            }
+                // Soft delete the record
+                $paymentInstruction->delete();
+            });
 
-            // Soft delete the instruction
-            $instruction->delete();
+            // Clear related caches
+            $this->clearRelatedCaches($user->client_id);
 
             Log::info('Payment instruction deleted successfully', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $user->id
             ]);
 
             return response()->json([
-                'message' => 'Payment instruction deleted successfully'
+                'success' => true,
+                'message' => 'Payment instruction deleted successfully',
+                'meta' => [
+                    'timestamp' => now()->toISOString()
+                ]
             ], 204);
 
-        } catch (ModelNotFoundException $e) {
-            Log::warning('Payment instruction not found for deletion', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Payment instruction not found',
-                'error' => 'not_found'
-            ], 404);
-
-        } catch (\Exception $e) {
-            Log::error('Error deleting payment instruction', [
-                'instruction_id' => $id,
+        } catch (Exception $e) {
+            Log::error('Failed to delete payment instruction', [
+                'instruction_id' => $paymentInstruction->id,
+                'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
-                'user_id' => Auth::id()
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
+                'success' => false,
                 'message' => 'Failed to delete payment instruction',
-                'error' => 'delete_error'
-            ], 500);
-        }
-    }
-
-    /**
-     * Cancel a payment instruction.
-     *
-     * @param int $id Payment instruction ID
-     * @return JsonResponse
-     */
-    public function cancel(int $id): JsonResponse
-    {
-        try {
-            Log::info('Cancelling payment instruction', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            // Find the payment instruction
-            $instruction = PaymentInstruction::findOrFail($id);
-
-            // Check if instruction can be cancelled
-            if (!$instruction->canBeCancelled()) {
-                Log::warning('Attempted to cancel non-cancellable payment instruction', [
-                    'instruction_id' => $id,
-                    'current_status' => $instruction->status,
-                    'user_id' => Auth::id()
-                ]);
-
-                return response()->json([
-                    'message' => 'Payment instruction cannot be cancelled in its current status',
-                    'error' => 'cancel_not_allowed',
-                    'current_status' => $instruction->status
-                ], 422);
-            }
-
-            // Cancel the instruction
-            $instruction->markAsCancelled();
-
-            // Reload with relationships
-            $instruction->load(['beneficiary', 'massPaymentFile']);
-
-            Log::info('Payment instruction cancelled successfully', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'data' => new PaymentInstructionResource($instruction),
-                'message' => 'Payment instruction cancelled successfully'
-            ], 200);
-
-        } catch (ModelNotFoundException $e) {
-            Log::warning('Payment instruction not found for cancellation', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Payment instruction not found',
-                'error' => 'not_found'
-            ], 404);
-
-        } catch (\Exception $e) {
-            Log::error('Error cancelling payment instruction', [
-                'instruction_id' => $id,
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Failed to cancel payment instruction',
-                'error' => 'cancel_error'
-            ], 500);
-        }
-    }
-
-    /**
-     * Retry processing of a failed payment instruction.
-     *
-     * @param int $id Payment instruction ID
-     * @return JsonResponse
-     */
-    public function retry(int $id): JsonResponse
-    {
-        try {
-            Log::info('Retrying payment instruction processing', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id()
-            
+                'error' => $

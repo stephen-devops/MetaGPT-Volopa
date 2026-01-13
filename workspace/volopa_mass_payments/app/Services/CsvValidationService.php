@@ -6,453 +6,349 @@
 namespace App\Services;
 
 use App\Models\Beneficiary;
+use App\Models\TccAccount;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use League\Csv\Reader;
 use League\Csv\Exception as CsvException;
 
 class CsvValidationService
 {
     /**
-     * Required CSV headers for mass payment files.
+     * Maximum number of rows allowed in a CSV file.
      */
-    private const REQUIRED_HEADERS = [
+    private const MAX_ROWS = 10000;
+
+    /**
+     * Maximum file size allowed in bytes (50MB).
+     */
+    private const MAX_FILE_SIZE = 52428800;
+
+    /**
+     * Required CSV columns.
+     */
+    private const REQUIRED_COLUMNS = [
         'beneficiary_name',
+        'account_number',
+        'bank_code',
         'amount',
         'currency',
-        'account_number',
-        'sort_code',
-        'reference'
+        'purpose_code'
     ];
 
     /**
-     * Optional CSV headers that may be present.
+     * Optional CSV columns.
      */
-    private const OPTIONAL_HEADERS = [
-        'purpose_code',
+    private const OPTIONAL_COLUMNS = [
+        'beneficiary_address',
+        'beneficiary_country',
         'bank_name',
+        'bank_address',
         'swift_code',
         'iban',
+        'routing_number',
+        'remittance_information',
+        'payment_reference',
         'beneficiary_email',
         'beneficiary_phone',
-        'additional_reference',
-        'payment_date'
+        'intermediate_bank_code',
+        'intermediate_bank_name',
+        'intermediate_swift_code'
+    ];
+
+    /**
+     * Supported currencies.
+     */
+    private const SUPPORTED_CURRENCIES = [
+        'USD', 'EUR', 'GBP', 'SGD', 'HKD', 'AUD', 'CAD', 'JPY', 
+        'CNY', 'THB', 'MYR', 'IDR', 'PHP', 'VND'
+    ];
+
+    /**
+     * Valid purpose codes.
+     */
+    private const PURPOSE_CODES = [
+        'SAL' => 'Salary',
+        'DIV' => 'Dividend',
+        'INT' => 'Interest',
+        'FEE' => 'Fee',
+        'RFD' => 'Refund',
+        'TRD' => 'Trade',
+        'SVC' => 'Service',
+        'SUP' => 'Supplier',
+        'INV' => 'Investment',
+        'OTH' => 'Other'
     ];
 
     /**
      * Currency-specific validation rules.
      */
     private const CURRENCY_RULES = [
-        'GBP' => [
-            'min_amount' => 1.00,
-            'max_amount' => 50000.00,
-            'required_fields' => ['account_number', 'sort_code'],
-            'purpose_codes' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'DIVIDEND', 'OTHER']
+        'USD' => [
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
         ],
         'EUR' => [
-            'min_amount' => 1.00,
-            'max_amount' => 50000.00,
-            'required_fields' => ['iban', 'swift_code'],
-            'purpose_codes' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'DIVIDEND', 'OTHER']
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => true,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
         ],
-        'USD' => [
-            'min_amount' => 1.00,
-            'max_amount' => 50000.00,
-            'required_fields' => ['account_number', 'swift_code'],
-            'purpose_codes' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'DIVIDEND', 'OTHER']
+        'GBP' => [
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
         ],
-        'INR' => [
-            'min_amount' => 100.00,
-            'max_amount' => 5000000.00,
-            'required_fields' => ['account_number', 'swift_code'],
-            'purpose_codes' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'OTHER'],
-            'required_purpose_code' => true
+        'SGD' => [
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'HKD' => [
+            'min_amount' => 0.01,
+            'max_amount' => 9999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'AUD' => [
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'CAD' => [
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'JPY' => [
+            'min_amount' => 1.00,
+            'max_amount' => 99999999.00,
+            'decimal_places' => 0,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => true,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'CNY' => [
+            'min_amount' => 0.01,
+            'max_amount' => 9999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => true,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['TRD', 'SVC', 'SUP']
+        ],
+        'THB' => [
+            'min_amount' => 0.01,
+            'max_amount' => 9999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'MYR' => [
+            'min_amount' => 0.01,
+            'max_amount' => 999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => false,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'IDR' => [
+            'min_amount' => 1.00,
+            'max_amount' => 999999999.00,
+            'decimal_places' => 0,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'PHP' => [
+            'min_amount' => 0.01,
+            'max_amount' => 9999999.99,
+            'decimal_places' => 2,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
+        ],
+        'VND' => [
+            'min_amount' => 1.00,
+            'max_amount' => 999999999.00,
+            'decimal_places' => 0,
+            'requires_purpose_code' => true,
+            'requires_beneficiary_address' => true,
+            'requires_swift_code' => false,
+            'max_remittance_length' => 140,
+            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
         ]
     ];
 
     /**
-     * Maximum allowed file size in bytes (10MB).
-     */
-    private const MAX_FILE_SIZE = 10485760;
-
-    /**
-     * Maximum allowed rows in CSV file.
-     */
-    private const MAX_ROWS = 10000;
-
-    /**
-     * Validate CSV file structure and headers.
+     * Validate uploaded CSV file structure and content.
      *
-     * @param string $filePath Path to the CSV file
-     * @return array Validation result with structure status and errors
+     * @param UploadedFile $file
+     * @return array
      */
-    public function validateCsvStructure(string $filePath): array
+    public function validateFile(UploadedFile $file): array
     {
-        $errors = [];
-        $warnings = [];
-        
+        Log::info('Starting CSV file validation', [
+            'filename' => $file->getClientOriginalName(),
+            'size' => $file->getSize(),
+            'mime_type' => $file->getMimeType()
+        ]);
+
+        $validationResult = [
+            'valid' => true,
+            'errors' => [],
+            'warnings' => [],
+            'summary' => [
+                'total_rows' => 0,
+                'valid_rows' => 0,
+                'invalid_rows' => 0,
+                'total_amount' => 0.00,
+                'currencies' => [],
+                'processing_time' => 0
+            ],
+            'row_errors' => [],
+            'header_validation' => null,
+            'file_validation' => null
+        ];
+
+        $startTime = microtime(true);
+
         try {
-            // Check if file exists and is readable
-            if (!file_exists($filePath)) {
-                return [
-                    'valid' => false,
-                    'errors' => ['File does not exist or is not accessible'],
-                    'warnings' => [],
-                    'headers' => [],
-                    'row_count' => 0
-                ];
+            // Basic file validation
+            $fileValidation = $this->validateFileBasics($file);
+            $validationResult['file_validation'] = $fileValidation;
+
+            if (!$fileValidation['valid']) {
+                $validationResult['valid'] = false;
+                $validationResult['errors'] = array_merge($validationResult['errors'], $fileValidation['errors']);
+                return $validationResult;
             }
 
-            if (!is_readable($filePath)) {
-                return [
-                    'valid' => false,
-                    'errors' => ['File is not readable'],
-                    'warnings' => [],
-                    'headers' => [],
-                    'row_count' => 0
-                ];
+            // Read and validate CSV content
+            $reader = Reader::createFromPath($file->getRealPath(), 'r');
+            $reader->setHeaderOffset(0);
+
+            // Validate headers
+            $headerValidation = $this->validateHeaders($reader->getHeader());
+            $validationResult['header_validation'] = $headerValidation;
+
+            if (!$headerValidation['valid']) {
+                $validationResult['valid'] = false;
+                $validationResult['errors'] = array_merge($validationResult['errors'], $headerValidation['errors']);
+                return $validationResult;
             }
 
-            // Check file size
-            $fileSize = filesize($filePath);
-            if ($fileSize === false || $fileSize > self::MAX_FILE_SIZE) {
-                $errors[] = 'File size exceeds maximum allowed size of 10MB';
-            }
+            // Process data rows
+            $records = $reader->getRecords();
+            $rowNumber = 2; // Start from row 2 (after header)
+            $totalAmount = 0.00;
+            $currencies = [];
+            $validRows = 0;
+            $invalidRows = 0;
 
-            if ($fileSize === 0) {
-                return [
-                    'valid' => false,
-                    'errors' => ['File is empty'],
-                    'warnings' => [],
-                    'headers' => [],
-                    'row_count' => 0
-                ];
-            }
-
-            // Initialize CSV reader
-            $csv = Reader::createFromPath($filePath, 'r');
-            $csv->setHeaderOffset(0);
-
-            // Get headers
-            $headers = $csv->getHeader();
-            
-            if (empty($headers)) {
-                return [
-                    'valid' => false,
-                    'errors' => ['No headers found in CSV file'],
-                    'warnings' => [],
-                    'headers' => [],
-                    'row_count' => 0
-                ];
-            }
-
-            // Normalize headers (lowercase, trim spaces)
-            $normalizedHeaders = array_map(function($header) {
-                return strtolower(trim($header));
-            }, $headers);
-
-            // Check for required headers
-            $missingHeaders = array_diff(self::REQUIRED_HEADERS, $normalizedHeaders);
-            if (!empty($missingHeaders)) {
-                $errors[] = 'Missing required headers: ' . implode(', ', $missingHeaders);
-            }
-
-            // Check for duplicate headers
-            $duplicateHeaders = array_diff_assoc($normalizedHeaders, array_unique($normalizedHeaders));
-            if (!empty($duplicateHeaders)) {
-                $errors[] = 'Duplicate headers found: ' . implode(', ', array_unique($duplicateHeaders));
-            }
-
-            // Check for empty headers
-            $emptyHeaders = array_filter($normalizedHeaders, function($header) {
-                return empty(trim($header));
-            });
-            if (!empty($emptyHeaders)) {
-                $errors[] = 'Empty header columns found';
-            }
-
-            // Count data rows
-            $rowCount = 0;
-            $records = $csv->getRecords();
             foreach ($records as $record) {
-                $rowCount++;
-                if ($rowCount > self::MAX_ROWS) {
-                    $errors[] = 'File exceeds maximum allowed rows of ' . number_format(self::MAX_ROWS);
+                if ($rowNumber > self::MAX_ROWS + 1) { // +1 for header
+                    $validationResult['errors'][] = "File exceeds maximum allowed rows ({$rowNumber})";
+                    $validationResult['valid'] = false;
                     break;
                 }
+
+                $rowValidation = $this->validateRow($record, $rowNumber);
+                
+                if ($rowValidation['valid']) {
+                    $validRows++;
+                    
+                    // Aggregate amounts and currencies
+                    $amount = (float) $record['amount'];
+                    $currency = strtoupper(trim($record['currency']));
+                    
+                    $totalAmount += $amount;
+                    if (!isset($currencies[$currency])) {
+                        $currencies[$currency] = ['count' => 0, 'amount' => 0.00];
+                    }
+                    $currencies[$currency]['count']++;
+                    $currencies[$currency]['amount'] += $amount;
+                } else {
+                    $invalidRows++;
+                    $validationResult['row_errors'][] = $rowValidation;
+                    
+                    if (count($validationResult['row_errors']) >= 100) {
+                        $validationResult['warnings'][] = 'Too many row errors. Validation stopped at row ' . $rowNumber . '. Please fix the issues and try again.';
+                        break;
+                    }
+                }
+
+                $rowNumber++;
             }
 
-            if ($rowCount === 0) {
-                $errors[] = 'No data rows found in CSV file';
-            }
-
-            // Check for suspicious patterns
-            if ($rowCount > 1000) {
-                $warnings[] = 'Large file detected (' . number_format($rowCount) . ' rows). Processing may take longer.';
-            }
-
-            // Warn about unrecognized headers
-            $recognizedHeaders = array_merge(self::REQUIRED_HEADERS, self::OPTIONAL_HEADERS);
-            $unrecognizedHeaders = array_diff($normalizedHeaders, $recognizedHeaders);
-            if (!empty($unrecognizedHeaders)) {
-                $warnings[] = 'Unrecognized headers found (will be ignored): ' . implode(', ', $unrecognizedHeaders);
-            }
-
-            Log::info('CSV structure validation completed', [
-                'file_path' => $filePath,
-                'file_size' => $fileSize,
-                'row_count' => $rowCount,
-                'headers_count' => count($headers),
-                'errors_count' => count($errors),
-                'warnings_count' => count($warnings)
-            ]);
-
-            return [
-                'valid' => empty($errors),
-                'errors' => $errors,
-                'warnings' => $warnings,
-                'headers' => $normalizedHeaders,
-                'row_count' => $rowCount,
-                'file_size' => $fileSize
+            // Update summary
+            $validationResult['summary'] = [
+                'total_rows' => $rowNumber - 2, // Exclude header
+                'valid_rows' => $validRows,
+                'invalid_rows' => $invalidRows,
+                'total_amount' => round($totalAmount, 2),
+                'currencies' => $currencies,
+                'processing_time' => round((microtime(true) - $startTime) * 1000, 2) // milliseconds
             ];
 
-        } catch (CsvException $e) {
-            Log::error('CSV parsing error during structure validation', [
-                'file_path' => $filePath,
-                'error' => $e->getMessage()
-            ]);
-
-            return [
-                'valid' => false,
-                'errors' => ['Invalid CSV format: ' . $e->getMessage()],
-                'warnings' => [],
-                'headers' => [],
-                'row_count' => 0
-            ];
-
-        } catch (\Exception $e) {
-            Log::error('Unexpected error during CSV structure validation', [
-                'file_path' => $filePath,
-                'error' => $e->getMessage()
-            ]);
-
-            return [
-                'valid' => false,
-                'errors' => ['Unexpected error while validating file: ' . $e->getMessage()],
-                'warnings' => [],
-                'headers' => [],
-                'row_count' => 0
-            ];
-        }
-    }
-
-    /**
-     * Validate individual row data against business rules.
-     *
-     * @param array $row CSV row data
-     * @param int $rowNumber Row number for error reporting
-     * @return array Validation result with errors and warnings
-     */
-    public function validateRowData(array $row, int $rowNumber): array
-    {
-        $errors = [];
-        $warnings = [];
-
-        try {
-            // Normalize row keys (lowercase, trim)
-            $normalizedRow = [];
-            foreach ($row as $key => $value) {
-                $normalizedKey = strtolower(trim($key));
-                $normalizedRow[$normalizedKey] = is_string($value) ? trim($value) : $value;
+            // Determine overall validity
+            if ($invalidRows > 0) {
+                $validationResult['valid'] = false;
+                $validationResult['errors'][] = "File contains {$invalidRows} invalid rows";
             }
 
-            // Validate required fields
-            $this->validateRequiredFields($normalizedRow, $rowNumber, $errors);
-
-            // Validate amount format and value
-            $this->validateAmount($normalizedRow, $rowNumber, $errors);
-
-            // Validate currency
-            $currency = $this->validateCurrency($normalizedRow, $rowNumber, $errors);
-
-            // Currency-specific validations
-            if ($currency && isset(self::CURRENCY_RULES[$currency])) {
-                $this->validateCurrencySpecificFields($normalizedRow, $currency, $rowNumber, $errors);
+            if ($validRows === 0) {
+                $validationResult['valid'] = false;
+                $validationResult['errors'][] = "File contains no valid payment rows";
             }
 
-            // Validate beneficiary name
-            $this->validateBeneficiaryName($normalizedRow, $rowNumber, $errors);
-
-            // Validate account details
-            $this->validateAccountDetails($normalizedRow, $rowNumber, $errors, $warnings);
-
-            // Validate purpose code if present
-            $this->validatePurposeCode($normalizedRow, $currency, $rowNumber, $errors);
-
-            // Validate reference field
-            $this->validateReference($normalizedRow, $rowNumber, $errors, $warnings);
-
-            // Validate optional fields
-            $this->validateOptionalFields($normalizedRow, $rowNumber, $warnings);
-
-            Log::debug('Row validation completed', [
-                'row_number' => $rowNumber,
-                'errors_count' => count($errors),
-                'warnings_count' => count($warnings)
-            ]);
-
-        } catch (\Exception $e) {
-            Log::error('Unexpected error during row validation', [
-                'row_number' => $rowNumber,
-                'error' => $e->getMessage()
-            ]);
-
-            $errors[] = 'Unexpected error while validating row: ' . $e->getMessage();
-        }
-
-        return [
-            'valid' => empty($errors),
-            'errors' => $errors,
-            'warnings' => $warnings,
-            'row_number' => $rowNumber
-        ];
-    }
-
-    /**
-     * Check if beneficiary exists in the database.
-     *
-     * @param string $identifier Beneficiary identifier (account number, IBAN, or name)
-     * @return bool True if beneficiary exists
-     */
-    public function validateBeneficiaryExists(string $identifier): bool
-    {
-        try {
-            if (empty(trim($identifier))) {
-                return false;
-            }
-
-            $identifier = trim($identifier);
-
-            // Search by multiple criteria
-            $beneficiary = Beneficiary::where(function ($query) use ($identifier) {
-                $query->where('account_number', $identifier)
-                      ->orWhere('iban', $identifier)
-                      ->orWhere('name', 'LIKE', '%' . $identifier . '%');
-            })
-            ->where('status', 'active')
-            ->first();
-
-            return $beneficiary !== null;
-
-        } catch (\Exception $e) {
-            Log::error('Error checking beneficiary existence', [
-                'identifier' => $identifier,
-                'error' => $e->getMessage()
-            ]);
-
-            return false;
-        }
-    }
-
-    /**
-     * Validate required fields are present and not empty.
-     */
-    private function validateRequiredFields(array $row, int $rowNumber, array &$errors): void
-    {
-        foreach (self::REQUIRED_HEADERS as $field) {
-            if (!isset($row[$field]) || empty(trim($row[$field]))) {
-                $errors[] = "Row {$rowNumber}: Missing required field '{$field}'";
-            }
-        }
-    }
-
-    /**
-     * Validate amount field format and value.
-     */
-    private function validateAmount(array $row, int $rowNumber, array &$errors): void
-    {
-        if (!isset($row['amount'])) {
-            return;
-        }
-
-        $amount = $row['amount'];
-
-        // Remove currency symbols and spaces
-        $cleanAmount = preg_replace('/[^\d.-]/', '', $amount);
-
-        if (!is_numeric($cleanAmount)) {
-            $errors[] = "Row {$rowNumber}: Invalid amount format '{$amount}'";
-            return;
-        }
-
-        $numericAmount = (float) $cleanAmount;
-
-        if ($numericAmount <= 0) {
-            $errors[] = "Row {$rowNumber}: Amount must be greater than 0";
-        }
-
-        if ($numericAmount > 999999.99) {
-            $errors[] = "Row {$rowNumber}: Amount exceeds maximum limit of 999,999.99";
-        }
-
-        // Check decimal places
-        if (strpos($cleanAmount, '.') !== false) {
-            $decimalPart = substr($cleanAmount, strpos($cleanAmount, '.') + 1);
-            if (strlen($decimalPart) > 2) {
-                $errors[] = "Row {$rowNumber}: Amount cannot have more than 2 decimal places";
-            }
-        }
-    }
-
-    /**
-     * Validate currency field and return the currency code.
-     */
-    private function validateCurrency(array $row, int $rowNumber, array &$errors): ?string
-    {
-        if (!isset($row['currency'])) {
-            return null;
-        }
-
-        $currency = strtoupper(trim($row['currency']));
-
-        if (!isset(self::CURRENCY_RULES[$currency])) {
-            $errors[] = "Row {$rowNumber}: Unsupported currency '{$currency}'. Supported: " . implode(', ', array_keys(self::CURRENCY_RULES));
-            return null;
-        }
-
-        return $currency;
-    }
-
-    /**
-     * Validate currency-specific required fields and amount limits.
-     */
-    private function validateCurrencySpecificFields(array $row, string $currency, int $rowNumber, array &$errors): void
-    {
-        $rules = self::CURRENCY_RULES[$currency];
-
-        // Check required fields for currency
-        foreach ($rules['required_fields'] as $field) {
-            if (!isset($row[$field]) || empty(trim($row[$field]))) {
-                $errors[] = "Row {$rowNumber}: Missing required field '{$field}' for {$currency} payments";
-            }
-        }
-
-        // Check amount limits
-        if (isset($row['amount']) && is_numeric(preg_replace('/[^\d.-]/', '', $row['amount']))) {
-            $amount = (float) preg_replace('/[^\d.-]/', '', $row['amount']);
-            
-            if ($amount < $rules['min_amount']) {
-                $errors[] = "Row {$rowNumber}: Minimum amount for {$currency} is " . number_format($rules['min_amount'], 2);
-            }
-            
-            if ($amount > $rules['max_amount']) {
-                $errors[] = "Row {$rowNumber}: Maximum amount for {$currency} is " . number_format($rules['max_amount'], 2);
-            }
-        }
-
-        // Check mandatory purpose code for certain currencies
-        if (isset($rules['required_purpose_code']) && $rules['required_purpose_code']) {
-            if (!isset($row['purpose_code']) || empty(trim($row['purpose_code']))) {
-                $errors[] = "Row {$rowNumber}: Purpose code is required for {$currency} payments";
-            }
+            Log::info('CSV file validation completed', [
+                'filename' =>

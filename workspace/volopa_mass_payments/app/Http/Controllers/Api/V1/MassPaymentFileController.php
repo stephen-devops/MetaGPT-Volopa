@@ -9,14 +9,19 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\UploadMassPaymentFileRequest;
 use App\Http\Requests\ApproveMassPaymentFileRequest;
 use App\Http\Resources\MassPaymentFileResource;
-use App\Services\MassPaymentFileService;
 use App\Models\MassPaymentFile;
+use App\Services\MassPaymentFileService;
+use App\Policies\MassPaymentFilePolicy;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Exception;
 
 class MassPaymentFileController extends Controller
 {
@@ -26,441 +31,420 @@ class MassPaymentFileController extends Controller
     private MassPaymentFileService $massPaymentFileService;
 
     /**
-     * Default pagination size for mass payment file lists.
+     * Default pagination size.
      */
-    private const DEFAULT_PER_PAGE = 20;
+    private const DEFAULT_PER_PAGE = 15;
 
     /**
-     * Maximum pagination size allowed.
+     * Maximum pagination size.
      */
     private const MAX_PER_PAGE = 100;
 
     /**
-     * Allowed sort fields for mass payment file queries.
+     * Cache TTL for mass payment file lists in seconds.
      */
-    private const ALLOWED_SORT_FIELDS = [
-        'id',
-        'filename',
-        'status',
-        'total_amount',
-        'total_rows',
-        'valid_rows',
-        'error_rows',
-        'currency',
-        'created_at',
-        'updated_at',
-        'approved_at'
-    ];
+    private const CACHE_TTL = 300;
 
     /**
-     * Allowed filter fields for mass payment file queries.
+     * Supported status filters.
      */
-    private const ALLOWED_FILTER_FIELDS = [
-        'status',
-        'currency',
-        'tcc_account_id',
-        'uploaded_by',
-        'approved_by'
-    ];
-
-    /**
-     * Allowed status values for filtering.
-     */
-    private const ALLOWED_STATUS_VALUES = [
+    private const SUPPORTED_STATUSES = [
         'uploading',
-        'uploaded',
-        'validating',
+        'processing',
+        'validation_completed',
         'validation_failed',
-        'validated',
         'pending_approval',
         'approved',
-        'rejected',
-        'processing',
-        'processed',
+        'processing_payments',
         'completed',
+        'cancelled',
         'failed'
     ];
 
     /**
+     * Supported currencies for filtering.
+     */
+    private const SUPPORTED_CURRENCIES = [
+        'USD', 'EUR', 'GBP', 'SGD', 'HKD', 'AUD', 'CAD', 'JPY',
+        'CNY', 'THB', 'MYR', 'IDR', 'PHP', 'VND'
+    ];
+
+    /**
      * Create a new controller instance.
+     *
+     * @param MassPaymentFileService $massPaymentFileService
      */
     public function __construct(MassPaymentFileService $massPaymentFileService)
     {
         $this->massPaymentFileService = $massPaymentFileService;
+        
+        // Apply auth middleware to all methods
         $this->middleware('auth:api');
-        $this->middleware('throttle:60,1');
+        
+        // Apply throttle middleware for rate limiting
+        $this->middleware('throttle:120,1');
+        
+        // Apply client scoping middleware
+        $this->middleware('client.scope');
+        
+        // Apply permissions middleware
+        $this->middleware('permission:mass_payments.view')->only(['index', 'show']);
+        $this->middleware('permission:mass_payments.create')->only(['store']);
+        $this->middleware('permission:mass_payments.approve')->only(['approve']);
+        $this->middleware('permission:mass_payments.delete')->only(['destroy']);
     }
 
     /**
-     * Upload a mass payment file.
+     * Display a listing of mass payment files.
+     *
+     * @param Request $request
+     * @return JsonResponse|AnonymousResourceCollection
+     */
+    public function index(Request $request): JsonResponse|AnonymousResourceCollection
+    {
+        Log::info('Mass payment files index requested', [
+            'user_id' => $request->user()?->id,
+            'client_id' => $request->user()?->client_id,
+            'query_params' => $request->query()
+        ]);
+
+        try {
+            // Authorize the request
+            Gate::authorize('viewAny', MassPaymentFile::class);
+
+            // Validate query parameters
+            $validated = $this->validateIndexRequest($request);
+
+            // Build query with filters
+            $query = $this->buildIndexQuery($request, $validated);
+
+            // Get pagination parameters
+            $perPage = min((int) ($validated['per_page'] ?? self::DEFAULT_PER_PAGE), self::MAX_PER_PAGE);
+            $page = (int) ($validated['page'] ?? 1);
+
+            // Create cache key for this query
+            $cacheKey = $this->generateIndexCacheKey($request, $validated, $perPage, $page);
+
+            // Get cached results or execute query
+            $result = Cache::remember($cacheKey, self::CACHE_TTL, function () use ($query, $perPage) {
+                return $query->paginate($perPage);
+            });
+
+            Log::info('Mass payment files retrieved successfully', [
+                'user_id' => $request->user()->id,
+                'client_id' => $request->user()->client_id,
+                'total_count' => $result->total(),
+                'per_page' => $perPage,
+                'current_page' => $result->currentPage()
+            ]);
+
+            return MassPaymentFileResource::collection($result)
+                ->additional([
+                    'meta' => [
+                        'filters_applied' => $this->getAppliedFilters($validated),
+                        'available_statuses' => self::SUPPORTED_STATUSES,
+                        'available_currencies' => self::SUPPORTED_CURRENCIES,
+                        'timestamp' => now()->toISOString()
+                    ]
+                ]);
+
+        } catch (ValidationException $e) {
+            Log::warning('Mass payment files index validation failed', [
+                'user_id' => $request->user()?->id,
+                'errors' => $e->errors()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors()
+            ], 422);
+
+        } catch (Exception $e) {
+            Log::error('Mass payment files index failed', [
+                'user_id' => $request->user()?->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve mass payment files',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Store a newly created mass payment file.
      *
      * @param UploadMassPaymentFileRequest $request
      * @return JsonResponse
      */
     public function store(UploadMassPaymentFileRequest $request): JsonResponse
     {
+        Log::info('Creating new mass payment file', [
+            'user_id' => $request->user()->id,
+            'client_id' => $request->user()->client_id,
+            'currency' => $request->input('currency'),
+            'tcc_account_id' => $request->input('tcc_account_id'),
+            'filename' => $request->file('file')?->getClientOriginalName()
+        ]);
+
         try {
-            Log::info('Mass payment file upload initiated', [
-                'user_id' => Auth::id(),
-                'client_id' => Auth::user()->client_id,
-                'tcc_account_id' => $request->validated('tcc_account_id'),
-                'filename' => $request->file('file')->getClientOriginalName()
-            ]);
+            $validated = $request->validatedWithComputed();
+            $file = $request->file('file');
 
-            // Get validated data and uploaded file
-            $validatedData = $request->validated();
-            $uploadedFile = $request->file('file');
+            // Create mass payment file using service
+            $massPaymentFile = $this->massPaymentFileService->create($validated, $file);
 
-            // Upload file using service
-            $massPaymentFile = $this->massPaymentFileService->uploadFile($validatedData, $uploadedFile);
+            // Load relationships for response
+            $massPaymentFile->load(['tccAccount']);
 
-            // Load relationships for complete resource response
-            $massPaymentFile->load(['tccAccount', 'uploader']);
+            // Clear related caches
+            $this->clearRelatedCaches($request->user()->client_id);
 
-            Log::info('Mass payment file uploaded successfully', [
+            Log::info('Mass payment file created successfully', [
                 'file_id' => $massPaymentFile->id,
-                'filename' => $massPaymentFile->filename,
+                'user_id' => $request->user()->id,
+                'client_id' => $request->user()->client_id,
                 'status' => $massPaymentFile->status,
-                'user_id' => Auth::id()
+                'currency' => $massPaymentFile->currency
             ]);
 
-            return response()->json([
-                'data' => new MassPaymentFileResource($massPaymentFile),
-                'message' => 'Mass payment file uploaded successfully'
-            ], 201);
+            return (new MassPaymentFileResource($massPaymentFile))
+                ->additional([
+                    'meta' => [
+                        'message' => 'Mass payment file uploaded successfully and is being processed',
+                        'processing_status' => 'File is being validated in the background',
+                        'timestamp' => now()->toISOString()
+                    ]
+                ])
+                ->response()
+                ->setStatusCode(201);
 
-        } catch (\InvalidArgumentException $e) {
-            Log::warning('Mass payment file upload validation failed', [
+        } catch (Exception $e) {
+            Log::error('Failed to create mass payment file', [
+                'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
-                'user_id' => Auth::id()
+                'trace' => $e->getTraceAsString()
             ]);
 
             return response()->json([
-                'message' => 'Validation failed',
-                'error' => 'validation_error',
-                'details' => $e->getMessage()
-            ], 422);
-
-        } catch (\RuntimeException $e) {
-            Log::error('Mass payment file upload runtime error', [
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'File upload failed',
-                'error' => 'upload_error'
-            ], 500);
-
-        } catch (\Exception $e) {
-            Log::error('Unexpected error during mass payment file upload', [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'An unexpected error occurred',
-                'error' => 'internal_server_error'
+                'success' => false,
+                'message' => 'Failed to upload mass payment file',
+                'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * Get a specific mass payment file by ID.
-     *
-     * @param int $id Mass payment file ID
-     * @return JsonResponse
-     */
-    public function show(int $id): JsonResponse
-    {
-        try {
-            Log::info('Mass payment file details requested', [
-                'file_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            // Find mass payment file with relationships
-            $massPaymentFile = MassPaymentFile::with([
-                'tccAccount',
-                'uploader',
-                'approver',
-                'paymentInstructions'
-            ])->findOrFail($id);
-
-            Log::info('Mass payment file retrieved successfully', [
-                'file_id' => $id,
-                'filename' => $massPaymentFile->filename,
-                'status' => $massPaymentFile->status,
-                'total_amount' => $massPaymentFile->total_amount,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'data' => new MassPaymentFileResource($massPaymentFile)
-            ], 200);
-
-        } catch (ModelNotFoundException $e) {
-            Log::warning('Mass payment file not found', [
-                'file_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Mass payment file not found',
-                'error' => 'not_found'
-            ], 404);
-
-        } catch (\Exception $e) {
-            Log::error('Error retrieving mass payment file', [
-                'file_id' => $id,
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Failed to retrieve mass payment file',
-                'error' => 'retrieval_error'
-            ], 500);
-        }
-    }
-
-    /**
-     * Get a paginated list of mass payment files.
+     * Display the specified mass payment file.
      *
      * @param Request $request
+     * @param MassPaymentFile $massPaymentFile
      * @return JsonResponse
      */
-    public function index(Request $request): JsonResponse
+    public function show(Request $request, MassPaymentFile $massPaymentFile): JsonResponse
     {
+        Log::info('Mass payment file show requested', [
+            'file_id' => $massPaymentFile->id,
+            'user_id' => $request->user()->id,
+            'client_id' => $request->user()->client_id
+        ]);
+
         try {
-            Log::info('Mass payment files list requested', [
-                'user_id' => Auth::id(),
-                'client_id' => Auth::user()->client_id,
-                'filters' => $request->only(self::ALLOWED_FILTER_FIELDS)
+            // Authorize the request
+            Gate::authorize('view', $massPaymentFile);
+
+            // Load relationships based on request
+            $relationships = $this->determineRelationshipsToLoad($request);
+            $massPaymentFile->load($relationships);
+
+            // Get current processing status
+            $processingStatus = $this->massPaymentFileService->getProcessingStatus($massPaymentFile->id);
+
+            Log::info('Mass payment file retrieved successfully', [
+                'file_id' => $massPaymentFile->id,
+                'user_id' => $request->user()->id,
+                'status' => $massPaymentFile->status,
+                'total_amount' => $massPaymentFile->total_amount,
+                'currency' => $massPaymentFile->currency
             ]);
 
-            // Validate query parameters
-            $request->validate([
-                'per_page' => 'sometimes|integer|min:1|max:' . self::MAX_PER_PAGE,
-                'sort_by' => 'sometimes|string|in:' . implode(',', self::ALLOWED_SORT_FIELDS),
-                'sort_order' => 'sometimes|string|in:asc,desc',
-                'status' => 'sometimes|string|in:' . implode(',', self::ALLOWED_STATUS_VALUES),
-                'currency' => 'sometimes|string|size:3',
-                'tcc_account_id' => 'sometimes|integer|exists:tcc_accounts,id',
-                'search' => 'sometimes|string|max:255'
-            ]);
-
-            // Build query with relationships
-            $query = MassPaymentFile::with(['tccAccount', 'uploader', 'approver']);
-
-            // Apply filters
-            $this->applyFilters($query, $request);
-
-            // Apply search
-            $this->applySearch($query, $request);
-
-            // Apply sorting
-            $this->applySorting($query, $request);
-
-            // Get pagination parameters
-            $perPage = $this->getPerPageParameter($request);
-
-            // Execute query with pagination
-            $files = $query->paginate($perPage);
-
-            Log::info('Mass payment files retrieved successfully', [
-                'total' => $files->total(),
-                'per_page' => $files->perPage(),
-                'current_page' => $files->currentPage(),
-                'user_id' => Auth::id()
-            ]);
-
-            // Transform to resource collection
-            return response()->json([
-                'data' => MassPaymentFileResource::collection($files->items()),
-                'meta' => [
-                    'current_page' => $files->currentPage(),
-                    'from' => $files->firstItem(),
-                    'last_page' => $files->lastPage(),
-                    'per_page' => $files->perPage(),
-                    'to' => $files->lastItem(),
-                    'total' => $files->total(),
-                    'has_more' => $files->hasMorePages(),
-                    'links' => [
-                        'first' => $files->url(1),
-                        'last' => $files->url($files->lastPage()),
-                        'prev' => $files->previousPageUrl(),
-                        'next' => $files->nextPageUrl(),
+            return (new MassPaymentFileResource($massPaymentFile))
+                ->additional([
+                    'meta' => [
+                        'processing_status' => $processingStatus,
+                        'timestamp' => now()->toISOString(),
+                        'relationships_loaded' => $relationships
                     ]
-                ],
-                'links' => [
-                    'first' => $files->url(1),
-                    'last' => $files->url($files->lastPage()),
-                    'prev' => $files->previousPageUrl(),
-                    'next' => $files->nextPageUrl(),
-                ]
-            ], 200);
+                ])
+                ->response();
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            Log::warning('Invalid query parameters for mass payment files list', [
-                'errors' => $e->errors(),
-                'user_id' => Auth::id()
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve mass payment file', [
+                'file_id' => $massPaymentFile->id,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage()
             ]);
 
             return response()->json([
-                'message' => 'Invalid query parameters',
-                'errors' => $e->errors()
-            ], 422);
-
-        } catch (\Exception $e) {
-            Log::error('Error retrieving mass payment files list', [
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Failed to retrieve mass payment files',
-                'error' => 'retrieval_error'
+                'success' => false,
+                'message' => 'Failed to retrieve mass payment file',
+                'error' => $e->getMessage()
             ], 500);
         }
     }
 
     /**
-     * Approve a mass payment file.
+     * Approve the specified mass payment file.
      *
-     * @param int $id Mass payment file ID
      * @param ApproveMassPaymentFileRequest $request
+     * @param MassPaymentFile $massPaymentFile
      * @return JsonResponse
      */
-    public function approve(int $id, ApproveMassPaymentFileRequest $request): JsonResponse
+    public function approve(ApproveMassPaymentFileRequest $request, MassPaymentFile $massPaymentFile): JsonResponse
     {
+        Log::info('Mass payment file approval requested', [
+            'file_id' => $massPaymentFile->id,
+            'user_id' => $request->user()->id,
+            'client_id' => $request->user()->client_id,
+            'current_status' => $massPaymentFile->status,
+            'total_amount' => $massPaymentFile->total_amount,
+            'currency' => $massPaymentFile->currency
+        ]);
+
         try {
-            Log::info('Mass payment file approval initiated', [
-                'file_id' => $id,
-                'user_id' => Auth::id(),
-                'force_approve' => $request->input('force_approve', false),
-                'override_validation_errors' => $request->input('override_validation_errors', false)
-            ]);
+            $validated = $request->validated();
+            $user = $request->user();
 
-            // Find the mass payment file
-            $massPaymentFile = MassPaymentFile::with(['tccAccount', 'uploader'])->findOrFail($id);
+            // Approve mass payment file using service
+            $approved = $this->massPaymentFileService->approve($massPaymentFile, $user);
 
-            // Get validated data
-            $validatedData = $request->validated();
-
-            // Approve file using service
-            $approvedFile = $this->massPaymentFileService->approveFile($massPaymentFile, Auth::id());
-
-            // Load all relationships for complete resource response
-            $approvedFile->load(['tccAccount', 'uploader', 'approver']);
-
-            Log::info('Mass payment file approved successfully', [
-                'file_id' => $id,
-                'filename' => $approvedFile->filename,
-                'total_amount' => $approvedFile->total_amount,
-                'currency' => $approvedFile->currency,
-                'approver_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'data' => new MassPaymentFileResource($approvedFile),
-                'message' => 'Mass payment file approved successfully'
-            ], 200);
-
-        } catch (ModelNotFoundException $e) {
-            Log::warning('Mass payment file not found for approval', [
-                'file_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Mass payment file not found',
-                'error' => 'not_found'
-            ], 404);
-
-        } catch (\InvalidArgumentException $e) {
-            Log::warning('Mass payment file approval validation failed', [
-                'file_id' => $id,
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Approval validation failed',
-                'error' => 'validation_error',
-                'details' => $e->getMessage()
-            ], 422);
-
-        } catch (\RuntimeException $e) {
-            Log::error('Mass payment file approval runtime error', [
-                'file_id' => $id,
-                'error' => $e->getMessage(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'Approval failed',
-                'error' => 'approval_error',
-                'details' => $e->getMessage()
-            ], 422);
-
-        } catch (\Exception $e) {
-            Log::error('Unexpected error during mass payment file approval', [
-                'file_id' => $id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-                'user_id' => Auth::id()
-            ]);
-
-            return response()->json([
-                'message' => 'An unexpected error occurred during approval',
-                'error' => 'internal_server_error'
-            ], 500);
-        }
-    }
-
-    /**
-     * Delete a mass payment file.
-     *
-     * @param int $id Mass payment file ID
-     * @return JsonResponse
-     */
-    public function delete(int $id): JsonResponse
-    {
-        try {
-            Log::info('Mass payment file deletion initiated', [
-                'file_id' => $id,
-                'user_id' => Auth::id()
-            ]);
-
-            // Find the mass payment file
-            $massPaymentFile = MassPaymentFile::findOrFail($id);
-
-            // Check user authorization (additional check beyond policy)
-            if ($massPaymentFile->client_id !== Auth::user()->client_id) {
-                Log::warning('Unauthorized mass payment file deletion attempt', [
-                    'file_id' => $id,
-                    'user_id' => Auth::id(),
-                    'file_client_id' => $massPaymentFile->client_id,
-                    'user_client_id' => Auth::user()->client_id
-                ]);
-
+            if (!$approved) {
                 return response()->json([
-                    'message' => 'You do not have permission to delete this file',
-                    'error' => 'unauthorized'
-                ], 403);
+                    'success' => false,
+                    'message' => 'Failed to approve mass payment file',
+                    'error' => 'Approval process could not be completed'
+                ], 400);
             }
 
-            // Delete file using service
-            $deleted = $this->massPaymentFileService->deleteFile($massPaymentFile);
+            // Refresh the model to get updated data
+            $massPaymentFile->refresh();
+
+            // Load relationships for response
+            $massPaymentFile->load(['tccAccount', 'paymentInstructions']);
+
+            // Clear related caches
+            $this->clearRelatedCaches($user->client_id);
+
+            Log::info('Mass payment file approved successfully', [
+                'file_id' => $massPaymentFile->id,
+                'user_id' => $user->id,
+                'approved_by' => $massPaymentFile->approved_by,
+                'approved_at' => $massPaymentFile->approved_at?->toISOString(),
+                'new_status' => $massPaymentFile->status
+            ]);
+
+            return (new MassPaymentFileResource($massPaymentFile))
+                ->additional([
+                    'meta' => [
+                        'message' => 'Mass payment file approved successfully and payment processing has begun',
+                        'approval_notes' => $validated['approval_notes'] ?? null,
+                        'approved_at' => $massPaymentFile->approved_at?->toISOString(),
+                        'timestamp' => now()->toISOString()
+                    ]
+                ])
+                ->response();
+
+        } catch (Exception $e) {
+            Log::error('Failed to approve mass payment file', [
+                'file_id' => $massPaymentFile->id,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to approve mass payment file',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Remove the specified mass payment file.
+     *
+     * @param Request $request
+     * @param MassPaymentFile $massPaymentFile
+     * @return JsonResponse
+     */
+    public function destroy(Request $request, MassPaymentFile $massPaymentFile): JsonResponse
+    {
+        Log::info('Mass payment file deletion requested', [
+            'file_id' => $massPaymentFile->id,
+            'user_id' => $request->user()->id,
+            'client_id' => $request->user()->client_id,
+            'current_status' => $massPaymentFile->status
+        ]);
+
+        try {
+            // Authorize the request
+            Gate::authorize('delete', $massPaymentFile);
+
+            $user = $request->user();
+
+            // Delete mass payment file using service
+            $deleted = $this->massPaymentFileService->delete($massPaymentFile);
 
             if (!$deleted) {
-                Log::warning('Mass payment file deletion failed', [
-                    'file_id' => $id,
-                    'user_id' => Auth::id()
-                ]);
-
                 return response()->json([
+                    'success' => false,
                     'message' => 'Failed to delete mass payment file',
-                    
+                    'error' => 'Deletion process could not be completed'
+                ], 400);
+            }
+
+            // Clear related caches
+            $this->clearRelatedCaches($user->client_id);
+
+            Log::info('Mass payment file deleted successfully', [
+                'file_id' => $massPaymentFile->id,
+                'user_id' => $user->id
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Mass payment file deleted successfully',
+                'meta' => [
+                    'deleted_at' => now()->toISOString(),
+                    'timestamp' => now()->toISOString()
+                ]
+            ], 204);
+
+        } catch (Exception $e) {
+            Log::error('Failed to delete mass payment file', [
+                'file_id' => $massPaymentFile->id,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete mass payment file',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * Validate index request parameters.
+     *
+     * @param Request $request
+     * @return array
+     * @throws ValidationException
+     */
+    private function validateIndex

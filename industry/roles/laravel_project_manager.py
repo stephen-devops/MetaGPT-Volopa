@@ -6,10 +6,8 @@
 @Desc    : Laravel Project Manager role for Volopa Mass Payments system
 """
 
-import json
 import re
 from pathlib import Path
-from typing import Dict, Any
 from metagpt.roles.project_manager import ProjectManager
 
 

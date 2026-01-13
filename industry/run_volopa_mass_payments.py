@@ -13,8 +13,6 @@ from pathlib import Path
 
 # Fix Windows encoding issues with Unicode characters
 if sys.platform == 'win32':
-    # Set console to UTF-8 mode
-    os.system('chcp 65001 >nul 2>&1')
     # Force UTF-8 encoding for stdout/stderr
     import codecs
     if sys.stdout.encoding != 'utf-8':
@@ -55,14 +53,70 @@ async def main():
     # Configure workspace
     workspace_path = Path(__file__).parent.parent / "workspace" / "volopa_mass_payments"
 
+    # Windows-specific: Check for locked files before attempting deletion
+    if sys.platform == 'win32' and workspace_path.exists():
+        # Try to detect if any files are locked
+        locked_files = []
+        try:
+            for root, dirs, files in os.walk(workspace_path):
+                for filename in files:
+                    filepath = os.path.join(root, filename)
+                    try:
+                        # Try to open file exclusively to see if it's locked
+                        with open(filepath, 'a'):
+                            pass
+                    except (PermissionError, IOError):
+                        locked_files.append(filepath)
+        except Exception:
+            pass  # Ignore errors during lock detection
+
+        if locked_files:
+            logger.warning(f"Found {len(locked_files)} potentially locked file(s) in workspace:")
+            for f in locked_files[:5]:  # Show first 5
+                logger.warning(f"  - {f}")
+            logger.warning("If deletion fails, please close any programs using these files (IDEs, file explorers, etc.)")
+
     # FIX: Delete existing workspace to prevent "unknown origin" errors
     # MetaGPT's Engineer role tracks which files it creates during a run.
     # If it finds existing files from previous runs, it raises ValueError to prevent overwrites.
     # Solution: Clean workspace before each run for a fresh start.
     if workspace_path.exists():
         import shutil
-        shutil.rmtree(workspace_path)
-        logger.info(f"Deleted existing workspace for fresh start: {workspace_path}")
+        import stat
+
+        def handle_remove_readonly(func, path, exc):
+            """Error handler for Windows read-only files"""
+            if exc[0] == PermissionError:
+                # Try to change file permissions and retry
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+            else:
+                raise
+
+        try:
+            shutil.rmtree(workspace_path, onerror=handle_remove_readonly)
+            logger.info(f"Deleted existing workspace for fresh start: {workspace_path}")
+        except Exception as e:
+            logger.warning(f"Could not fully delete workspace: {e}")
+            logger.warning("Attempting to clean critical directories only...")
+
+            # Try to at least clean the docs directory to prevent "unknown origin" errors
+            docs_path = workspace_path / "docs"
+            if docs_path.exists():
+                try:
+                    shutil.rmtree(docs_path, onerror=handle_remove_readonly)
+                    logger.info("Cleaned docs/ directory")
+                except Exception as e2:
+                    logger.warning(f"Could not clean docs/: {e2}")
+
+            # Try to clean app directory
+            app_path = workspace_path / "app"
+            if app_path.exists():
+                try:
+                    shutil.rmtree(app_path, onerror=handle_remove_readonly)
+                    logger.info("Cleaned app/ directory")
+                except Exception as e3:
+                    logger.warning(f"Could not clean app/: {e3}")
 
     # CRITICAL FIX: Clean git state to prevent "unknown origin" errors
     # After deleting workspace, git still tracks files as deleted (D status).
@@ -233,7 +287,7 @@ Build the Volopa Mass Payments API System for uploading CSV files with up to 10,
         n_round=5,
         idea=idea,
         send_to="",  # Broadcast to all roles
-        auto_archive=True,  # Archive results to git
+        auto_archive=False,  # Don't create nested git repo in workspace
     )
 
     logger.info("=" * 60)
@@ -292,7 +346,7 @@ if __name__ == "__main__":
         - Each role watches for specific messages (WritePRD, WriteDesign, WriteTasks, WriteCode, WriteTest)
         - Documents are passed via Message.instruct_content (file paths)
         - Engineer loads all previous documents for context
-        - QA Engineer loads requirements from industry/requirements/ JSON files
+        - All agents load requirements from industry/requirements/ NLP markdown files (.md)
         - DOS/DONTS constraints are embedded in Engineer's and QA's system prompts
     """
     asyncio.run(main())

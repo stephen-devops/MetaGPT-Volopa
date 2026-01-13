@@ -12,66 +12,50 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('mass_payment_files', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('client_id');
-            $table->unsignedBigInteger('tcc_account_id');
+            $table->uuid('id')->primary();
+            $table->string('client_id', 50)->index();
+            $table->uuid('tcc_account_id')->index();
             $table->string('filename', 255);
+            $table->string('original_filename', 255);
             $table->string('file_path', 500);
             $table->enum('status', [
                 'uploading',
-                'uploaded', 
-                'validating',
+                'processing', 
+                'validation_completed',
                 'validation_failed',
-                'validated',
                 'pending_approval',
                 'approved',
-                'rejected',
-                'processing',
-                'processed',
+                'processing_payments',
                 'completed',
+                'cancelled',
                 'failed'
-            ])->default('uploading');
-            $table->unsignedInteger('total_rows')->default(0);
-            $table->unsignedInteger('valid_rows')->default(0);
-            $table->unsignedInteger('error_rows')->default(0);
-            $table->json('validation_errors')->nullable();
+            ])->default('uploading')->index();
             $table->decimal('total_amount', 15, 2)->default(0.00);
             $table->string('currency', 3);
-            $table->unsignedBigInteger('uploaded_by');
-            $table->unsignedBigInteger('approved_by')->nullable();
+            $table->unsignedInteger('total_rows')->default(0);
+            $table->unsignedInteger('valid_rows')->default(0);
+            $table->unsignedInteger('invalid_rows')->default(0);
+            $table->json('validation_summary')->nullable();
+            $table->json('validation_errors')->nullable();
+            $table->uuid('created_by')->index();
+            $table->uuid('approved_by')->nullable()->index();
             $table->timestamp('approved_at')->nullable();
-            $table->text('rejection_reason')->nullable();
+            $table->string('rejection_reason', 500)->nullable();
+            $table->json('metadata')->nullable();
             $table->timestamps();
             $table->softDeletes();
-
+            
             // Indexes for performance
-            $table->index('client_id');
-            $table->index('tcc_account_id');
-            $table->index('status');
-            $table->index('uploaded_by');
-            $table->index('approved_by');
             $table->index(['client_id', 'status']);
+            $table->index(['client_id', 'currency']);
+            $table->index(['client_id', 'created_at']);
             $table->index(['tcc_account_id', 'status']);
-            $table->index('created_at');
-
+            
             // Foreign key constraints
             $table->foreign('tcc_account_id')
                   ->references('id')
                   ->on('tcc_accounts')
                   ->onDelete('restrict');
-
-            $table->foreign('uploaded_by')
-                  ->references('id')
-                  ->on('users')
-                  ->onDelete('restrict');
-
-            $table->foreign('approved_by')
-                  ->references('id')
-                  ->on('users')
-                  ->onDelete('restrict');
-
-            // Unique constraint to prevent duplicate filename uploads per account
-            $table->unique(['tcc_account_id', 'filename', 'deleted_at'], 'unique_filename_per_account');
         });
     }
 

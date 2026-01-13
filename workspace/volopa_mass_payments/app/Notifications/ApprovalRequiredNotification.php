@@ -1,12 +1,3 @@
-{
-  "Development Plan": [
-    "app/Notifications/ApprovalRequiredNotification.php"
-  ],
-  "Incremental Change": [
-    "app/Notifications/ApprovalRequiredNotification.php: Laravel notification class for sending approval alerts to approvers with mail and database channels"
-  ]
-}
-
 ## Code: app/Notifications/ApprovalRequiredNotification.php
 
 ```php
@@ -14,15 +5,13 @@
 
 namespace App\Notifications;
 
-use App\Models\PaymentFile;
-use App\Models\Approval;
+use App\Models\MassPaymentFile;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Messages\DatabaseMessage;
 use Illuminate\Notifications\Notification;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\URL;
 use Carbon\Carbon;
 
@@ -31,77 +20,103 @@ class ApprovalRequiredNotification extends Notification implements ShouldQueue
     use Queueable;
 
     /**
-     * The payment file requiring approval.
+     * The mass payment file instance.
+     *
+     * @var MassPaymentFile
      */
-    private PaymentFile $paymentFile;
+    protected MassPaymentFile $massPaymentFile;
 
     /**
-     * The approval instance.
+     * The user who created the file.
+     *
+     * @var User|null
      */
-    private Approval $approval;
+    protected ?User $createdBy;
 
     /**
-     * Notification timeout in hours.
+     * Additional notification data.
+     *
+     * @var array
      */
-    private const NOTIFICATION_TIMEOUT_HOURS = 72;
+    protected array $notificationData;
 
     /**
-     * Default queue name for notification processing.
+     * Priority level for the notification.
+     *
+     * @var string
      */
-    private const DEFAULT_QUEUE = 'notifications';
+    protected string $priority;
 
     /**
-     * Priority levels for different approval amounts.
+     * Notification type identifier.
+     *
+     * @var string
      */
-    private const PRIORITY_LEVELS = [
-        'high' => 50000.00,
-        'medium' => 10000.00,
-        'low' => 0.00,
-    ];
+    protected string $notificationType;
+
+    /**
+     * The number of times the notification may be attempted.
+     *
+     * @var int
+     */
+    public int $tries = 3;
+
+    /**
+     * The maximum number of seconds the notification can run.
+     *
+     * @var int
+     */
+    public int $timeout = 60;
 
     /**
      * Create a new notification instance.
      *
-     * @param PaymentFile $paymentFile Payment file requiring approval
-     * @param Approval $approval Approval instance
+     * @param MassPaymentFile $massPaymentFile
+     * @param User|null $createdBy
+     * @param array $additionalData
      */
-    public function __construct(PaymentFile $paymentFile, Approval $approval)
-    {
-        $this->paymentFile = $paymentFile;
-        $this->approval = $approval;
-        
-        // Set queue configuration
-        $this->onQueue(self::DEFAULT_QUEUE);
-        $this->delay(now());
+    public function __construct(
+        MassPaymentFile $massPaymentFile,
+        ?User $createdBy = null,
+        array $additionalData = []
+    ) {
+        $this->massPaymentFile = $massPaymentFile;
+        $this->createdBy = $createdBy;
+        $this->notificationData = $additionalData;
+        $this->priority = $this->determinePriority($massPaymentFile);
+        $this->notificationType = 'mass_payment_approval_required';
 
-        Log::info('ApprovalRequiredNotification created', [
-            'payment_file_id' => $this->paymentFile->id,
-            'approval_id' => $this->approval->id,
-            'approver_id' => $this->approval->approver_id,
-        ]);
+        // Set queue based on priority
+        $this->onQueue($this->determineQueue());
+        
+        // Set connection
+        $this->onConnection(config('queue.default', 'redis'));
     }
 
     /**
      * Get the notification's delivery channels.
      *
      * @param mixed $notifiable
-     * @return array<int, string>
+     * @return array
      */
-    public function via(mixed $notifiable): array
+    public function via($notifiable): array
     {
-        $channels = ['database'];
+        $channels = ['database']; // Bell notifications via database
 
-        // Add mail channel if user has email notifications enabled
+        // Add email for high-priority or high-value payments
         if ($this->shouldSendEmail($notifiable)) {
             $channels[] = 'mail';
         }
 
-        Log::info('Notification channels determined', [
-            'payment_file_id' => $this->paymentFile->id,
-            'approval_id' => $this->approval->id,
-            'approver_id' => $notifiable->id ?? null,
-            'channels' => $channels,
-        ]);
+        // Add SMS for urgent notifications
+        if ($this->shouldSendSms($notifiable)) {
+            $channels[] = 'sms';
+        }
+
+        // Add webhook for external integrations
+        if ($this->shouldSendWebhook($notifiable)) {
+            $channels[] = 'webhook';
+        }
 
         return $channels;
     }
@@ -112,356 +127,350 @@ class ApprovalRequiredNotification extends Notification implements ShouldQueue
      * @param mixed $notifiable
      * @return MailMessage
      */
-    public function toMail(mixed $notifiable): MailMessage
+    public function toMail($notifiable): MailMessage
     {
-        Log::info('Generating mail notification', [
-            'payment_file_id' => $this->paymentFile->id,
-            'approval_id' => $this->approval->id,
-            'approver_email' => $notifiable->email ?? 'unknown',
-        ]);
+        $message = (new MailMessage)
+            ->subject($this->getEmailSubject())
+            ->greeting($this->getEmailGreeting($notifiable))
+            ->line($this->getEmailIntroduction())
+            ->line($this->getFileDetails())
+            ->action(
+                'Review and Approve',
+                $this->getApprovalUrl()
+            )
+            ->line($this->getEmailFooter());
 
-        $priority = $this->getApprovalPriority();
-        $approvalUrl = $this->getApprovalUrl();
-        $deadlineDate = $this->getApprovalDeadline();
-
-        $mailMessage = (new MailMessage)
-            ->subject($this->getMailSubject($priority))
-            ->greeting($this->getMailGreeting($notifiable))
-            ->line($this->getMailIntroduction())
-            ->line('**File Details:**')
-            ->line("• File Name: {$this->paymentFile->original_name}")
-            ->line("• Total Amount: {$this->getFormattedAmount()}")
-            ->line("• Payment Instructions: {$this->paymentFile->valid_records}")
-            ->line("• Upload Date: {$this->paymentFile->created_at->format('F j, Y \\a\\t g:i A')}")
-            ->line("• Uploaded by: {$this->paymentFile->user->name ?? 'Unknown User'}")
-            ->line('')
-            ->line('**Approval Deadline:** ' . $deadlineDate->format('F j, Y \\a\\t g:i A T'))
-            ->action('Review and Approve', $approvalUrl)
-            ->line('You can approve or reject this payment file by clicking the button above.')
-            ->line('If you cannot access the approval system, please contact your system administrator.')
-            ->salutation('Best regards,')
-            ->salutation('Volopa Payments Team');
-
-        // Add priority styling based on amount
-        if ($priority === 'high') {
-            $mailMessage->priority(1); // High priority
-        } elseif ($priority === 'medium') {
-            $mailMessage->priority(3); // Normal priority
+        // Add priority styling for urgent notifications
+        if ($this->priority === 'urgent') {
+            $message->level('error');
+        } elseif ($this->priority === 'high') {
+            $message->level('warning');
         }
 
-        return $mailMessage;
+        // Add additional lines for compliance requirements
+        if ($this->requiresComplianceReview()) {
+            $message->line('⚠️ This payment requires compliance review due to amount or destination.');
+        }
+
+        return $message;
     }
 
     /**
      * Get the database representation of the notification.
      *
      * @param mixed $notifiable
-     * @return array<string, mixed>
+     * @return array
      */
-    public function toDatabase(mixed $notifiable): array
+    public function toDatabase($notifiable): array
     {
-        $priority = $this->getApprovalPriority();
-        $approvalUrl = $this->getApprovalUrl();
-        $deadlineDate = $this->getApprovalDeadline();
-
-        $databaseData = [
-            'type' => 'approval_required',
-            'priority' => $priority,
-            'payment_file_id' => $this->paymentFile->id,
-            'approval_id' => $this->approval->id,
-            'title' => $this->getNotificationTitle(),
-            'message' => $this->getDatabaseMessage(),
-            'data' => [
-                'payment_file' => [
-                    'id' => $this->paymentFile->id,
-                    'original_name' => $this->paymentFile->original_name,
-                    'total_amount' => $this->paymentFile->total_amount,
-                    'formatted_amount' => $this->getFormattedAmount(),
-                    'currency' => $this->paymentFile->currency,
-                    'valid_records' => $this->paymentFile->valid_records,
-                    'invalid_records' => $this->paymentFile->invalid_records,
-                    'uploaded_by' => $this->paymentFile->user->name ?? 'Unknown User',
-                    'uploaded_by_id' => $this->paymentFile->user_id,
-                    'upload_date' => $this->paymentFile->created_at->toISOString(),
-                    'status' => $this->paymentFile->status,
-                ],
-                'approval' => [
-                    'id' => $this->approval->id,
-                    'status' => $this->approval->status,
-                    'created_at' => $this->approval->created_at->toISOString(),
-                    'deadline' => $deadlineDate->toISOString(),
-                ],
-                'actions' => [
-                    'approve_url' => $approvalUrl . '/approve',
-                    'reject_url' => $approvalUrl . '/reject',
-                    'view_url' => $approvalUrl,
-                ],
-                'metadata' => [
-                    'requires_urgent_attention' => $priority === 'high',
-                    'business_hours_only' => false,
-                    'auto_expire_at' => $deadlineDate->toISOString(),
-                ],
+        return [
+            'id' => $this->id,
+            'type' => $this->notificationType,
+            'title' => $this->getBellNotificationTitle(),
+            'message' => $this->getBellNotificationMessage(),
+            'icon' => $this->getBellNotificationIcon(),
+            'priority' => $this->priority,
+            'action_url' => $this->getApprovalUrl(),
+            'action_text' => 'Review & Approve',
+            'mass_payment_file' => [
+                'id' => $this->massPaymentFile->id,
+                'filename' => $this->massPaymentFile->original_filename,
+                'currency' => $this->massPaymentFile->currency,
+                'total_amount' => $this->massPaymentFile->total_amount,
+                'total_rows' => $this->massPaymentFile->total_rows,
+                'status' => $this->massPaymentFile->status,
+                'created_at' => $this->massPaymentFile->created_at->toISOString(),
+                'client_id' => $this->massPaymentFile->client_id,
+                'tcc_account_id' => $this->massPaymentFile->tcc_account_id
             ],
-            'created_at' => Carbon::now()->toISOString(),
+            'created_by' => $this->createdBy ? [
+                'id' => $this->createdBy->id,
+                'name' => $this->createdBy->name,
+                'email' => $this->createdBy->email
+            ] : null,
+            'metadata' => array_merge($this->notificationData, [
+                'requires_compliance_review' => $this->requiresComplianceReview(),
+                'approval_deadline' => $this->getApprovalDeadline(),
+                'risk_level' => $this->calculateRiskLevel(),
+                'notification_sent_at' => Carbon::now()->toISOString(),
+                'expires_at' => $this->getNotificationExpiry()->toISOString()
+            ]),
+            'expires_at' => $this->getNotificationExpiry()->toISOString()
         ];
-
-        Log::info('Database notification data prepared', [
-            'payment_file_id' => $this->paymentFile->id,
-            'approval_id' => $this->approval->id,
-            'priority' => $priority,
-            'approver_id' => $notifiable->id ?? null,
-        ]);
-
-        return $databaseData;
     }
 
     /**
-     * Get the array representation of the notification for other channels.
+     * Get the SMS representation of the notification.
      *
      * @param mixed $notifiable
-     * @return array<string, mixed>
+     * @return string
      */
-    public function toArray(mixed $notifiable): array
+    public function toSms($notifiable): string
     {
-        return $this->toDatabase($notifiable);
+        $amount = number_format($this->massPaymentFile->total_amount, 2);
+        $currency = $this->massPaymentFile->currency;
+        
+        return "URGENT: Mass payment of {$amount} {$currency} requires your approval. " .
+               "File: {$this->massPaymentFile->original_filename}. " .
+               "Review at: " . $this->getApprovalUrl();
     }
 
     /**
-     * Determine if the user should receive email notifications.
+     * Get the webhook representation of the notification.
+     *
+     * @param mixed $notifiable
+     * @return array
+     */
+    public function toWebhook($notifiable): array
+    {
+        return [
+            'event' => 'mass_payment.approval_required',
+            'notification_id' => $this->id,
+            'timestamp' => Carbon::now()->toISOString(),
+            'client_id' => $this->massPaymentFile->client_id,
+            'mass_payment_file' => [
+                'id' => $this->massPaymentFile->id,
+                'filename' => $this->massPaymentFile->original_filename,
+                'currency' => $this->massPaymentFile->currency,
+                'total_amount' => $this->massPaymentFile->total_amount,
+                'total_rows' => $this->massPaymentFile->total_rows,
+                'status' => $this->massPaymentFile->status,
+                'created_at' => $this->massPaymentFile->created_at->toISOString(),
+                'tcc_account_id' => $this->massPaymentFile->tcc_account_id
+            ],
+            'created_by' => $this->createdBy ? [
+                'id' => $this->createdBy->id,
+                'name' => $this->createdBy->name,
+                'email' => $this->createdBy->email
+            ] : null,
+            'notifiable' => [
+                'id' => $notifiable->id,
+                'type' => class_basename($notifiable),
+                'email' => $notifiable->email ?? null
+            ],
+            'approval_url' => $this->getApprovalUrl(),
+            'priority' => $this->priority,
+            'risk_level' => $this->calculateRiskLevel(),
+            'compliance_required' => $this->requiresComplianceReview(),
+            'approval_deadline' => $this->getApprovalDeadline(),
+            'metadata' => $this->notificationData
+        ];
+    }
+
+    /**
+     * Determine notification priority based on file characteristics.
+     *
+     * @param MassPaymentFile $massPaymentFile
+     * @return string
+     */
+    private function determinePriority(MassPaymentFile $massPaymentFile): string
+    {
+        $amount = $massPaymentFile->total_amount;
+        $currency = $massPaymentFile->currency;
+        $metadata = $massPaymentFile->metadata ?? [];
+
+        // Check for explicit priority in metadata
+        if (isset($metadata['priority'])) {
+            return $metadata['priority'];
+        }
+
+        // High-value thresholds by currency
+        $highValueThresholds = [
+            'USD' => 1000000.00,
+            'EUR' => 900000.00,
+            'GBP' => 800000.00,
+            'SGD' => 1300000.00,
+            'HKD' => 7800000.00,
+            'AUD' => 1400000.00,
+            'CAD' => 1300000.00,
+            'JPY' => 110000000.00,
+            'default' => 500000.00
+        ];
+
+        $urgentValueThresholds = [
+            'USD' => 5000000.00,
+            'EUR' => 4500000.00,
+            'GBP' => 4000000.00,
+            'SGD' => 6500000.00,
+            'HKD' => 39000000.00,
+            'AUD' => 7000000.00,
+            'CAD' => 6500000.00,
+            'JPY' => 550000000.00,
+            'default' => 2500000.00
+        ];
+
+        $urgentThreshold = $urgentValueThresholds[$currency] ?? $urgentValueThresholds['default'];
+        $highThreshold = $highValueThresholds[$currency] ?? $highValueThresholds['default'];
+
+        if ($amount >= $urgentThreshold) {
+            return 'urgent';
+        } elseif ($amount >= $highThreshold) {
+            return 'high';
+        } elseif ($amount >= 100000.00) {
+            return 'normal';
+        } else {
+            return 'low';
+        }
+    }
+
+    /**
+     * Determine the appropriate queue for this notification.
+     *
+     * @return string
+     */
+    private function determineQueue(): string
+    {
+        switch ($this->priority) {
+            case 'urgent':
+                return 'notifications_urgent';
+            case 'high':
+                return 'notifications_high';
+            case 'low':
+                return 'notifications_low';
+            default:
+                return 'notifications';
+        }
+    }
+
+    /**
+     * Determine if email should be sent.
      *
      * @param mixed $notifiable
      * @return bool
      */
-    private function shouldSendEmail(mixed $notifiable): bool
+    private function shouldSendEmail($notifiable): bool
     {
-        // Check if notifiable has email
-        if (!isset($notifiable->email) || empty($notifiable->email)) {
-            return false;
-        }
-
-        // Check if user has email notifications enabled (default to true)
-        $emailNotificationsEnabled = $notifiable->email_notifications_enabled ?? true;
-
-        // Always send email for high priority approvals
-        $priority = $this->getApprovalPriority();
-        if ($priority === 'high') {
+        // Always send email for urgent and high priority
+        if (in_array($this->priority, ['urgent', 'high'])) {
             return true;
         }
 
-        return $emailNotificationsEnabled;
+        // Check user preferences
+        $preferences = $notifiable->notification_preferences ?? [];
+        
+        return $preferences['email_approval_notifications'] ?? true;
     }
 
     /**
-     * Get the approval priority based on amount.
+     * Determine if SMS should be sent.
      *
-     * @return string
+     * @param mixed $notifiable
+     * @return bool
      */
-    private function getApprovalPriority(): string
+    private function shouldSendSms($notifiable): bool
     {
-        $amount = $this->paymentFile->total_amount;
-
-        if ($amount >= self::PRIORITY_LEVELS['high']) {
-            return 'high';
-        } elseif ($amount >= self::PRIORITY_LEVELS['medium']) {
-            return 'medium';
+        // Only send SMS for urgent notifications
+        if ($this->priority !== 'urgent') {
+            return false;
         }
 
-        return 'low';
-    }
-
-    /**
-     * Get the approval URL for the notification.
-     *
-     * @return string
-     */
-    private function getApprovalUrl(): string
-    {
-        return URL::signedRoute('api.v1.approvals.show', [
-            'id' => $this->approval->id,
-        ], Carbon::now()->addHours(self::NOTIFICATION_TIMEOUT_HOURS));
-    }
-
-    /**
-     * Get the approval deadline.
-     *
-     * @return Carbon
-     */
-    private function getApprovalDeadline(): Carbon
-    {
-        return $this->approval->created_at->addHours(self::NOTIFICATION_TIMEOUT_HOURS);
-    }
-
-    /**
-     * Get the formatted amount with currency symbol.
-     *
-     * @return string
-     */
-    private function getFormattedAmount(): string
-    {
-        $symbols = [
-            'USD' => '$',
-            'EUR' => '€',
-            'GBP' => '£',
-        ];
-
-        $symbol = $symbols[$this->paymentFile->currency] ?? '';
-        return $symbol . number_format($this->paymentFile->total_amount, 2);
-    }
-
-    /**
-     * Get the mail subject based on priority.
-     *
-     * @param string $priority
-     * @return string
-     */
-    private function getMailSubject(string $priority): string
-    {
-        $priorityText = '';
-        if ($priority === 'high') {
-            $priorityText = '[URGENT] ';
-        } elseif ($priority === 'medium') {
-            $priorityText = '[IMPORTANT] ';
+        // Check if user has phone number
+        if (empty($notifiable->phone)) {
+            return false;
         }
 
-        return $priorityText . 'Payment File Approval Required - ' . $this->getFormattedAmount();
+        // Check user preferences
+        $preferences = $notifiable->notification_preferences ?? [];
+        
+        return $preferences['sms_urgent_notifications'] ?? false;
     }
 
     /**
-     * Get the mail greeting.
+     * Determine if webhook should be sent.
+     *
+     * @param mixed $notifiable
+     * @return bool
+     */
+    private function shouldSendWebhook($notifiable): bool
+    {
+        // Check if client has webhook configured
+        $clientSettings = $notifiable->client_settings ?? [];
+        
+        return !empty($clientSettings['webhook_url']) && 
+               ($clientSettings['webhook_notifications']['approval_required'] ?? false);
+    }
+
+    /**
+     * Get email subject.
+     *
+     * @return string
+     */
+    private function getEmailSubject(): string
+    {
+        $priorityPrefix = '';
+        if ($this->priority === 'urgent') {
+            $priorityPrefix = '[URGENT] ';
+        } elseif ($this->priority === 'high') {
+            $priorityPrefix = '[HIGH PRIORITY] ';
+        }
+
+        $amount = number_format($this->massPaymentFile->total_amount, 2);
+        $currency = $this->massPaymentFile->currency;
+
+        return $priorityPrefix . "Approval Required: Mass Payment {$amount} {$currency}";
+    }
+
+    /**
+     * Get email greeting.
      *
      * @param mixed $notifiable
      * @return string
      */
-    private function getMailGreeting(mixed $notifiable): string
+    private function getEmailGreeting($notifiable): string
     {
-        $name = $notifiable->first_name ?? $notifiable->name ?? 'Approver';
+        $name = $notifiable->first_name ?? $notifiable->name ?? 'User';
+        
         return "Hello {$name},";
     }
 
     /**
-     * Get the mail introduction text.
+     * Get email introduction.
      *
      * @return string
      */
-    private function getMailIntroduction(): string
+    private function getEmailIntroduction(): string
     {
-        $priority = $this->getApprovalPriority();
-        
-        $introText = 'A payment file requires your approval before it can be processed.';
-        
-        if ($priority === 'high') {
-            $introText = '**URGENT:** A high-value payment file requires your immediate approval.';
-        } elseif ($priority === 'medium') {
-            $introText = '**IMPORTANT:** A payment file requires your approval before processing can continue.';
+        $creatorName = $this->createdBy ? $this->createdBy->name : 'Unknown User';
+        $filename = $this->massPaymentFile->original_filename;
+
+        return "A mass payment file '{$filename}' created by {$creatorName} is ready for approval.";
+    }
+
+    /**
+     * Get file details for email.
+     *
+     * @return string
+     */
+    private function getFileDetails(): string
+    {
+        $amount = number_format($this->massPaymentFile->total_amount, 2);
+        $currency = $this->massPaymentFile->currency;
+        $rows = number_format($this->massPaymentFile->total_rows);
+        $createdAt = $this->massPaymentFile->created_at->format('M j, Y \a\t g:i A T');
+
+        $details = "**File Details:**\n";
+        $details .= "• Amount: {$amount} {$currency}\n";
+        $details .= "• Number of payments: {$rows}\n";
+        $details .= "• Created: {$createdAt}\n";
+
+        if ($this->requiresComplianceReview()) {
+            $details .= "• Status: Requires compliance review";
         }
 
-        return $introText;
+        return $details;
     }
 
     /**
-     * Get the notification title for database storage.
+     * Get email footer.
      *
      * @return string
      */
-    private function getNotificationTitle(): string
+    private function getEmailFooter(): string
     {
-        $priority = $this->getApprovalPriority();
+        $deadline = $this->getApprovalDeadline();
         
-        $titlePrefix = '';
-        if ($priority === 'high') {
-            $titlePrefix = 'URGENT: ';
-        } elseif ($priority === 'medium') {
-            $titlePrefix = 'IMPORTANT: ';
+        if ($deadline) {
+            return "Please review and approve by {$deadline} to ensure timely processing.";
         }
 
-        return $titlePrefix . 'Payment Approval Required';
-    }
-
-    /**
-     * Get the database message text.
-     *
-     * @return string
-     */
-    private function getDatabaseMessage(): string
-    {
-        return "Payment file '{$this->paymentFile->original_name}' ({$this->getFormattedAmount()}) requires your approval. " .
-               "Total instructions: {$this->paymentFile->valid_records}. " .
-               "Deadline: {$this->getApprovalDeadline()->format('M j, Y g:i A')}.";
-    }
-
-    /**
-     * Get notification tags for grouping.
-     *
-     * @return array<string>
-     */
-    public function tags(): array
-    {
-        return [
-            'approval_required',
-            'payment_file:' . $this->paymentFile->id,
-            'approval:' . $this->approval->id,
-            'priority:' . $this->getApprovalPriority(),
-            'currency:' . $this->paymentFile->currency,
-        ];
-    }
-
-    /**
-     * Determine the notification's timeout.
-     *
-     * @return Carbon|null
-     */
-    public function retryUntil(): ?Carbon
-    {
-        return Carbon::now()->addHours(self::NOTIFICATION_TIMEOUT_HOURS);
-    }
-
-    /**
-     * Handle notification failure.
-     *
-     * @param mixed $notifiable
-     * @param string $channel
-     * @param \Exception $exception
-     * @return void
-     */
-    public function failed(mixed $notifiable, string $channel, \Exception $exception): void
-    {
-        Log::error('ApprovalRequiredNotification delivery failed', [
-            'payment_file_id' => $this->paymentFile->id,
-            'approval_id' => $this->approval->id,
-            'approver_id' => $notifiable->id ?? null,
-            'channel' => $channel,
-            'error' => $exception->getMessage(),
-            'trace' => $exception->getTraceAsString(),
-        ]);
-
-        // Attempt to create a fallback database notification if mail failed
-        if ($channel === 'mail') {
-            try {
-                $notifiable->notify(new static($this->paymentFile, $this->approval));
-                Log::info('Fallback notification sent via database', [
-                    'payment_file_id' => $this->paymentFile->id,
-                    'approval_id' => $this->approval->id,
-                    'approver_id' => $notifiable->id ?? null,
-                ]);
-            } catch (\Exception $e) {
-                Log::error('Fallback notification also failed', [
-                    'payment_file_id' => $this->paymentFile->id,
-                    'approval_id' => $this->approval->id,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-    }
-
-    /**
-     * Get the unique identifier for the notification.
-     *
-     * @return string
-     */
-    public function getId(): string
-    {
-        return 'approval_required_' . $this->paymentFile->id . '_' . $this->approval->id;
-    }
-
-    /**
-     * Check
+        return 'Please review and approve as

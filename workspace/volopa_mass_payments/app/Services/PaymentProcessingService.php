@@ -1,3 +1,12 @@
+{
+  "Development Plan": [
+    "app/Services/PaymentProcessingService.php"
+  ],
+  "Incremental Change": [
+    "app/Services/PaymentProcessingService.php: Service for processing approved payments, creating payment instructions, handling payment execution, managing batch processing, and integrating with external payment systems"
+  ]
+}
+
 ## Code: app/Services/PaymentProcessingService.php
 
 ```php
@@ -5,438 +14,450 @@
 
 namespace App\Services;
 
-use App\Models\PaymentFile;
+use App\Models\MassPaymentFile;
 use App\Models\PaymentInstruction;
+use App\Models\Beneficiary;
+use App\Models\TccAccount;
+use App\Models\User;
+use App\Jobs\ProcessPaymentInstructionsJob;
+use App\Notifications\PaymentProcessingNotification;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Exception;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 use Carbon\Carbon;
+use League\Csv\Reader;
+use Exception;
 
 class PaymentProcessingService
 {
     /**
-     * Default batch size for processing payment instructions.
+     * Maximum number of payment instructions to process in a single batch.
      */
-    private const DEFAULT_BATCH_SIZE = 100;
+    private const MAX_BATCH_SIZE = 100;
 
     /**
-     * Maximum retry attempts for failed payments.
+     * Maximum number of retry attempts for failed payments.
      */
     private const MAX_RETRY_ATTEMPTS = 3;
 
     /**
-     * Processing timeout in seconds.
+     * Payment processing timeout in seconds.
      */
-    private const PROCESSING_TIMEOUT = 30;
+    private const PROCESSING_TIMEOUT = 600;
 
     /**
-     * Supported settlement methods and their processing times.
+     * Cache TTL for processing status in seconds.
      */
-    private const SETTLEMENT_PROCESSING_TIMES = [
-        PaymentInstruction::SETTLEMENT_SEPA => [
-            'min_hours' => 1,
-            'max_hours' => 24,
-            'instant' => false
-        ],
-        PaymentInstruction::SETTLEMENT_FASTER_PAYMENTS => [
-            'min_hours' => 0,
-            'max_hours' => 1,
-            'instant' => true
-        ],
-        PaymentInstruction::SETTLEMENT_ACH => [
-            'min_hours' => 24,
-            'max_hours' => 72,
-            'instant' => false
-        ],
-        PaymentInstruction::SETTLEMENT_WIRE => [
-            'min_hours' => 4,
-            'max_hours' => 24,
-            'instant' => false
-        ],
-        PaymentInstruction::SETTLEMENT_SWIFT => [
-            'min_hours' => 24,
-            'max_hours' => 120,
-            'instant' => false
-        ]
+    private const CACHE_TTL = 300;
+
+    /**
+     * External payment system endpoints.
+     */
+    private const PAYMENT_ENDPOINTS = [
+        'domestic' => '/api/v1/payments/domestic',
+        'international' => '/api/v1/payments/international',
+        'swift' => '/api/v1/payments/swift',
+        'sepa' => '/api/v1/payments/sepa'
     ];
 
     /**
-     * Process payments for an approved payment file.
-     *
-     * @param PaymentFile $file PaymentFile to process
-     * @return array Processing results
-     * @throws Exception If processing fails
+     * Payment method mapping by currency.
      */
-    public function processPayments(PaymentFile $file): array
+    private const PAYMENT_METHODS = [
+        'USD' => 'international',
+        'EUR' => 'sepa',
+        'GBP' => 'international',
+        'SGD' => 'domestic',
+        'HKD' => 'domestic',
+        'AUD' => 'domestic',
+        'CAD' => 'domestic',
+        'JPY' => 'swift',
+        'CNY' => 'swift',
+        'THB' => 'domestic',
+        'MYR' => 'domestic',
+        'IDR' => 'domestic',
+        'PHP' => 'domestic',
+        'VND' => 'domestic'
+    ];
+
+    /**
+     * Processing fee rates by currency (percentage).
+     */
+    private const PROCESSING_FEES = [
+        'USD' => 0.0025,
+        'EUR' => 0.0030,
+        'GBP' => 0.0035,
+        'SGD' => 0.0020,
+        'HKD' => 0.0020,
+        'AUD' => 0.0025,
+        'CAD' => 0.0025,
+        'JPY' => 0.0030,
+        'CNY' => 0.0040,
+        'THB' => 0.0030,
+        'MYR' => 0.0030,
+        'IDR' => 0.0035,
+        'PHP' => 0.0035,
+        'VND' => 0.0035
+    ];
+
+    /**
+     * Exchange rate service instance.
+     */
+    private ExchangeRateService $exchangeRateService;
+
+    /**
+     * Mass payment file service instance.
+     */
+    private MassPaymentFileService $massPaymentFileService;
+
+    /**
+     * Create a new payment processing service instance.
+     *
+     * @param ExchangeRateService $exchangeRateService
+     * @param MassPaymentFileService $massPaymentFileService
+     */
+    public function __construct(
+        ExchangeRateService $exchangeRateService,
+        MassPaymentFileService $massPaymentFileService
+    ) {
+        $this->exchangeRateService = $exchangeRateService;
+        $this->massPaymentFileService = $massPaymentFileService;
+    }
+
+    /**
+     * Create payment instructions from a mass payment file.
+     *
+     * @param MassPaymentFile $massPaymentFile
+     * @param array $validatedData
+     * @return Collection
+     * @throws Exception
+     */
+    public function createInstructions(MassPaymentFile $massPaymentFile, array $validatedData): Collection
     {
-        Log::info('Starting payment processing', [
-            'payment_file_id' => $file->id,
-            'total_instructions' => $file->valid_records,
-            'total_amount' => $file->total_amount,
-            'currency' => $file->currency
+        Log::info('Creating payment instructions from mass payment file', [
+            'file_id' => $massPaymentFile->id,
+            'client_id' => $massPaymentFile->client_id,
+            'total_rows' => count($validatedData)
         ]);
 
         try {
-            // Validate file is ready for processing
-            $this->validateFileForProcessing($file);
+            return DB::transaction(function () use ($massPaymentFile, $validatedData) {
+                $instructions = collect();
+                $totalAmount = 0.00;
+                $batchNumber = $this->generateBatchNumber();
 
-            // Update file status to processing payments
-            $file->updateStatus(PaymentFile::STATUS_PROCESSING_PAYMENTS);
+                foreach ($validatedData as $rowIndex => $rowData) {
+                    $instruction = $this->createSingleInstruction(
+                        $massPaymentFile,
+                        $rowData,
+                        $rowIndex + 1,
+                        $batchNumber
+                    );
 
-            $results = DB::transaction(function () use ($file) {
-                return $this->processPaymentInstructions($file);
+                    if ($instruction) {
+                        $instructions->push($instruction);
+                        $totalAmount += $instruction->amount;
+                    }
+                }
+
+                // Update mass payment file with total amount
+                $massPaymentFile->update([
+                    'total_amount' => $totalAmount,
+                    'total_rows' => count($validatedData),
+                    'valid_rows' => $instructions->count(),
+                    'invalid_rows' => count($validatedData) - $instructions->count()
+                ]);
+
+                Log::info('Payment instructions created successfully', [
+                    'file_id' => $massPaymentFile->id,
+                    'instructions_count' => $instructions->count(),
+                    'total_amount' => $totalAmount,
+                    'batch_number' => $batchNumber
+                ]);
+
+                return $instructions;
             });
-
-            // Update final file status based on results
-            $this->updateFinalFileStatus($file, $results);
-
-            Log::info('Payment processing completed', [
-                'payment_file_id' => $file->id,
-                'processed_count' => $results['processed_count'],
-                'successful_count' => $results['successful_count'],
-                'failed_count' => $results['failed_count'],
-                'total_processed_amount' => $results['total_processed_amount']
-            ]);
-
-            return $results;
-
         } catch (Exception $e) {
-            Log::error('Payment processing failed', [
-                'payment_file_id' => $file->id,
+            Log::error('Failed to create payment instructions', [
+                'file_id' => $massPaymentFile->id,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
 
-            // Update file status to failed
-            $file->updateStatus(PaymentFile::STATUS_FAILED);
             throw $e;
         }
     }
 
     /**
-     * Process payment instructions in chunks.
+     * Process payments for a mass payment file.
      *
-     * @param PaymentFile $file PaymentFile to process
-     * @return array Processing results
+     * @param MassPaymentFile $massPaymentFile
+     * @return bool
+     * @throws Exception
      */
-    public function processPaymentInstructions(PaymentFile $file): array
+    public function processPayments(MassPaymentFile $massPaymentFile): bool
     {
-        $totalProcessed = 0;
-        $totalSuccessful = 0;
-        $totalFailed = 0;
-        $totalProcessedAmount = 0.0;
-        $processingErrors = [];
-
-        Log::info('Processing payment instructions in batches', [
-            'payment_file_id' => $file->id,
-            'batch_size' => self::DEFAULT_BATCH_SIZE
-        ]);
-
-        // Process instructions in chunks to avoid memory issues
-        PaymentInstruction::forPaymentFile($file->id)
-            ->pending()
-            ->chunk(self::DEFAULT_BATCH_SIZE, function ($instructions) use (
-                &$totalProcessed,
-                &$totalSuccessful,
-                &$totalFailed,
-                &$totalProcessedAmount,
-                &$processingErrors,
-                $file
-            ) {
-                $batchResults = $this->processPaymentBatch($instructions);
-                
-                $totalProcessed += $batchResults['processed_count'];
-                $totalSuccessful += $batchResults['successful_count'];
-                $totalFailed += $batchResults['failed_count'];
-                $totalProcessedAmount += $batchResults['total_amount'];
-                
-                if (!empty($batchResults['errors'])) {
-                    $processingErrors = array_merge($processingErrors, $batchResults['errors']);
-                }
-
-                Log::info('Batch processing completed', [
-                    'payment_file_id' => $file->id,
-                    'batch_processed' => $batchResults['processed_count'],
-                    'batch_successful' => $batchResults['successful_count'],
-                    'batch_failed' => $batchResults['failed_count'],
-                    'total_processed_so_far' => $totalProcessed
-                ]);
-            });
-
-        return [
-            'processed_count' => $totalProcessed,
-            'successful_count' => $totalSuccessful,
-            'failed_count' => $totalFailed,
-            'total_processed_amount' => $totalProcessedAmount,
-            'success_rate' => $totalProcessed > 0 ? ($totalSuccessful / $totalProcessed) * 100 : 0,
-            'errors' => $processingErrors,
-            'processing_completed_at' => Carbon::now(),
-        ];
-    }
-
-    /**
-     * Process a batch of payment instructions.
-     *
-     * @param \Illuminate\Database\Eloquent\Collection $instructions Batch of payment instructions
-     * @return array Batch processing results
-     */
-    public function processPaymentBatch($instructions): array
-    {
-        $processedCount = 0;
-        $successfulCount = 0;
-        $failedCount = 0;
-        $totalAmount = 0.0;
-        $errors = [];
-
-        Log::info('Processing payment batch', [
-            'instruction_count' => $instructions->count()
-        ]);
-
-        foreach ($instructions as $instruction) {
-            try {
-                $result = $this->processSinglePayment($instruction);
-                
-                $processedCount++;
-                $totalAmount += $instruction->amount;
-                
-                if ($result['success']) {
-                    $successfulCount++;
-                    $instruction->markAsCompleted();
-                } else {
-                    $failedCount++;
-                    $instruction->markAsFailed();
-                    
-                    if (isset($result['error'])) {
-                        $errors[] = [
-                            'instruction_id' => $instruction->id,
-                            'row_number' => $instruction->row_number,
-                            'error' => $result['error'],
-                            'amount' => $instruction->amount,
-                            'beneficiary_name' => $instruction->beneficiary_name
-                        ];
-                    }
-                }
-
-            } catch (Exception $e) {
-                $processedCount++;
-                $failedCount++;
-                $totalAmount += $instruction->amount;
-                
-                Log::error('Error processing single payment', [
-                    'instruction_id' => $instruction->id,
-                    'error' => $e->getMessage()
-                ]);
-
-                $instruction->markAsFailed();
-                
-                $errors[] = [
-                    'instruction_id' => $instruction->id,
-                    'row_number' => $instruction->row_number,
-                    'error' => 'Processing exception: ' . $e->getMessage(),
-                    'amount' => $instruction->amount,
-                    'beneficiary_name' => $instruction->beneficiary_name
-                ];
-            }
-        }
-
-        return [
-            'processed_count' => $processedCount,
-            'successful_count' => $successfulCount,
-            'failed_count' => $failedCount,
-            'total_amount' => $totalAmount,
-            'errors' => $errors
-        ];
-    }
-
-    /**
-     * Process a single payment instruction.
-     *
-     * @param PaymentInstruction $instruction Payment instruction to process
-     * @return array Processing result
-     */
-    public function processSinglePayment(PaymentInstruction $instruction): array
-    {
-        Log::info('Processing single payment', [
-            'instruction_id' => $instruction->id,
-            'amount' => $instruction->amount,
-            'currency' => $instruction->currency,
-            'settlement_method' => $instruction->settlement_method,
-            'beneficiary_account' => $instruction->beneficiary_account
+        Log::info('Starting payment processing for mass payment file', [
+            'file_id' => $massPaymentFile->id,
+            'client_id' => $massPaymentFile->client_id,
+            'status' => $massPaymentFile->status
         ]);
 
         try {
-            // Mark instruction as processing
-            $instruction->markAsProcessing();
+            // Update file status
+            $massPaymentFile->markProcessingPayments();
 
-            // Validate payment instruction before processing
-            $validationResult = $this->validatePaymentInstruction($instruction);
-            if (!$validationResult['valid']) {
-                return [
-                    'success' => false,
-                    'error' => $validationResult['error'],
-                    'instruction_id' => $instruction->id
-                ];
-            }
+            // Cache processing status
+            $this->cacheProcessingStatus($massPaymentFile->id, 'processing_payments');
 
-            // Simulate payment processing based on settlement method
-            $processingResult = $this->executePaymentProcessing($instruction);
+            // Get payment instructions
+            $instructions = $massPaymentFile->paymentInstructions()
+                ->where('status', PaymentInstruction::STATUS_PENDING)
+                ->get();
 
-            if ($processingResult['success']) {
-                Log::info('Payment processed successfully', [
-                    'instruction_id' => $instruction->id,
-                    'transaction_id' => $processingResult['transaction_id'] ?? null
+            if ($instructions->isEmpty()) {
+                Log::warning('No pending payment instructions found', [
+                    'file_id' => $massPaymentFile->id
                 ]);
 
-                return [
-                    'success' => true,
-                    'transaction_id' => $processingResult['transaction_id'] ?? null,
-                    'processing_time' => $processingResult['processing_time'] ?? null,
-                    'instruction_id' => $instruction->id
-                ];
-            } else {
-                Log::warning('Payment processing failed', [
-                    'instruction_id' => $instruction->id,
-                    'error' => $processingResult['error'] ?? 'Unknown error'
+                $massPaymentFile->markAsCompleted();
+                return true;
+            }
+
+            // Process instructions in batches
+            $batches = $instructions->chunk(self::MAX_BATCH_SIZE);
+            $totalBatches = $batches->count();
+            $processedBatches = 0;
+            $successfulPayments = 0;
+            $failedPayments = 0;
+
+            foreach ($batches as $batchIndex => $batch) {
+                Log::info('Processing payment batch', [
+                    'file_id' => $massPaymentFile->id,
+                    'batch_index' => $batchIndex + 1,
+                    'total_batches' => $totalBatches,
+                    'batch_size' => $batch->count()
                 ]);
 
-                return [
-                    'success' => false,
-                    'error' => $processingResult['error'] ?? 'Payment processing failed',
-                    'instruction_id' => $instruction->id
-                ];
+                $batchResult = $this->processBatch($batch, $massPaymentFile);
+                $successfulPayments += $batchResult['successful'];
+                $failedPayments += $batchResult['failed'];
+                $processedBatches++;
+
+                // Update processing progress
+                $this->updateProcessingProgress(
+                    $massPaymentFile->id,
+                    $processedBatches,
+                    $totalBatches,
+                    $successfulPayments,
+                    $failedPayments
+                );
             }
+
+            // Update final status
+            $this->finalizePaymentProcessing($massPaymentFile, $successfulPayments, $failedPayments);
+
+            Log::info('Payment processing completed', [
+                'file_id' => $massPaymentFile->id,
+                'successful_payments' => $successfulPayments,
+                'failed_payments' => $failedPayments,
+                'total_batches' => $totalBatches
+            ]);
+
+            return true;
 
         } catch (Exception $e) {
-            Log::error('Exception during payment processing', [
+            Log::error('Failed to process payments', [
+                'file_id' => $massPaymentFile->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            // Mark file as failed
+            $massPaymentFile->markAsFailed('Payment processing failed: ' . $e->getMessage());
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Retry failed payment instruction.
+     *
+     * @param PaymentInstruction $instruction
+     * @return bool
+     * @throws Exception
+     */
+    public function retryFailedPayment(PaymentInstruction $instruction): bool
+    {
+        Log::info('Retrying failed payment instruction', [
+            'instruction_id' => $instruction->id,
+            'client_id' => $instruction->client_id,
+            'attempt' => $this->getRetryAttemptCount($instruction) + 1
+        ]);
+
+        try {
+            // Check if instruction can be retried
+            if (!$this->canRetryPayment($instruction)) {
+                Log::warning('Payment instruction cannot be retried', [
+                    'instruction_id' => $instruction->id,
+                    'status' => $instruction->status,
+                    'retry_attempts' => $this->getRetryAttemptCount($instruction)
+                ]);
+
+                return false;
+            }
+
+            // Reset instruction status
+            $instruction->update([
+                'status' => PaymentInstruction::STATUS_PENDING,
+                'failure_reason' => null,
+                'bank_response' => null
+            ]);
+
+            // Process single payment
+            $result = $this->processSinglePayment($instruction);
+
+            Log::info('Payment retry completed', [
                 'instruction_id' => $instruction->id,
+                'result' => $result ? 'success' : 'failed'
+            ]);
+
+            return $result;
+
+        } catch (Exception $e) {
+            Log::error('Failed to retry payment', [
+                'instruction_id' => $instruction->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            throw $e;
+        }
+    }
+
+    /**
+     * Get payment processing status.
+     *
+     * @param string $fileId
+     * @return array|null
+     */
+    public function getProcessingStatus(string $fileId): ?array
+    {
+        $cacheKey = "payment_processing_status:{$fileId}";
+        
+        return Cache::get($cacheKey, function () use ($fileId) {
+            $file = MassPaymentFile::with(['paymentInstructions'])->find($fileId);
+            
+            if (!$file) {
+                return null;
+            }
+
+            $instructions = $file->paymentInstructions;
+            
+            return [
+                'file_status' => $file->status,
+                'total_instructions' => $instructions->count(),
+                'pending' => $instructions->where('status', PaymentInstruction::STATUS_PENDING)->count(),
+                'processing' => $instructions->where('status', PaymentInstruction::STATUS_PROCESSING)->count(),
+                'completed' => $instructions->where('status', PaymentInstruction::STATUS_COMPLETED)->count(),
+                'failed' => $instructions->where('status', PaymentInstruction::STATUS_FAILED)->count(),
+                'cancelled' => $instructions->where('status', PaymentInstruction::STATUS_CANCELLED)->count(),
+                'rejected' => $instructions->where('status', PaymentInstruction::STATUS_REJECTED)->count(),
+                'total_amount' => $file->total_amount,
+                'processed_amount' => $instructions->whereIn('status', [
+                    PaymentInstruction::STATUS_COMPLETED,
+                    PaymentInstruction::STATUS_PROCESSING
+                ])->sum('amount'),
+                'completion_percentage' => $this->calculateCompletionPercentage($instructions),
+                'estimated_completion' => $this->estimateCompletionTime($instructions),
+                'last_updated' => $file->updated_at->toISOString()
+            ];
+        });
+    }
+
+    /**
+     * Cancel pending payment instructions.
+     *
+     * @param MassPaymentFile $massPaymentFile
+     * @param string $reason
+     * @return int Number of cancelled instructions
+     * @throws Exception
+     */
+    public function cancelPendingPayments(MassPaymentFile $massPaymentFile, string $reason = ''): int
+    {
+        Log::info('Cancelling pending payments', [
+            'file_id' => $massPaymentFile->id,
+            'reason' => $reason
+        ]);
+
+        try {
+            return DB::transaction(function () use ($massPaymentFile, $reason) {
+                $pendingInstructions = $massPaymentFile->paymentInstructions()
+                    ->whereIn('status', [
+                        PaymentInstruction::STATUS_PENDING,
+                        PaymentInstruction::STATUS_PROCESSING
+                    ])
+                    ->get();
+
+                $cancelledCount = 0;
+
+                foreach ($pendingInstructions as $instruction) {
+                    // Check if payment is already being processed by external system
+                    if ($instruction->status === PaymentInstruction::STATUS_PROCESSING && 
+                        !empty($instruction->transaction_id)) {
+                        // Attempt to cancel with external system
+                        $this->cancelExternalPayment($instruction);
+                    }
+
+                    $instruction->update([
+                        'status' => PaymentInstruction::STATUS_CANCELLED,
+                        'failure_reason' => $reason ?: 'Cancelled by user request',
+                        'processed_at' => Carbon::now()
+                    ]);
+
+                    $cancelledCount++;
+                }
+
+                // Update mass payment file status
+                if ($cancelledCount > 0) {
+                    $massPaymentFile->markAsCancelled($reason);
+                }
+
+                Log::info('Payments cancelled successfully', [
+                    'file_id' => $massPaymentFile->id,
+                    'cancelled_count' => $cancelledCount
+                ]);
+
+                return $cancelledCount;
+            });
+        } catch (Exception $e) {
+            Log::error('Failed to cancel payments', [
+                'file_id' => $massPaymentFile->id,
                 'error' => $e->getMessage()
             ]);
 
-            return [
-                'success' => false,
-                'error' => 'Processing exception: ' . $e->getMessage(),
-                'instruction_id' => $instruction->id
-            ];
+            throw $e;
         }
     }
 
     /**
-     * Get processing statistics for a payment file.
+     * Create a single payment instruction.
      *
-     * @param PaymentFile $file PaymentFile to get statistics for
-     * @return array Processing statistics
+     * @param MassPaymentFile $massPaymentFile
+     * @param array $rowData
+     * @param int $rowNumber
+     * @param string $batchNumber
+     * @return PaymentInstruction|null
+     * @throws Exception
      */
-    public function getProcessingStatistics(PaymentFile $file): array
-    {
-        $instructions = PaymentInstruction::forPaymentFile($file->id)->get();
-        
-        $totalInstructions = $instructions->count();
-        $completedInstructions = $instructions->where('status', PaymentInstruction::STATUS_COMPLETED)->count();
-        $failedInstructions = $instructions->where('status', PaymentInstruction::STATUS_FAILED)->count();
-        $processingInstructions = $instructions->where('status', PaymentInstruction::STATUS_PROCESSING)->count();
-        $pendingInstructions = $instructions->where('status', PaymentInstruction::STATUS_PENDING)->count();
-        
-        $completedAmount = $instructions->where('status', PaymentInstruction::STATUS_COMPLETED)->sum('amount');
-        $failedAmount = $instructions->where('status', PaymentInstruction::STATUS_FAILED)->sum('amount');
-
-        return [
-            'payment_file_id' => $file->id,
-            'file_status' => $file->status,
-            'total_instructions' => $totalInstructions,
-            'completed_instructions' => $completedInstructions,
-            'failed_instructions' => $failedInstructions,
-            'processing_instructions' => $processingInstructions,
-            'pending_instructions' => $pendingInstructions,
-            'completion_rate' => $totalInstructions > 0 ? ($completedInstructions / $totalInstructions) * 100 : 0,
-            'failure_rate' => $totalInstructions > 0 ? ($failedInstructions / $totalInstructions) * 100 : 0,
-            'total_file_amount' => $file->total_amount,
-            'completed_amount' => $completedAmount,
-            'failed_amount' => $failedAmount,
-            'amount_completion_rate' => $file->total_amount > 0 ? ($completedAmount / $file->total_amount) * 100 : 0,
-            'currency' => $file->currency,
-            'processing_started_at' => $file->updated_at,
-            'is_processing_complete' => $pendingInstructions === 0 && $processingInstructions === 0,
-        ];
-    }
-
-    /**
-     * Retry failed payments for a payment file.
-     *
-     * @param PaymentFile $file PaymentFile to retry payments for
-     * @param int $maxRetries Maximum number of retry attempts
-     * @return array Retry results
-     */
-    public function retryFailedPayments(PaymentFile $file, int $maxRetries = self::MAX_RETRY_ATTEMPTS): array
-    {
-        Log::info('Retrying failed payments', [
-            'payment_file_id' => $file->id,
-            'max_retries' => $maxRetries
-        ]);
-
-        $failedInstructions = PaymentInstruction::forPaymentFile($file->id)
-            ->failed()
-            ->get();
-
-        if ($failedInstructions->isEmpty()) {
-            Log::info('No failed payments to retry', ['payment_file_id' => $file->id]);
-            return [
-                'retried_count' => 0,
-                'successful_retries' => 0,
-                'still_failed' => 0
-            ];
-        }
-
-        $retriedCount = 0;
-        $successfulRetries = 0;
-        $stillFailed = 0;
-
-        foreach ($failedInstructions as $instruction) {
-            try {
-                // Reset status to pending for retry
-                $instruction->updateStatus(PaymentInstruction::STATUS_PENDING);
-                
-                $result = $this->processSinglePayment($instruction);
-                $retriedCount++;
-
-                if ($result['success']) {
-                    $successfulRetries++;
-                    $instruction->markAsCompleted();
-                    
-                    Log::info('Payment retry successful', [
-                        'instruction_id' => $instruction->id
-                    ]);
-                } else {
-                    $stillFailed++;
-                    $instruction->markAsFailed();
-                    
-                    Log::warning('Payment retry failed', [
-                        'instruction_id' => $instruction->id,
-                        'error' => $result['error'] ?? 'Unknown error'
-                    ]);
-                }
-
-            } catch (Exception $e) {
-                $retriedCount++;
-                $stillFailed++;
-                
-                Log::error('Exception during payment retry', [
-                    'instruction_id' => $instruction->id,
-                    'error' => $e->getMessage()
-                ]);
-                
-                $instruction->markAsFailed();
-            }
-        }
-
-        Log::info('Payment retry completed', [
-            'payment_file_id' => $file->id,
-            'retried_count' => $retriedCount,
-            'successful_retries' => $successfulRetries,
-            'still_failed' => $stillFailed
-        ]);
-
-        return [
-            'retried_count' => $retriedCount,
-            'successful_retries' => $successfulRetries,
-            'still_failed' => $stillFailed,
-            'retry_success_rate' => $retriedCount > 0 ? ($successfulRetries / $retriedCount) *
+    private function createSingleInstruction(
+        MassPaymentFile $massPaymentFile,
+        array $rowData,
+        int $rowNumber,
+        string $batchNumber
+    ): ?PaymentInstruction {
+        try {

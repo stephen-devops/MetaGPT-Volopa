@@ -5,12 +5,12 @@
 
 namespace App\Http\Requests;
 
-use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
-use App\Models\PaymentInstruction;
 use App\Models\Beneficiary;
-use App\Models\MassPaymentFile;
+use App\Models\PaymentInstruction;
 use App\Models\TccAccount;
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
 
 class CreatePaymentInstructionRequest extends FormRequest
 {
@@ -19,21 +19,8 @@ class CreatePaymentInstructionRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        // Check if user can create payment instructions
-        // User must be authenticated and have access to the specified mass payment file
-        if (!$this->user()) {
-            return false;
-        }
-
-        // If mass_payment_file_id is provided, check if user owns that file
-        if ($this->mass_payment_file_id) {
-            $massPaymentFile = MassPaymentFile::find($this->mass_payment_file_id);
-            if (!$massPaymentFile || $massPaymentFile->client_id !== $this->user()->client_id) {
-                return false;
-            }
-        }
-
-        return true;
+        // Check if user has permission to create payment instructions
+        return Gate::allows('create', PaymentInstruction::class);
     }
 
     /**
@@ -42,100 +29,114 @@ class CreatePaymentInstructionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'mass_payment_file_id' => [
-                'required',
-                'integer',
-                Rule::exists('mass_payment_files', 'id')->where(function ($query) {
-                    $query->where('client_id', $this->user()->client_id);
-                }),
-            ],
             'beneficiary_id' => [
                 'required',
-                'integer',
-                Rule::exists('beneficiaries', 'id')->where(function ($query) {
-                    $query->where('client_id', $this->user()->client_id)
-                          ->where('status', 'active');
-                }),
+                'uuid',
+                'exists:beneficiaries,id',
+                function ($attribute, $value, $fail) {
+                    $this->validateBeneficiaryAccess($value, $fail);
+                }
             ],
             'amount' => [
                 'required',
                 'numeric',
                 'min:0.01',
-                'max:999999.99',
-                'regex:/^\d+(\.\d{1,2})?$/', // Ensure proper decimal format
+                'max:999999999.99',
+                'decimal:0,2'
             ],
             'currency' => [
                 'required',
                 'string',
                 'size:3',
-                'in:GBP,EUR,USD,INR',
+                Rule::in(['USD', 'EUR', 'GBP', 'SGD', 'HKD', 'AUD', 'CAD', 'JPY', 'CNY', 'THB', 'MYR', 'IDR', 'PHP', 'VND'])
             ],
             'purpose_code' => [
                 'nullable',
                 'string',
                 'max:10',
-                'alpha_num',
+                Rule::in(['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH'])
             ],
-            'reference' => [
+            'remittance_information' => [
                 'nullable',
                 'string',
-                'max:255',
+                'max:500'
             ],
-            'row_number' => [
+            'payment_reference' => [
+                'nullable',
+                'string',
+                'max:100',
+                'regex:/^[A-Za-z0-9\-_\.\/]+$/'
+            ],
+            'tcc_account_id' => [
                 'required',
-                'integer',
-                'min:1',
+                'uuid',
+                'exists:tcc_accounts,id',
+                function ($attribute, $value, $fail) {
+                    $this->validateTccAccountAccess($value, $fail);
+                }
             ],
-            'additional_data' => [
+            'effective_date' => [
+                'nullable',
+                'date',
+                'after_or_equal:today',
+                'before_or_equal:' . now()->addDays(30)->format('Y-m-d')
+            ],
+            'priority' => [
+                'nullable',
+                'string',
+                Rule::in(['low', 'normal', 'high', 'urgent'])
+            ],
+            'notification_method' => [
+                'nullable',
+                'string',
+                Rule::in(['email', 'sms', 'webhook', 'none'])
+            ],
+            'metadata' => [
                 'nullable',
                 'array',
+                'max:20'
             ],
-            'additional_data.*' => [
+            'metadata.*' => [
                 'string',
-                'max:500',
-            ],
+                'max:1000'
+            ]
         ];
     }
 
     /**
-     * Get custom validation messages.
+     * Get the error messages for the defined validation rules.
      */
     public function messages(): array
     {
         return [
-            'mass_payment_file_id.required' => 'A mass payment file must be specified.',
-            'mass_payment_file_id.integer' => 'The mass payment file ID must be a valid integer.',
-            'mass_payment_file_id.exists' => 'The specified mass payment file does not exist or does not belong to your organization.',
-            
-            'beneficiary_id.required' => 'A beneficiary must be specified.',
-            'beneficiary_id.integer' => 'The beneficiary ID must be a valid integer.',
-            'beneficiary_id.exists' => 'The specified beneficiary does not exist, is inactive, or does not belong to your organization.',
-            
-            'amount.required' => 'The payment amount is required.',
-            'amount.numeric' => 'The payment amount must be a valid number.',
-            'amount.min' => 'The payment amount must be at least 0.01.',
-            'amount.max' => 'The payment amount must not exceed 999,999.99.',
-            'amount.regex' => 'The payment amount must be in valid decimal format (e.g., 123.45).',
-            
-            'currency.required' => 'The currency is required.',
-            'currency.string' => 'The currency must be a valid text.',
-            'currency.size' => 'The currency must be exactly 3 characters.',
-            'currency.in' => 'The currency must be one of: GBP, EUR, USD, INR.',
-            
-            'purpose_code.string' => 'The purpose code must be valid text.',
-            'purpose_code.max' => 'The purpose code must not exceed 10 characters.',
-            'purpose_code.alpha_num' => 'The purpose code must contain only letters and numbers.',
-            
-            'reference.string' => 'The reference must be valid text.',
-            'reference.max' => 'The reference must not exceed 255 characters.',
-            
-            'row_number.required' => 'The row number is required.',
-            'row_number.integer' => 'The row number must be a valid integer.',
-            'row_number.min' => 'The row number must be at least 1.',
-            
-            'additional_data.array' => 'The additional data must be a valid array.',
-            'additional_data.*.string' => 'All additional data values must be valid text.',
-            'additional_data.*.max' => 'Additional data values must not exceed 500 characters each.',
+            'beneficiary_id.required' => 'Beneficiary is required.',
+            'beneficiary_id.uuid' => 'Invalid beneficiary ID format.',
+            'beneficiary_id.exists' => 'The selected beneficiary does not exist.',
+            'amount.required' => 'Payment amount is required.',
+            'amount.numeric' => 'Payment amount must be a valid number.',
+            'amount.min' => 'Payment amount must be at least 0.01.',
+            'amount.max' => 'Payment amount cannot exceed 999,999,999.99.',
+            'amount.decimal' => 'Payment amount cannot have more than 2 decimal places.',
+            'currency.required' => 'Currency is required.',
+            'currency.size' => 'Currency code must be exactly 3 characters.',
+            'currency.in' => 'The selected currency is not supported. Supported currencies: USD, EUR, GBP, SGD, HKD, AUD, CAD, JPY, CNY, THB, MYR, IDR, PHP, VND.',
+            'purpose_code.max' => 'Purpose code cannot exceed 10 characters.',
+            'purpose_code.in' => 'Invalid purpose code. Valid codes: SAL (Salary), DIV (Dividend), INT (Interest), FEE (Fee), RFD (Refund), TRD (Trade), SVC (Service), SUP (Supplier), INV (Investment), OTH (Other).',
+            'remittance_information.max' => 'Remittance information cannot exceed 500 characters.',
+            'payment_reference.max' => 'Payment reference cannot exceed 100 characters.',
+            'payment_reference.regex' => 'Payment reference can only contain letters, numbers, hyphens, underscores, dots, and forward slashes.',
+            'tcc_account_id.required' => 'TCC Account is required.',
+            'tcc_account_id.uuid' => 'Invalid TCC Account ID format.',
+            'tcc_account_id.exists' => 'The selected TCC Account does not exist.',
+            'effective_date.date' => 'Effective date must be a valid date.',
+            'effective_date.after_or_equal' => 'Effective date cannot be in the past.',
+            'effective_date.before_or_equal' => 'Effective date cannot be more than 30 days in the future.',
+            'priority.in' => 'Invalid priority. Must be: low, normal, high, or urgent.',
+            'notification_method.in' => 'Invalid notification method. Must be: email, sms, webhook, or none.',
+            'metadata.array' => 'Metadata must be an array.',
+            'metadata.max' => 'Metadata cannot contain more than 20 items.',
+            'metadata.*.string' => 'Each metadata value must be a string.',
+            'metadata.*.max' => 'Each metadata value cannot exceed 1000 characters.'
         ];
     }
 
@@ -145,72 +146,18 @@ class CreatePaymentInstructionRequest extends FormRequest
     public function attributes(): array
     {
         return [
-            'mass_payment_file_id' => 'mass payment file',
             'beneficiary_id' => 'beneficiary',
             'amount' => 'payment amount',
             'currency' => 'currency',
             'purpose_code' => 'purpose code',
-            'reference' => 'payment reference',
-            'row_number' => 'row number',
-            'additional_data' => 'additional data',
+            'remittance_information' => 'remittance information',
+            'payment_reference' => 'payment reference',
+            'tcc_account_id' => 'TCC Account',
+            'effective_date' => 'effective date',
+            'priority' => 'priority',
+            'notification_method' => 'notification method',
+            'metadata' => 'metadata'
         ];
-    }
-
-    /**
-     * Prepare the data for validation.
-     */
-    protected function prepareForValidation(): void
-    {
-        // Ensure numeric fields are properly cast
-        if ($this->has('mass_payment_file_id')) {
-            $this->merge([
-                'mass_payment_file_id' => (int) $this->mass_payment_file_id,
-            ]);
-        }
-
-        if ($this->has('beneficiary_id')) {
-            $this->merge([
-                'beneficiary_id' => (int) $this->beneficiary_id,
-            ]);
-        }
-
-        if ($this->has('row_number')) {
-            $this->merge([
-                'row_number' => (int) $this->row_number,
-            ]);
-        }
-
-        // Clean and format amount
-        if ($this->has('amount')) {
-            $amount = $this->amount;
-            if (is_string($amount)) {
-                // Remove any currency symbols or spaces
-                $amount = preg_replace('/[^\d.-]/', '', $amount);
-            }
-            $this->merge([
-                'amount' => (float) $amount,
-            ]);
-        }
-
-        // Normalize currency to uppercase
-        if ($this->has('currency')) {
-            $this->merge([
-                'currency' => strtoupper($this->currency),
-            ]);
-        }
-
-        // Trim string fields
-        if ($this->has('purpose_code')) {
-            $this->merge([
-                'purpose_code' => trim($this->purpose_code),
-            ]);
-        }
-
-        if ($this->has('reference')) {
-            $this->merge([
-                'reference' => trim($this->reference),
-            ]);
-        }
     }
 
     /**
@@ -219,173 +166,255 @@ class CreatePaymentInstructionRequest extends FormRequest
     public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
-            // Validate mass payment file status and ownership
-            if ($this->mass_payment_file_id && !$validator->errors()->has('mass_payment_file_id')) {
-                $massPaymentFile = MassPaymentFile::find($this->mass_payment_file_id);
-                
-                if ($massPaymentFile) {
-                    // Check if file is in a state that allows adding instructions
-                    if (!in_array($massPaymentFile->status, ['uploading', 'uploaded', 'validating', 'validated', 'validation_failed'])) {
-                        $validator->errors()->add('mass_payment_file_id', 'Payment instructions cannot be added to this file in its current status: ' . $massPaymentFile->status);
-                    }
-                }
-            }
-
-            // Validate beneficiary currency compatibility
-            if ($this->beneficiary_id && $this->currency && !$validator->errors()->has('beneficiary_id') && !$validator->errors()->has('currency')) {
-                $beneficiary = Beneficiary::find($this->beneficiary_id);
-                
-                if ($beneficiary && !$beneficiary->supportsCurrency($this->currency)) {
-                    $validator->errors()->add('currency', 'The selected beneficiary does not support payments in ' . $this->currency . '. Beneficiary currency: ' . $beneficiary->currency);
-                }
-            }
-
-            // Check for duplicate row number within the same file
-            if ($this->mass_payment_file_id && $this->row_number && !$validator->errors()->has('row_number')) {
-                $existingInstruction = PaymentInstruction::where('mass_payment_file_id', $this->mass_payment_file_id)
-                                                        ->where('row_number', $this->row_number)
-                                                        ->first();
-                
-                if ($existingInstruction) {
-                    $validator->errors()->add('row_number', 'A payment instruction with row number ' . $this->row_number . ' already exists for this file.');
-                }
-            }
-
-            // Validate currency-specific amount limits
-            if ($this->currency && $this->amount && !$validator->errors()->has('amount')) {
-                $this->validateCurrencyLimits($validator);
-            }
-
-            // Validate currency-specific purpose codes
-            if ($this->currency && $this->purpose_code && !$validator->errors()->has('purpose_code')) {
-                $this->validatePurposeCode($validator);
-            }
-
-            // Validate TCC account currency matches payment currency
-            if ($this->mass_payment_file_id && $this->currency && !$validator->errors()->has('currency')) {
-                $massPaymentFile = MassPaymentFile::with('tccAccount')->find($this->mass_payment_file_id);
-                
-                if ($massPaymentFile && $massPaymentFile->tccAccount) {
-                    if ($massPaymentFile->tccAccount->currency !== $this->currency) {
-                        $validator->errors()->add('currency', 'Payment currency (' . $this->currency . ') must match TCC account currency (' . $massPaymentFile->tccAccount->currency . ').');
-                    }
-                }
-            }
-
-            // Validate additional data structure
-            if ($this->additional_data && is_array($this->additional_data)) {
-                foreach ($this->additional_data as $key => $value) {
-                    if (!is_string($key) || strlen($key) > 50) {
-                        $validator->errors()->add('additional_data', 'Additional data keys must be strings with maximum 50 characters.');
-                        break;
-                    }
-                }
-            }
-
-            // Business rule: Validate minimum amounts per currency
-            if ($this->amount && $this->currency) {
-                $minAmounts = [
-                    'GBP' => 1.00,
-                    'EUR' => 1.00,
-                    'USD' => 1.00,
-                    'INR' => 100.00,
-                ];
-                
-                $minAmount = $minAmounts[$this->currency] ?? 1.00;
-                
-                if ($this->amount < $minAmount) {
-                    $validator->errors()->add('amount', 'Minimum payment amount for ' . $this->currency . ' is ' . number_format($minAmount, 2));
-                }
-            }
+            // Additional cross-field validation
+            $this->validateCurrencyConsistency($validator);
+            $this->validatePaymentAmountLimits($validator);
+            $this->validateTccAccountCurrency($validator);
+            $this->validateBeneficiaryCurrency($validator);
+            $this->validateDuplicatePayment($validator);
+            $this->validateAccountBalance($validator);
         });
     }
 
     /**
-     * Validate currency-specific amount limits.
+     * Prepare the data for validation.
      */
-    private function validateCurrencyLimits($validator): void
+    protected function prepareForValidation(): void
     {
-        $limits = [
-            'GBP' => ['min' => 1.00, 'max' => 50000.00],
-            'EUR' => ['min' => 1.00, 'max' => 50000.00],
-            'USD' => ['min' => 1.00, 'max' => 50000.00],
-            'INR' => ['min' => 100.00, 'max' => 5000000.00],
+        // Normalize currency to uppercase
+        if ($this->has('currency')) {
+            $this->merge([
+                'currency' => strtoupper($this->input('currency'))
+            ]);
+        }
+
+        // Normalize purpose code to uppercase
+        if ($this->has('purpose_code') && !empty($this->input('purpose_code'))) {
+            $this->merge([
+                'purpose_code' => strtoupper($this->input('purpose_code'))
+            ]);
+        }
+
+        // Set default values
+        $defaults = [
+            'priority' => 'normal',
+            'notification_method' => 'email',
+            'purpose_code' => 'OTH'
         ];
 
-        if (isset($limits[$this->currency])) {
-            $limit = $limits[$this->currency];
-            
-            if ($this->amount < $limit['min']) {
-                $validator->errors()->add('amount', 'Minimum amount for ' . $this->currency . ' is ' . number_format($limit['min'], 2));
+        foreach ($defaults as $key => $defaultValue) {
+            if (!$this->has($key) || empty($this->input($key))) {
+                $this->merge([$key => $defaultValue]);
             }
-            
-            if ($this->amount > $limit['max']) {
-                $validator->errors()->add('amount', 'Maximum amount for ' . $this->currency . ' is ' . number_format($limit['max'], 2));
+        }
+
+        // Set default effective date if not provided
+        if (!$this->has('effective_date') || empty($this->input('effective_date'))) {
+            $this->merge([
+                'effective_date' => now()->addDay()->format('Y-m-d')
+            ]);
+        }
+
+        // Trim string fields
+        $stringFields = ['remittance_information', 'payment_reference'];
+        foreach ($stringFields as $field) {
+            if ($this->has($field) && is_string($this->input($field))) {
+                $this->merge([
+                    $field => trim($this->input($field))
+                ]);
             }
+        }
+
+        // Clean metadata
+        if ($this->has('metadata') && is_array($this->input('metadata'))) {
+            $cleanMetadata = array_filter($this->input('metadata'), function ($value) {
+                return !empty(trim($value));
+            });
+            $this->merge(['metadata' => $cleanMetadata]);
+        }
+
+        // Format amount to 2 decimal places
+        if ($this->has('amount') && is_numeric($this->input('amount'))) {
+            $this->merge([
+                'amount' => number_format((float) $this->input('amount'), 2, '.', '')
+            ]);
         }
     }
 
     /**
-     * Validate purpose codes for specific currencies.
+     * Validate that the user has access to the specified beneficiary.
      */
-    private function validatePurposeCode($validator): void
+    private function validateBeneficiaryAccess(string $beneficiaryId, callable $fail): void
     {
-        $requiredPurposeCodes = [
-            'INR' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'OTHER'],
-        ];
-
-        $validPurposeCodes = [
-            'GBP' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'DIVIDEND', 'OTHER'],
-            'EUR' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'DIVIDEND', 'OTHER'],
-            'USD' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'DIVIDEND', 'OTHER'],
-            'INR' => ['SALARY', 'INVOICE', 'TRADE', 'SERVICE', 'OTHER'],
-        ];
-
-        // Check if purpose code is required for this currency
-        if (isset($requiredPurposeCodes[$this->currency]) && empty($this->purpose_code)) {
-            $validator->errors()->add('purpose_code', 'Purpose code is required for ' . $this->currency . ' payments.');
+        $user = $this->user();
+        
+        if (!$user) {
+            $fail('User authentication required.');
             return;
         }
 
-        // Validate purpose code is in allowed list
-        if (isset($validPurposeCodes[$this->currency]) && !empty($this->purpose_code)) {
-            if (!in_array($this->purpose_code, $validPurposeCodes[$this->currency])) {
-                $validator->errors()->add('purpose_code', 'Invalid purpose code for ' . $this->currency . '. Allowed codes: ' . implode(', ', $validPurposeCodes[$this->currency]));
+        $beneficiary = Beneficiary::find($beneficiaryId);
+        
+        if (!$beneficiary) {
+            $fail('The selected beneficiary does not exist.');
+            return;
+        }
+
+        // Check if user's client has access to this beneficiary
+        if ($beneficiary->client_id !== $user->client_id) {
+            $fail('You do not have access to the selected beneficiary.');
+            return;
+        }
+
+        // Check if beneficiary is active
+        if (isset($beneficiary->is_active) && !$beneficiary->is_active) {
+            $fail('The selected beneficiary is not active.');
+            return;
+        }
+
+        // Check if beneficiary is verified for payments
+        if (isset($beneficiary->is_verified) && !$beneficiary->is_verified) {
+            $fail('The selected beneficiary is not verified for payments.');
+            return;
+        }
+    }
+
+    /**
+     * Validate that the user has access to the specified TCC Account.
+     */
+    private function validateTccAccountAccess(string $tccAccountId, callable $fail): void
+    {
+        $user = $this->user();
+        
+        if (!$user) {
+            $fail('User authentication required.');
+            return;
+        }
+
+        $tccAccount = TccAccount::find($tccAccountId);
+        
+        if (!$tccAccount) {
+            $fail('The selected TCC Account does not exist.');
+            return;
+        }
+
+        // Check if user's client has access to this TCC Account
+        if ($tccAccount->client_id !== $user->client_id) {
+            $fail('You do not have access to the selected TCC Account.');
+            return;
+        }
+
+        // Check if TCC Account is active
+        if (!$tccAccount->is_active) {
+            $fail('The selected TCC Account is not active.');
+            return;
+        }
+
+        // Check if TCC Account is enabled for outbound payments
+        if (isset($tccAccount->can_send_payments) && !$tccAccount->can_send_payments) {
+            $fail('The selected TCC Account is not enabled for outbound payments.');
+            return;
+        }
+    }
+
+    /**
+     * Validate currency consistency across beneficiary and TCC account.
+     */
+    private function validateCurrencyConsistency($validator): void
+    {
+        $currency = $this->input('currency');
+        $beneficiaryId = $this->input('beneficiary_id');
+        $tccAccountId = $this->input('tcc_account_id');
+
+        if (!$currency || !$beneficiaryId || !$tccAccountId) {
+            return;
+        }
+
+        $beneficiary = Beneficiary::find($beneficiaryId);
+        $tccAccount = TccAccount::find($tccAccountId);
+
+        if (!$beneficiary || !$tccAccount) {
+            return;
+        }
+
+        // Check if beneficiary supports this currency
+        $beneficiaryCurrencies = $beneficiary->supported_currencies ?? [];
+        if (!empty($beneficiaryCurrencies) && !in_array($currency, $beneficiaryCurrencies)) {
+            $validator->errors()->add(
+                'currency',
+                'The selected beneficiary does not support ' . $currency . ' currency.'
+            );
+        }
+
+        // Check if TCC Account supports this currency
+        $tccCurrencies = $tccAccount->supported_currencies ?? [];
+        if (!empty($tccCurrencies) && !in_array($currency, $tccCurrencies)) {
+            $validator->errors()->add(
+                'currency',
+                'The selected TCC Account does not support ' . $currency . ' currency.'
+            );
+        }
+    }
+
+    /**
+     * Validate payment amount against limits.
+     */
+    private function validatePaymentAmountLimits($validator): void
+    {
+        $amount = (float) $this->input('amount', 0);
+        $currency = $this->input('currency');
+        $user = $this->user();
+
+        if (!$user || $amount <= 0) {
+            return;
+        }
+
+        // Get user's payment limits
+        $limits = $this->getUserPaymentLimits($user, $currency);
+
+        // Check single transaction limit
+        if (isset($limits['single_transaction']) && $amount > $limits['single_transaction']) {
+            $validator->errors()->add(
+                'amount',
+                'Payment amount exceeds your single transaction limit of ' . 
+                number_format($limits['single_transaction'], 2) . ' ' . $currency . '.'
+            );
+        }
+
+        // Check daily limit
+        if (isset($limits['daily_limit'])) {
+            $todayTotal = PaymentInstruction::where('client_id', $user->client_id)
+                ->where('currency', $currency)
+                ->whereDate('created_at', now())
+                ->whereIn('status', ['pending', 'processing', 'completed'])
+                ->sum('amount');
+            
+            if (($todayTotal + $amount) > $limits['daily_limit']) {
+                $validator->errors()->add(
+                    'amount',
+                    'This payment would exceed your daily limit of ' . 
+                    number_format($limits['daily_limit'], 2) . ' ' . $currency . '.'
+                );
+            }
+        }
+
+        // Check monthly limit
+        if (isset($limits['monthly_limit'])) {
+            $monthlyTotal = PaymentInstruction::where('client_id', $user->client_id)
+                ->where('currency', $currency)
+                ->whereMonth('created_at', now()->month)
+                ->whereYear('created_at', now()->year)
+                ->whereIn('status', ['pending', 'processing', 'completed'])
+                ->sum('amount');
+            
+            if (($monthlyTotal + $amount) > $limits['monthly_limit']) {
+                $validator->errors()->add(
+                    'amount',
+                    'This payment would exceed your monthly limit of ' . 
+                    number_format($limits['monthly_limit'], 2) . ' ' . $currency . '.'
+                );
             }
         }
     }
 
     /**
-     * Get validated data with additional processed information.
-     */
-    public function validated($key = null, $default = null): array
-    {
-        $validated = parent::validated();
-        
-        // Set default status for new payment instruction
-        $validated['status'] = 'pending';
-        
-        // Format amount to 2 decimal places
-        if (isset($validated['amount'])) {
-            $validated['amount'] = round($validated['amount'], 2);
-        }
-        
-        // Set default additional_data as empty array if not provided
-        $validated['additional_data'] = $validated['additional_data'] ?? [];
-        
-        // Set null values for optional fields if empty
-        $validated['purpose_code'] = !empty($validated['purpose_code']) ? $validated['purpose_code'] : null;
-        $validated['reference'] = !empty($validated['reference']) ? $validated['reference'] : null;
-        
-        return $key ? data_get($validated, $key, $default) : $validated;
-    }
-
-    /**
-     * Handle a failed validation attempt.
-     */
-    protected function failedValidation(\Illuminate\Contracts\Validation\Validator $validator): void
-    {
-        // Log the validation failure for monitoring
-        \Log::warning('Payment instruction creation validation failed', [
-            'user_id' => $this->user()->id,
-            'client_id' => $this
