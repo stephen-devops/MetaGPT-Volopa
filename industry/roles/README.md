@@ -14,55 +14,75 @@ LaravelQaEngineer      → subclasses → metagpt.roles.QaEngineer
 
 ---
 
-## JSON Requirements Loading
+## NLP Requirements Loading
 
-All roles automatically load structured requirements from JSON files in `industry/requirements/` to inject domain knowledge into their constraints:
+All roles automatically load natural language requirements from markdown files in `industry/requirements/` to inject domain knowledge into their constraints:
 
 | Role | Files Loaded | Purpose |
 |------|-------------|---------|
-| **LaravelProductManager** | `user_requirements.json` | 42 functional requirements to transform into PRD |
-| **LaravelArchitect** | `architectural_requirements.json` | Design patterns, mental model, DOS/DONTS |
-| **LaravelProjectManager** | `user_requirements.json` | Task breakdown statistics and file mappings |
-| **LaravelEngineer** | `architectural_requirements.json` + `technical_requirements.json` | Design patterns + implementation syntax |
-| **LaravelQaEngineer** | **ALL THREE** JSON files | Complete requirements for comprehensive testing |
+| **LaravelProductManager** | `user_requirements_nlp.md` | 87 functional requirements (business perspective) to transform into PRD |
+| **LaravelArchitect** | `architectural_requirements_nlp.md` | 110 design patterns, mental model, DOS/DONTS principles |
+| **LaravelProjectManager** | `user_requirements_nlp.md` | 87 functional requirements for task breakdown mapping |
+| **LaravelEngineer** | `architectural_requirements_nlp.md` + `technical_requirements_nlp.md` | 110 design patterns + 138 implementation requirements |
+| **LaravelQaEngineer** | **ALL THREE** NLP markdown files | Complete requirements for comprehensive testing (335 total requirements) |
 
-### JSON Files Structure
+### NLP Markdown Files Structure
 
-**`user_requirements.json`** (Functional Requirements)
-- 15 functional requirements with 42 sub-requirements
-- Project metadata (framework, version, capacity)
-- Agent task mappings (which files each role creates)
-- Summary statistics (estimated tasks/files)
+**`user_requirements_nlp.md`** (Functional Requirements - v5.0)
+- **87 numbered requirements** across 12 sections (enhanced from 76 in v4.0)
+- Pure business and user perspective (no technical implementation details)
+- Organized by user workflow: Template Management, Data Entry, File Upload, Validation, Approval, Status Tracking, Security, Notifications, Audit, User Experience, Platform Integration
+- **Critical additions in v5.0**: Multi-tenant data isolation (requirements 68-71), Platform integration (84-87), Recipient queries (12-13), Navigation path (22)
 
-**`architectural_requirements.json`** (Design Patterns)
-- Mental model (request flow through Laravel layers)
-- Architectural DOS (best practices for design)
-- Architectural DONTS (anti-patterns to avoid)
-- Design specifications with examples
+**`architectural_requirements_nlp.md`** (Design Patterns)
+- **110 architectural requirements** extracted from dos_and_donts.pdf
+- Mental model: `Client → route → controller → FormRequest → service/model → API Resource → JSON`
+- Organized by layers: Routing, Controllers, Validation, Services, Models, Resources, Security, Performance
+- Architectural DOS principles and DONTS anti-patterns in natural language
 
-**`technical_requirements.json`** (Implementation Syntax)
-- Implementation workflow steps
-- Implementation checklist
-- Laravel syntax patterns (routing, models, controllers, etc.)
-- Implementation DOS/DONTS with code examples
+**`technical_requirements_nlp.md`** (Implementation Syntax)
+- **138 technical implementation requirements** for Laravel syntax
+- Organized by: Route Definition, Controller Structure, FormRequest Validation, Service Layer, Eloquent Models, API Resources, Policies, Jobs, Migrations
+- Implementation DOS/DONTS with code pattern descriptions
 
 ### Loading Implementation
 
-Each role loads requirements in `__init__()` and injects them into constraints:
+Each role loads requirements in `__init__()` using regex parsers and injects them into constraints:
 
 ```python
 # Example: LaravelProductManager
 def __init__(self, **kwargs):
     super().__init__(**kwargs)
 
-    # Load functional requirements from JSON
-    self.requirements = self._load_requirements()
+    # Load functional requirements from NLP markdown
+    self.requirements = self._load_requirements()  # Returns parsed dict from .md file
+
+    # Parse NLP markdown using regex patterns
+    # Pattern: **N.** The system shall...
+    parsed_requirements = self._parse_nlp_requirements(content)
 
     # Update constraints with loaded data
     self._update_constraints_from_requirements()
 ```
 
 The loaded requirements are automatically included in every LLM call via the role's `constraints` attribute.
+
+### NLP Parsing Implementation
+
+Requirements are extracted using regex patterns:
+
+```python
+import re
+
+# Extract sections: ## 1. Section Name
+section_pattern = re.compile(r'^##\s+(\d+)\.\s+(.+)', re.MULTILINE)
+
+# Extract requirements: **N.** The system shall...
+requirement_pattern = re.compile(r'^\*\*(\d+)\.\*\*\s+(.+)', re.MULTILINE)
+
+# Extract subsections: ### 1.1 Subsection Name
+subsection_pattern = re.compile(r'^###\s+([\d.]+)\s+(.+)', re.MULTILINE)
+```
 
 ---
 
@@ -73,7 +93,7 @@ The loaded requirements are automatically included in every LLM call via the rol
 
 **Responsibility**: Define business requirements for Laravel API system
 
-**JSON Requirements**: Loads `user_requirements.json` (42 functional requirements)
+**NLP Requirements**: Loads `user_requirements_nlp.md` (87 functional requirements)
 
 **Allocated Intents**:
 - getReceiptTemplate
@@ -87,7 +107,7 @@ The loaded requirements are automatically included in every LLM call via the rol
 **Key Attributes**:
 - `profile`: "Laravel Product Manager"
 - `goal`: Create comprehensive PRD for Laravel Mass Payments API
-- `constraints`: Laravel-specific requirement patterns + loaded functional requirements from JSON
+- `constraints`: Laravel-specific requirement patterns + loaded functional requirements from NLP markdown (87 requirements parsed via regex)
 - **Mode**: Fixed SOP (`use_fixed_sop: bool = True`)
 - **React Loop**: `max_react_loop=1` (execute once and hand off to next role)
 
@@ -98,7 +118,7 @@ The loaded requirements are automatically included in every LLM call via the rol
 
 **Responsibility**: Design Laravel API system architecture
 
-**JSON Requirements**: Loads `architectural_requirements.json` (design patterns, mental model, DOS/DONTS)
+**NLP Requirements**: Loads `architectural_requirements_nlp.md` (110 design patterns, mental model, DOS/DONTS)
 
 **Allocated Intents**:
 - uploadPaymentFile
@@ -114,7 +134,7 @@ The loaded requirements are automatically included in every LLM call via the rol
 **Key Attributes**:
 - `profile`: "Laravel System Architect"
 - `goal`: Design Laravel API architecture following DOS/DONTS
-- `constraints`: Laravel mental model, architecture patterns from JSON, file structure
+- `constraints`: Laravel mental model, 110 architecture patterns from NLP markdown, file structure
 - **Mode**: Fixed SOP (`use_fixed_sop: bool = True`)
 - **React Loop**: `max_react_loop=1` (execute once and hand off to next role)
 
@@ -132,14 +152,14 @@ The loaded requirements are automatically included in every LLM call via the rol
 
 **Responsibility**: Break down system design into dependency-ordered tasks
 
-**JSON Requirements**: Loads `user_requirements.json` (task breakdown statistics, file mappings)
+**NLP Requirements**: Loads `user_requirements_nlp.md` (87 functional requirements for task mapping)
 
 **Output**: Task Breakdown at `docs/task/mass_payments.json`
 
 **Key Attributes**:
 - `profile`: "Laravel Project Manager"
 - `goal`: Break down system design with proper Laravel dependency order
-- `constraints`: Laravel dependency rules from JSON (migrations → models → services → controllers), outputs filenames only (no code)
+- `constraints`: Laravel dependency rules from NLP requirements (migrations → models → services → controllers), outputs filenames only (no code)
 - **Mode**: Fixed SOP (`use_fixed_sop: bool = True`)
 - **React Loop**: `max_react_loop=1` (execute once and hand off to next role)
 
@@ -165,7 +185,7 @@ The loaded requirements are automatically included in every LLM call via the rol
 
 **Responsibility**: Write Laravel code following DOS/DONTS patterns
 
-**JSON Requirements**: Loads `architectural_requirements.json` + `technical_requirements.json` (design patterns + implementation syntax)
+**NLP Requirements**: Loads `architectural_requirements_nlp.md` + `technical_requirements_nlp.md` (110 design patterns + 138 implementation requirements)
 
 **Allocated Intents**:
 - createPaymentInstructions
@@ -179,7 +199,7 @@ The loaded requirements are automatically included in every LLM call via the rol
 **Key Attributes**:
 - `profile`: "Laravel API Developer"
 - `goal`: Write Laravel code following DOS/DONTS and Volopa conventions
-- `constraints`: **Architectural patterns + implementation syntax from JSON**, skips code plan phase to avoid JSON errors
+- `constraints`: **110 architectural patterns + 138 implementation requirements from NLP markdown**, skips code plan phase to avoid JSON errors
 - **Mode**: Fixed SOP (`use_fixed_sop: bool = True`) with `config.inc = False` (skip WriteCodePlanAndChange)
 - **React Loop**: `max_react_loop=50` (allows multiple file generations from task list)
 
@@ -195,10 +215,10 @@ The loaded requirements are automatically included in every LLM call via the rol
 
 **Responsibility**: Write comprehensive PHPUnit/Pest tests for Laravel APIs
 
-**JSON Requirements**: Loads **ALL THREE** JSON files:
-- `user_requirements.json` - Test functional requirements
-- `architectural_requirements.json` - Test architectural patterns
-- `technical_requirements.json` - Test implementation correctness
+**NLP Requirements**: Loads **ALL THREE** NLP markdown files:
+- `user_requirements_nlp.md` - Test 87 functional requirements
+- `architectural_requirements_nlp.md` - Test 110 architectural patterns
+- `technical_requirements_nlp.md` - Test 138 implementation requirements
 
 **Allocated Intents**:
 - validatePaymentData
@@ -212,13 +232,13 @@ The loaded requirements are automatically included in every LLM call via the rol
 **Key Attributes**:
 - `profile`: "Laravel QA Engineer"
 - `goal`: Write comprehensive PHP Unit tests ensuring Laravel code follows DOS/DONTS patterns
-- `constraints`: **Complete test requirements from all three JSON files** - validates functional, architectural, and implementation correctness
+- `constraints`: **Complete test requirements from all three NLP markdown files (335 total requirements)** - validates functional, architectural, and implementation correctness
 - **Mode**: Fixed SOP (`use_fixed_sop: bool = True`)
 - **React Loop**: `max_react_loop=50` (allows writing multiple test files)
 
 **Test Coverage Requirements**:
-- **100% functional requirements** - All 42 sub-requirements tested
-- **100% architectural patterns** - Transactions, N+1 prevention, pagination, multi-tenant isolation
+- **100% functional requirements** - All 87 functional requirements tested (including critical multi-tenant isolation requirements 68-71)
+- **100% architectural patterns** - Transactions, N+1 prevention, pagination, multi-tenant isolation, mental model adherence
 - **100% endpoints** - Authentication, authorization, validation, status codes
 - **100% anti-patterns** - Ensure no raw models, consistent JSON, proper error handling
 
@@ -258,7 +278,7 @@ tests/Feature/
 UserRequirement
     ↓
 [ROUND 1] LaravelProductManager (use_fixed_sop=True, max_react_loop=1)
-    ├─ Loads JSON: user_requirements.json
+    ├─ Loads NLP: user_requirements_nlp.md (87 requirements parsed via regex)
     ├─ _observe(): Watches for UserRequirement message
     ├─ _think(): Set todo to PrepareDocuments + WritePRD (BY_ORDER mode)
     ├─ _act(): Execute PrepareDocuments → WritePRD actions sequentially
@@ -266,23 +286,23 @@ UserRequirement
     └─ Publishes: AIMessage(cause_by=WritePRD, instruct_content={prd_filenames})
     ↓
 [ROUND 2] LaravelArchitect (use_fixed_sop=True, max_react_loop=1)
-    ├─ Loads JSON: architectural_requirements.json
+    ├─ Loads NLP: architectural_requirements_nlp.md (110 design patterns parsed)
     ├─ _observe(): Watches for WritePRD message
     ├─ Loads: docs/prd/mass_payments.md
     ├─ _think(): Set todo to WriteDesign (BY_ORDER mode)
-    ├─ _act(): WriteDesign action (injects PRD + JSON patterns into LLM prompt)
+    ├─ _act(): WriteDesign action (injects PRD + NLP patterns into LLM prompt)
     └─ Publishes: AIMessage(cause_by=WriteDesign, instruct_content={design_filenames})
     ↓
 [ROUND 3] LaravelProjectManager (use_fixed_sop=True, max_react_loop=1)
-    ├─ Loads JSON: user_requirements.json
+    ├─ Loads NLP: user_requirements_nlp.md (87 requirements for task mapping)
     ├─ _observe(): Watches for WriteDesign message
     ├─ Loads: docs/system_design/mass_payments.md
     ├─ _think(): Set todo to WriteTasks (BY_ORDER mode)
-    ├─ _act(): WriteTasks action (injects design + JSON mappings into LLM prompt)
+    ├─ _act(): WriteTasks action (injects design + NLP mappings into LLM prompt)
     └─ Publishes: AIMessage(cause_by=WriteTasks, instruct_content={task_filenames})
     ↓
 [ROUND 4-5] LaravelEngineer (use_fixed_sop=True, max_react_loop=50, config.inc=False)
-    ├─ Loads JSON: architectural_requirements.json + technical_requirements.json
+    ├─ Loads NLP: architectural_requirements_nlp.md + technical_requirements_nlp.md (248 requirements total)
     ├─ _observe(): Watches for WriteTasks message
     ├─ Loads: docs/task/mass_payments.json + docs/system_design/mass_payments.md
     ├─ _think(): Parse task list, create WriteCode actions for each file (skips WriteCodePlanAndChange)
@@ -294,15 +314,15 @@ UserRequirement
     └─ Output: app/Http/Controllers/..., app/Services/..., database/migrations/..., etc.
     ↓
 [ROUND 6+] LaravelQaEngineer (use_fixed_sop=True, max_react_loop=50)
-    ├─ Loads JSON: ALL THREE (user_requirements.json + architectural_requirements.json + technical_requirements.json)
+    ├─ Loads NLP: ALL THREE (user_requirements_nlp.md + architectural_requirements_nlp.md + technical_requirements_nlp.md = 335 requirements)
     ├─ _observe(): Watches for WriteCode messages (when Engineer completes)
     ├─ Loads: All generated code files for context
     ├─ _think(): Create WriteTest actions for each test file
     ├─ _act(): WriteTest action for each test file (loops up to 50 times)
     │   ├─ Loop 1: tests/Feature/MassPaymentFileTest.php
     │   ├─ Loop 2: tests/Feature/PaymentInstructionTest.php
-    │   ├─ Loop 3: tests/Feature/MultiTenantIsolationTest.php
-    │   └─ ... (estimated 15-20 test files covering all 42 sub-requirements)
+    │   ├─ Loop 3: tests/Feature/MultiTenantIsolationTest.php (tests critical requirements 68-71)
+    │   └─ ... (estimated 15-20 test files covering all 87 functional requirements)
     └─ Output: tests/Feature/**/*Test.php with 100% coverage
 ```
 
@@ -312,7 +332,7 @@ UserRequirement
 - **No Re-triggering**: ProductManager tracks `_prd_published` to prevent re-execution in subsequent rounds
 - **Sequential Handoff**: Each role completes fully before next role starts (waterfall pattern)
 - **Predictable Rounds**: `n_round=6+` is sufficient (1-2 rounds per role in sequence)
-- **JSON Loading**: Each role loads relevant requirements automatically in `__init__()`
+- **NLP Loading**: Each role loads relevant requirements from markdown files automatically in `__init__()` using regex parsers
 
 ---
 
@@ -472,14 +492,14 @@ async def main():
     )
     ctx = Context(config=config)
 
-    # 2. Create team and hire Laravel roles (all roles automatically load JSON requirements)
+    # 2. Create team and hire Laravel roles (all roles automatically load NLP requirements)
     company = Team(context=ctx)
     company.hire([
-        LaravelProductManager(),   # Loads user_requirements.json
-        LaravelArchitect(),        # Loads architectural_requirements.json
-        LaravelProjectManager(),   # Loads user_requirements.json
-        LaravelEngineer(),         # Loads architectural + technical requirements
-        LaravelQaEngineer()        # Loads ALL THREE requirements files
+        LaravelProductManager(),   # Loads user_requirements_nlp.md (87 requirements)
+        LaravelArchitect(),        # Loads architectural_requirements_nlp.md (110 requirements)
+        LaravelProjectManager(),   # Loads user_requirements_nlp.md (87 requirements)
+        LaravelEngineer(),         # Loads architectural + technical NLP requirements (248 total)
+        LaravelQaEngineer()        # Loads ALL THREE NLP files (335 requirements)
     ])
 
     # 3. Set investment (budget for LLM calls)
@@ -510,42 +530,51 @@ if __name__ == "__main__":
 ```
 industry/
 ├── roles/
-│   ├── __init__.py                      # Package exports
-│   ├── README.md                        # This file
-│   ├── laravel_product_manager.py       # ProductManager subclass
-│   ├── laravel_architect.py             # Architect subclass
-│   ├── laravel_project_manager.py       # ProjectManager subclass
-│   ├── laravel_engineer.py              # Engineer subclass
-│   └── laravel_qa_engineer.py           # QaEngineer subclass
-├── requirements/                        # JSON requirements files
-│   ├── user_requirements.json           # 42 functional requirements
-│   ├── architectural_requirements.json  # Design patterns and DOS/DONTS
-│   └── technical_requirements.json      # Implementation syntax and patterns
-├── dos_and_donts.pdf                    # Laravel patterns reference (source for JSON files)
-├── volopaProcess.md                     # Business process flow
-├── massPaymentsVolopaAgents.txt         # Intent allocation
-└── metaGPT-LLM-ReAct-RAG-Readme.txt    # RAG integration notes
+│   ├── __init__.py                          # Package exports
+│   ├── README.md                            # This file
+│   ├── laravel_product_manager.py           # ProductManager subclass with NLP parser
+│   ├── laravel_architect.py                 # Architect subclass with NLP parser
+│   ├── laravel_project_manager.py           # ProjectManager subclass with NLP parser
+│   ├── laravel_engineer.py                  # Engineer subclass with NLP parser
+│   └── laravel_qa_engineer.py               # QaEngineer subclass with NLP parser
+├── requirements/                            # NLP requirements files
+│   ├── user_requirements_nlp.md             # 87 functional requirements (v5.0) - business perspective
+│   ├── architectural_requirements_nlp.md    # 110 design patterns and DOS/DONTS principles
+│   ├── technical_requirements_nlp.md        # 138 implementation syntax requirements
+│   ├── user_requirements.json               # (Legacy) Original JSON version
+│   ├── architectural_requirements.json      # (Legacy) Original JSON version
+│   └── technical_requirements.json          # (Legacy) Original JSON version
+├── dos_and_donts.pdf                        # Laravel patterns reference (source for NLP files)
+├── volopaProcess.md                         # Business process flow
+├── massPaymentsVolopaAgents.txt             # Intent allocation
+└── metaGPT-LLM-ReAct-RAG-Readme.txt        # RAG integration notes
 ```
 
 ---
 
 ## Notes
 
-1. **All roles load JSON requirements automatically** - Requirements are loaded in `__init__()` and injected into constraints for every LLM call
+1. **All roles load NLP requirements automatically** - Requirements are loaded from markdown files in `__init__()` using regex parsers and injected into constraints for every LLM call
 
-2. **JSON files are the single source of truth** - All functional, architectural, and technical requirements are programmatically loaded from structured JSON
+2. **NLP markdown files are the source of truth** - All functional (87), architectural (110), and technical (138) requirements are programmatically loaded from human-readable markdown
 
-3. **QaEngineer validates everything** - Loads ALL THREE JSON files to test functional requirements, architectural patterns, and implementation correctness
+3. **QaEngineer validates everything** - Loads ALL THREE NLP markdown files (335 total requirements) to test functional requirements, architectural patterns, and implementation correctness
 
-4. **DOS/DONTS are now in JSON** - LaravelEngineer and LaravelArchitect load patterns from `architectural_requirements.json` and `technical_requirements.json`
+4. **DOS/DONTS are now in NLP markdown** - LaravelEngineer and LaravelArchitect load 110 architectural patterns and 138 technical requirements from NLP markdown files
 
-5. **RAG integration is TODO** - SearchCodeBase action needs to be implemented to query Volopa's Laravel examples
+5. **Critical security requirements included** - Version 5.0 of user_requirements_nlp.md includes multi-tenant data isolation (requirements 68-71) and platform integration (84-87)
 
-6. **Team-level SOP is active** - Message routing (PM → Architect → ProjectManager → Engineer → QaEngineer) is handled by MetaGPT's environment
+6. **Regex-based parsing** - All NLP markdown files are parsed using regex patterns: `**N.**` for requirements, `## N.` for sections, `### N.N` for subsections
 
-7. **Role-level mode is Fixed SOP** - All roles use `use_fixed_sop: bool = True` for sequential, deterministic execution (NOT dynamic ReAct mode)
+7. **RAG integration is TODO** - SearchCodeBase action needs to be implemented to query Volopa's Laravel examples
 
-8. **Complete workflow pipeline** - ProductManager → Architect → ProjectManager → Engineer → QaEngineer provides full software development lifecycle
+8. **Team-level SOP is active** - Message routing (PM → Architect → ProjectManager → Engineer → QaEngineer) is handled by MetaGPT's environment
+
+9. **Role-level mode is Fixed SOP** - All roles use `use_fixed_sop: bool = True` for sequential, deterministic execution (NOT dynamic ReAct mode)
+
+10. **Complete workflow pipeline** - ProductManager → Architect → ProjectManager → Engineer → QaEngineer provides full software development lifecycle
+
+11. **Legacy JSON files preserved** - Original JSON requirements files are kept in `requirements/` directory for reference and backward compatibility
 
 ---
 
@@ -558,7 +587,9 @@ industry/
 - Intent Allocation: `../massPaymentsVolopaAgents.txt`
 
 ### Requirements Files
-- Functional Requirements: `../requirements/user_requirements.json` (42 sub-requirements)
-- Architectural Requirements: `../requirements/architectural_requirements.json` (design patterns, DOS/DONTS)
-- Technical Requirements: `../requirements/technical_requirements.json` (implementation syntax)
-- Requirements Loader Guide: `../spareFiles/theories/REQUIREMENTS_LOADER_GUIDE.md`
+- **Functional Requirements (NLP)**: `../requirements/user_requirements_nlp.md` (87 requirements, v5.0)
+- **Architectural Requirements (NLP)**: `../requirements/architectural_requirements_nlp.md` (110 requirements)
+- **Technical Requirements (NLP)**: `../requirements/technical_requirements_nlp.md` (138 requirements)
+- **Requirements Comparison**: `../requirements_comparison.md` (JSON vs NLP analysis)
+- **Methodology Comparison**: `../methodology_comp.md` (NLP vs JSON output quality analysis)
+- **Legacy JSON Files**: Available in `../requirements/*.json` for reference
