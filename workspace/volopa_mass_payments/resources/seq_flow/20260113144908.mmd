@@ -1,0 +1,58 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant Client as API Client
+    participant Controller as MassPaymentFileController
+    participant Request as UploadMassPaymentFileRequest
+    participant Policy as MassPaymentFilePolicy
+    participant Service as MassPaymentFileService
+    participant Validator as CsvValidationService
+    participant Model as MassPaymentFile
+    participant Job as ValidateMassPaymentFileJob
+    participant Queue as Laravel Queue
+    participant Resource as MassPaymentFileResource
+    
+    Client->>Controller: POST /api/v1/mass-payment-files
+    Controller->>Request: validate()
+    Request->>Policy: authorize()
+    Policy-->>Request: return bool
+    Request-->>Controller: validated data
+    
+    Controller->>Service: uploadFile(file, clientId, tccAccountId)
+    Service->>Model: DB::transaction()
+    Service->>Model: create(fileData)
+    Model-->>Service: MassPaymentFile instance
+    Service->>Queue: dispatch(ValidateMassPaymentFileJob)
+    Queue->>Job: handle()
+    Job->>Validator: validateCsvStructure(filePath)
+    Validator-->>Job: validation results
+    Job->>Model: update(status, validationErrors)
+    Service-->>Controller: MassPaymentFile instance
+    
+    Controller->>Resource: MassPaymentFileResource::make()
+    Resource-->>Controller: transformed array
+    Controller-->>Client: JsonResponse 201
+    
+    Note over Client,Resource: Approval Flow
+    Client->>Controller: POST /api/v1/mass-payment-files/{id}/approve
+    Controller->>Request: ApproveMassPaymentFileRequest validate()
+    Request->>Policy: authorize()
+    Policy-->>Request: return bool
+    Controller->>Service: approveFile(fileId, approverId)
+    Service->>Model: DB::transaction()
+    Service->>Model: update(status, approvedBy, approvedAt)
+    Service->>Queue: dispatch(ProcessPaymentInstructionsJob)
+    Service-->>Controller: updated MassPaymentFile
+    Controller->>Resource: MassPaymentFileResource::make()
+    Resource-->>Controller: transformed array
+    Controller-->>Client: JsonResponse 200
+    
+    Note over Client,Resource: Status Tracking
+    Client->>Controller: GET /api/v1/mass-payment-files/{id}
+    Controller->>Policy: authorize()
+    Policy-->>Controller: return bool
+    Controller->>Model: with(['paymentInstructions', 'client'])->find()
+    Model-->>Controller: MassPaymentFile with relations
+    Controller->>Resource: MassPaymentFileResource::make()
+    Resource-->>Controller: transformed array with status
+    Controller-->>Client: JsonResponse 200

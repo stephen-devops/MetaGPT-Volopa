@@ -6,18 +6,19 @@
 namespace App\Jobs;
 
 use App\Models\MassPaymentFile;
+use App\Models\PaymentInstruction;
 use App\Services\CsvValidationService;
-use App\Services\MassPaymentFileService;
-use App\Notifications\ApprovalRequiredNotification;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
+use League\Csv\Reader;
+use League\Csv\Exception as CsvException;
+use Carbon\Carbon;
 use Exception;
 use Throwable;
 
@@ -26,454 +27,437 @@ class ValidateMassPaymentFileJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * The mass payment file instance.
-     *
-     * @var MassPaymentFile
+     * Mass payment file to validate
      */
     protected MassPaymentFile $massPaymentFile;
 
     /**
      * The number of times the job may be attempted.
-     *
-     * @var int
      */
     public int $tries = 3;
 
     /**
-     * The maximum number of seconds the job can run.
-     *
-     * @var int
+     * The maximum number of seconds the job should run.
      */
-    public int $timeout = 300;
+    public int $timeout = 600;
+
+    /**
+     * Determine the time at which the job should timeout.
+     */
+    public function retryUntil(): Carbon
+    {
+        return now()->addMinutes(30);
+    }
 
     /**
      * The number of seconds to wait before retrying the job.
-     *
-     * @var array
      */
-    public array $backoff = [60, 300, 900];
-
-    /**
-     * Indicate if the job should be marked as failed on timeout.
-     *
-     * @var bool
-     */
-    public bool $failOnTimeout = true;
-
-    /**
-     * The maximum number of unhandled exceptions to allow before failing.
-     *
-     * @var int
-     */
-    public int $maxExceptions = 1;
+    public int $backoff = 60;
 
     /**
      * Create a new job instance.
-     *
-     * @param MassPaymentFile $massPaymentFile
      */
     public function __construct(MassPaymentFile $massPaymentFile)
     {
-        $this->massPaymentFile = $massPaymentFile;
+        $this->massPaymentFile = $massPaymentFile->withoutRelations();
         
-        // Set queue based on file priority
-        $this->onQueue($this->determineQueue($massPaymentFile));
-        
-        // Set connection based on environment
-        $this->onConnection(config('queue.default', 'redis'));
-        
-        Log::info('ValidateMassPaymentFileJob created', [
-            'file_id' => $massPaymentFile->id,
-            'client_id' => $massPaymentFile->client_id,
-            'queue' => $this->queue,
-            'connection' => $this->connection
-        ]);
+        // Set queue configuration
+        $this->onQueue(config('mass-payments.queue.validation_queue', 'validation'));
+        $this->timeout = config('mass-payments.queue.validation_timeout', 600);
+        $this->tries = config('mass-payments.queue.max_validation_attempts', 3);
     }
 
     /**
      * Execute the job.
-     *
-     * @param CsvValidationService $csvValidationService
-     * @return void
-     * @throws Exception
      */
-    public function handle(CsvValidationService $csvValidationService): void
+    public function handle(CsvValidationService $validator): void
     {
-        $startTime = microtime(true);
-        
         Log::info('Starting mass payment file validation job', [
             'file_id' => $this->massPaymentFile->id,
-            'client_id' => $this->massPaymentFile->client_id,
             'filename' => $this->massPaymentFile->original_filename,
-            'current_status' => $this->massPaymentFile->status,
-            'job_attempt' => $this->attempts()
+            'client_id' => $this->massPaymentFile->client_id,
+            'job_id' => $this->job->getJobId(),
         ]);
 
-        try {
-            // Update cache with processing status
-            $this->updateProcessingStatus('validating');
+        // Refresh model to get latest state
+        $this->massPaymentFile->refresh();
 
-            // Refresh the model to ensure we have the latest data
-            $this->massPaymentFile->refresh();
-
-            // Validate that the file is in the correct state for processing
-            $this->validateFileState();
-
-            // Update file status to processing
-            $this->massPaymentFile->markAsProcessing();
-
-            // Check if file exists on disk
-            $this->validateFileExists();
-
-            // Perform CSV validation
-            $validationResult = $this->performValidation($csvValidationService);
-
-            // Process validation results
-            $this->processValidationResults($validationResult);
-
-            // Update file with validation summary
-            $this->updateFileValidationSummary($validationResult);
-
-            // Determine next status and actions
-            $this->determineNextActions($validationResult);
-
-            // Update processing status cache
-            $this->updateProcessingStatus('completed');
-
-            $processingTime = round((microtime(true) - $startTime) * 1000, 2);
-
-            Log::info('Mass payment file validation job completed successfully', [
+        // Check if file is still in a state that can be validated
+        if (!$this->canBeValidated()) {
+            Log::warning('Mass payment file is not in a validatable state', [
                 'file_id' => $this->massPaymentFile->id,
-                'validation_status' => $validationResult['valid'] ? 'passed' : 'failed',
-                'total_rows' => $validationResult['summary']['total_rows'] ?? 0,
-                'valid_rows' => $validationResult['summary']['valid_rows'] ?? 0,
-                'invalid_rows' => $validationResult['summary']['invalid_rows'] ?? 0,
-                'processing_time_ms' => $processingTime,
-                'final_status' => $this->massPaymentFile->fresh()->status
+                'current_status' => $this->massPaymentFile->status,
+            ]);
+            return;
+        }
+
+        DB::beginTransaction();
+
+        try {
+            // Mark file as validating
+            $this->massPaymentFile->markAsValidating();
+
+            // Perform CSV structure validation
+            $structureValidation = $this->validateFileStructure($validator);
+            
+            if (!$structureValidation['valid']) {
+                $this->handleValidationFailure($structureValidation['errors']);
+                DB::commit();
+                return;
+            }
+
+            // Parse and validate payment instructions
+            $instructionValidation = $this->validatePaymentInstructions($validator, $structureValidation);
+            
+            if (!$instructionValidation['valid']) {
+                $this->handleValidationFailure($instructionValidation['errors'], $instructionValidation['instruction_errors'] ?? []);
+                DB::commit();
+                return;
+            }
+
+            // Store payment instructions in database
+            $this->storePaymentInstructions($instructionValidation['instructions'], $structureValidation['headers']);
+
+            // Update file metadata and mark as awaiting approval
+            $this->completeValidation($instructionValidation['statistics']);
+
+            DB::commit();
+
+            Log::info('Mass payment file validation completed successfully', [
+                'file_id' => $this->massPaymentFile->id,
+                'total_instructions' => $instructionValidation['statistics']['total_instructions'] ?? 0,
+                'valid_instructions' => $instructionValidation['statistics']['valid_instructions'] ?? 0,
+                'total_amount' => $instructionValidation['statistics']['total_amount'] ?? 0.0,
             ]);
 
         } catch (Exception $e) {
-            $this->handleValidationFailure($e);
+            DB::rollBack();
+
+            Log::error('Mass payment file validation job failed', [
+                'file_id' => $this->massPaymentFile->id,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            $this->handleValidationException($e);
+            
             throw $e;
         }
     }
 
     /**
-     * Handle a job failure.
-     *
-     * @param Throwable $exception
-     * @return void
+     * Handle job failure
      */
     public function failed(Throwable $exception): void
     {
-        Log::error('Mass payment file validation job failed', [
+        Log::error('Mass payment file validation job failed permanently', [
             'file_id' => $this->massPaymentFile->id,
-            'client_id' => $this->massPaymentFile->client_id,
-            'attempts' => $this->attempts(),
             'error' => $exception->getMessage(),
-            'trace' => $exception->getTraceAsString()
+            'attempts' => $this->attempts(),
         ]);
 
         try {
-            // Mark file as failed
-            $this->massPaymentFile->markAsFailed(
-                'Validation processing failed: ' . $exception->getMessage()
-            );
+            // Refresh model to ensure we have latest state
+            $this->massPaymentFile->refresh();
 
-            // Clear processing status cache
-            $this->clearProcessingStatus();
-
-            // Send failure notification
-            $this->sendFailureNotification($exception);
+            // Mark file as validation failed with error details
+            $this->massPaymentFile->markAsValidationFailed([
+                'job_error' => $exception->getMessage(),
+                'failed_at' => now()->toISOString(),
+                'attempts' => $this->attempts(),
+                'error_type' => 'job_failure',
+            ]);
 
         } catch (Exception $e) {
-            Log::error('Failed to handle job failure', [
+            Log::error('Failed to update mass payment file status after job failure', [
                 'file_id' => $this->massPaymentFile->id,
-                'error' => $e->getMessage()
+                'original_error' => $exception->getMessage(),
+                'status_update_error' => $e->getMessage(),
             ]);
         }
     }
 
     /**
-     * Calculate the number of seconds to wait before retrying the job.
-     *
-     * @return int
+     * Check if file can be validated
      */
-    public function backoff(): int
+    protected function canBeValidated(): bool
     {
-        $attempt = $this->attempts();
-        
-        if ($attempt <= count($this->backoff)) {
-            return $this->backoff[$attempt - 1];
-        }
-        
-        // For attempts beyond our backoff array, use exponential backoff
-        return min(3600, pow(2, $attempt) * 60); // Max 1 hour
+        return in_array($this->massPaymentFile->status, [
+            MassPaymentFile::STATUS_DRAFT,
+            MassPaymentFile::STATUS_VALIDATING,
+        ]);
     }
 
     /**
-     * Get the tags that should be assigned to the job.
-     *
-     * @return array
+     * Validate CSV file structure
      */
-    public function tags(): array
+    protected function validateFileStructure(CsvValidationService $validator): array
     {
-        return [
-            'mass_payment_validation',
-            'client:' . $this->massPaymentFile->client_id,
-            'file:' . $this->massPaymentFile->id,
-            'currency:' . $this->massPaymentFile->currency
-        ];
-    }
-
-    /**
-     * Determine the appropriate queue for this job.
-     *
-     * @param MassPaymentFile $massPaymentFile
-     * @return string
-     */
-    private function determineQueue(MassPaymentFile $massPaymentFile): string
-    {
-        // Get file metadata to determine priority
-        $metadata = $massPaymentFile->metadata ?? [];
-        $priority = $metadata['priority'] ?? 'normal';
-        $fileSize = $metadata['file_size'] ?? 0;
+        $filePath = $this->getFilePath();
         
-        // Large files get dedicated queue
-        if ($fileSize > 10485760) { // 10MB
-            return 'file_validation';
+        if (!$filePath || !Storage::exists($filePath)) {
+            return [
+                'valid' => false,
+                'errors' => ['CSV file not found on storage'],
+            ];
         }
+
+        $fullPath = Storage::path($filePath);
         
-        // Priority-based queue selection
-        switch ($priority) {
-            case 'urgent':
-            case 'high':
-                return 'mass_payments_high';
-            case 'low':
-                return 'mass_payments_low';
-            default:
-                return 'file_validation';
-        }
-    }
-
-    /**
-     * Validate that the file is in the correct state for processing.
-     *
-     * @return void
-     * @throws Exception
-     */
-    private function validateFileState(): void
-    {
-        $validStates = [
-            MassPaymentFile::STATUS_UPLOADING,
-            MassPaymentFile::STATUS_PROCESSING
-        ];
-
-        if (!in_array($this->massPaymentFile->status, $validStates)) {
-            throw new Exception(
-                "File cannot be validated in current state: {$this->massPaymentFile->status}"
-            );
-        }
-
-        // Check if file was soft-deleted
-        if ($this->massPaymentFile->trashed()) {
-            throw new Exception('Cannot validate a deleted file');
-        }
-
-        // Validate required fields
-        if (empty($this->massPaymentFile->file_path)) {
-            throw new Exception('File path is missing');
-        }
-
-        if (empty($this->massPaymentFile->currency)) {
-            throw new Exception('Currency is missing');
-        }
-    }
-
-    /**
-     * Validate that the file exists on disk.
-     *
-     * @return void
-     * @throws Exception
-     */
-    private function validateFileExists(): void
-    {
-        $filePath = $this->massPaymentFile->file_path;
-        
-        if (!Storage::disk(config('filesystems.default', 'local'))->exists($filePath)) {
-            throw new Exception("File not found on disk: {$filePath}");
-        }
-
-        // Get full path for direct file operations
-        $fullPath = Storage::disk(config('filesystems.default', 'local'))->path($filePath);
-        
-        if (!is_readable($fullPath)) {
-            throw new Exception("File is not readable: {$fullPath}");
-        }
-
-        // Validate file size hasn't changed
-        $currentSize = filesize($fullPath);
-        $expectedSize = $this->massPaymentFile->metadata['file_size'] ?? 0;
-        
-        if ($expectedSize > 0 && abs($currentSize - $expectedSize) > 100) {
-            throw new Exception(
-                "File size mismatch. Expected: {$expectedSize}, Actual: {$currentSize}"
-            );
-        }
-    }
-
-    /**
-     * Perform the CSV validation.
-     *
-     * @param CsvValidationService $csvValidationService
-     * @return array
-     * @throws Exception
-     */
-    private function performValidation(CsvValidationService $csvValidationService): array
-    {
-        $filePath = $this->massPaymentFile->file_path;
-        $fullPath = Storage::disk(config('filesystems.default', 'local'))->path($filePath);
-        
-        // Create a mock UploadedFile for the validation service
-        $fileInfo = new \SplFileInfo($fullPath);
-        $uploadedFile = new \Illuminate\Http\Testing\File(
-            $fileInfo->getFilename(),
-            fopen($fullPath, 'r')
-        );
-
-        // Perform validation
-        $validationResult = $csvValidationService->validateFile($uploadedFile);
-
-        // Add additional context
-        $validationResult['file_info'] = [
-            'path' => $filePath,
-            'size' => filesize($fullPath),
-            'modified' => filemtime($fullPath),
-            'validation_timestamp' => now()->toISOString()
-        ];
-
-        return $validationResult;
-    }
-
-    /**
-     * Process validation results and handle any errors.
-     *
-     * @param array $validationResult
-     * @return void
-     * @throws Exception
-     */
-    private function processValidationResults(array $validationResult): void
-    {
-        // Log validation summary
-        Log::info('Validation results processed', [
+        Log::debug('Validating CSV structure', [
             'file_id' => $this->massPaymentFile->id,
-            'valid' => $validationResult['valid'],
-            'total_rows' => $validationResult['summary']['total_rows'] ?? 0,
-            'valid_rows' => $validationResult['summary']['valid_rows'] ?? 0,
-            'invalid_rows' => $validationResult['summary']['invalid_rows'] ?? 0,
-            'error_count' => count($validationResult['errors'] ?? []),
-            'warning_count' => count($validationResult['warnings'] ?? [])
+            'file_path' => $filePath,
         ]);
 
-        // Check for critical errors that should stop processing
-        $criticalErrors = $this->identifyCriticalErrors($validationResult);
-        
-        if (!empty($criticalErrors)) {
-            throw new Exception(
-                'Critical validation errors found: ' . implode(', ', $criticalErrors)
-            );
+        return $validator->validateCsvStructure($fullPath);
+    }
+
+    /**
+     * Validate payment instructions from CSV
+     */
+    protected function validatePaymentInstructions(CsvValidationService $validator, array $structureValidation): array
+    {
+        $filePath = $this->getFilePath();
+        $fullPath = Storage::path($filePath);
+        $instructions = [];
+
+        try {
+            // Create CSV reader
+            $csv = Reader::createFromPath($fullPath, 'r');
+            $csv->setHeaderOffset(0);
+            
+            $headers = $csv->getHeader();
+            $headerMapping = $this->createHeaderMapping($headers);
+            
+            Log::debug('Parsing CSV payment instructions', [
+                'file_id' => $this->massPaymentFile->id,
+                'headers' => $headers,
+                'header_mapping' => $headerMapping,
+            ]);
+
+            $records = $csv->getRecords();
+            $rowNumber = 1;
+
+            foreach ($records as $record) {
+                $rowNumber++;
+                
+                // Map CSV row to instruction array
+                $instruction = $this->mapCsvRowToInstruction($record, $headerMapping, $rowNumber);
+                $instructions[] = $instruction;
+
+                // Prevent memory issues with very large files
+                if ($rowNumber > config('mass-payments.max_rows_per_file', 10000)) {
+                    break;
+                }
+            }
+
+            // Validate all instructions
+            $validationResult = $validator->validatePaymentInstructions($instructions);
+            $validationResult['instructions'] = $instructions;
+            $validationResult['headers'] = $headers;
+
+            return $validationResult;
+
+        } catch (CsvException $e) {
+            Log::error('CSV parsing error during instruction validation', [
+                'file_id' => $this->massPaymentFile->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return [
+                'valid' => false,
+                'errors' => ['CSV parsing error: ' . $e->getMessage()],
+                'instruction_errors' => [],
+                'instructions' => [],
+            ];
         }
     }
 
     /**
-     * Update file with validation summary.
-     *
-     * @param array $validationResult
-     * @return void
+     * Store validated payment instructions in database
      */
-    private function updateFileValidationSummary(array $validationResult): void
+    protected function storePaymentInstructions(array $instructions, array $headers): void
     {
-        $summary = $validationResult['summary'] ?? [];
-        
-        $updateData = [
-            'total_rows' => $summary['total_rows'] ?? 0,
-            'valid_rows' => $summary['valid_rows'] ?? 0,
-            'invalid_rows' => $summary['invalid_rows'] ?? 0,
-            'total_amount' => $summary['total_amount'] ?? 0.00,
-            'validation_summary' => [
-                'validation_status' => $validationResult['valid'] ? 'passed' : 'failed',
-                'processing_time' => $summary['processing_time'] ?? 0,
-                'currencies' => $summary['currencies'] ?? [],
-                'error_summary' => $this->summarizeErrors($validationResult),
-                'warning_summary' => $this->summarizeWarnings($validationResult),
-                'validated_at' => now()->toISOString()
-            ]
+        Log::debug('Storing payment instructions', [
+            'file_id' => $this->massPaymentFile->id,
+            'instruction_count' => count($instructions),
+        ]);
+
+        $batchSize = 100;
+        $batches = array_chunk($instructions, $batchSize);
+
+        foreach ($batches as $batchIndex => $batch) {
+            $instructionData = [];
+
+            foreach ($batch as $instruction) {
+                $instructionData[] = [
+                    'id' => (string) \Illuminate\Support\Str::uuid(),
+                    'mass_payment_file_id' => $this->massPaymentFile->id,
+                    'beneficiary_id' => $this->findOrCreateBeneficiary($instruction),
+                    'amount' => (float) $instruction['amount'],
+                    'currency' => strtoupper($instruction['currency']),
+                    'purpose_code' => $instruction['purpose_code'] ?? null,
+                    'reference' => $instruction['reference'] ?? null,
+                    'status' => PaymentInstruction::STATUS_PENDING,
+                    'validation_errors' => null,
+                    'row_number' => $instruction['row_number'],
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ];
+            }
+
+            PaymentInstruction::insert($instructionData);
+
+            Log::debug('Stored payment instruction batch', [
+                'file_id' => $this->massPaymentFile->id,
+                'batch_index' => $batchIndex + 1,
+                'batch_size' => count($instructionData),
+            ]);
+        }
+    }
+
+    /**
+     * Handle validation failure
+     */
+    protected function handleValidationFailure(array $errors, array $instructionErrors = []): void
+    {
+        Log::warning('Mass payment file validation failed', [
+            'file_id' => $this->massPaymentFile->id,
+            'error_count' => count($errors),
+            'instruction_error_count' => count($instructionErrors),
+        ]);
+
+        $validationErrors = [
+            'validation_failed_at' => now()->toISOString(),
+            'global_errors' => $errors,
+            'instruction_errors' => $instructionErrors,
+            'error_summary' => [
+                'total_errors' => count($errors),
+                'instruction_errors' => count($instructionErrors),
+            ],
         ];
 
-        // Only add validation errors if there are any
-        if (!empty($validationResult['row_errors'])) {
-            $updateData['validation_errors'] = $this->formatValidationErrors($validationResult['row_errors']);
+        $this->massPaymentFile->markAsValidationFailed($validationErrors);
+    }
+
+    /**
+     * Handle validation exception
+     */
+    protected function handleValidationException(Exception $exception): void
+    {
+        $validationErrors = [
+            'validation_failed_at' => now()->toISOString(),
+            'exception_error' => $exception->getMessage(),
+            'error_type' => 'validation_exception',
+            'error_summary' => [
+                'total_errors' => 1,
+                'exception' => true,
+            ],
+        ];
+
+        try {
+            $this->massPaymentFile->markAsValidationFailed($validationErrors);
+        } catch (Exception $e) {
+            Log::error('Failed to mark file as validation failed', [
+                'file_id' => $this->massPaymentFile->id,
+                'original_error' => $exception->getMessage(),
+                'status_update_error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Complete validation process
+     */
+    protected function completeValidation(array $statistics): void
+    {
+        // Update file total amount and currency if not already set
+        $totalAmount = $statistics['total_amount'] ?? 0.0;
+        $detectedCurrency = $this->detectPrimaryCurrency($statistics);
+
+        $updateData = [
+            'total_amount' => $totalAmount,
+        ];
+
+        if ($detectedCurrency && empty($this->massPaymentFile->currency)) {
+            $updateData['currency'] = $detectedCurrency;
         }
 
         $this->massPaymentFile->update($updateData);
-    }
 
-    /**
-     * Determine next actions based on validation results.
-     *
-     * @param array $validationResult
-     * @return void
-     */
-    private function determineNextActions(array $validationResult): void
-    {
-        if ($validationResult['valid']) {
-            // Mark as validation completed and pending approval
-            $this->massPaymentFile->markValidationCompleted($validationResult['summary'] ?? []);
-            $this->massPaymentFile->markPendingApproval();
-            
-            // Send approval required notification
-            $this->sendApprovalRequiredNotification();
-            
-        } else {
-            // Mark as validation failed
-            $errorSummary = $this->createErrorSummary($validationResult);
-            $this->massPaymentFile->markValidationFailed($errorSummary);
-            
-            // Send validation failure notification
-            $this->sendValidationFailureNotification($validationResult);
-        }
-    }
+        // Mark as awaiting approval
+        $this->massPaymentFile->markAsAwaitingApproval();
 
-    /**
-     * Update processing status in cache.
-     *
-     * @param string $status
-     * @return void
-     */
-    private function updateProcessingStatus(string $status): void
-    {
-        $cacheKey = "mass_payment_file_status:{$this->massPaymentFile->id}";
-        
-        $statusData = [
-            'status' => $status,
+        Log::info('Mass payment file validation completed', [
             'file_id' => $this->massPaymentFile->id,
-            'updated_at' => now()->toISOString(),
-            'job_attempt' => $this->attempts()
+            'total_amount' => $totalAmount,
+            'currency' => $detectedCurrency,
+            'statistics' => $statistics,
+        ]);
+    }
+
+    /**
+     * Get file storage path
+     */
+    protected function getFilePath(): ?string
+    {
+        if (empty($this->massPaymentFile->filename)) {
+            return null;
+        }
+
+        $basePath = config('mass-payments.storage_path', 'mass-payment-files');
+        return $basePath . '/' . $this->massPaymentFile->filename;
+    }
+
+    /**
+     * Create header mapping for CSV columns
+     */
+    protected function createHeaderMapping(array $headers): array
+    {
+        $mapping = [];
+        
+        foreach ($headers as $index => $header) {
+            $normalizedHeader = $this->normalizeHeaderName($header);
+            $mapping[$normalizedHeader] = $index;
+        }
+
+        return $mapping;
+    }
+
+    /**
+     * Normalize header name for consistent mapping
+     */
+    protected function normalizeHeaderName(string $header): string
+    {
+        return strtolower(trim(preg_replace('/[^a-zA-Z0-9_]/', '_', $header)));
+    }
+
+    /**
+     * Map CSV row to payment instruction array
+     */
+    protected function mapCsvRowToInstruction(array $record, array $headerMapping, int $rowNumber): array
+    {
+        $instruction = [
+            'row_number' => $rowNumber,
         ];
 
-        Cache::put($cacheKey, $statusData, 300); // 5 minutes
-    }
+        // Map standard fields
+        $fieldMappings = [
+            'amount' => ['amount', 'payment_amount'],
+            'currency' => ['currency', 'curr'],
+            'beneficiary_name' => ['beneficiary_name', 'recipient_name', 'payee_name', 'name'],
+            'beneficiary_account' => ['beneficiary_account', 'account_number', 'account'],
+            'bank_code' => ['bank_code', 'swift_code', 'swift'],
+            'reference' => ['reference', 'payment_reference', 'ref'],
+            'purpose_code' => ['purpose_code', 'purpose'],
+            'beneficiary_address' => ['beneficiary_address', 'address'],
+            'beneficiary_country' => ['beneficiary_country', 'country'],
+            'beneficiary_city' => ['beneficiary_city', 'city'],
+            'intermediary_bank' => ['intermediary_bank'],
+            'special_instructions' => ['special_instructions', 'instructions'],
+        ];
 
-    /**
-     * Clear processing status from cache.
-     *
-     * @return void
-     */
-    private function clearProcessingStatus(): void
-    {
-        $cacheKey = "mass_payment_file_status:{$this->massPaymentFile->id}";
-        Cache::forget($cacheKey);
-    }
-
-    /**
-     
+        foreach ($fieldMappings as $instructionField => $possibleHeaders) {
+            foreach ($possibleHeaders as $headerVariant) {
+                if (isset($headerMapping[$headerVariant])) {
+                    $columnIndex = $headerMapping[$header

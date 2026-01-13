@@ -4,10 +4,8 @@ namespace App\Http\Requests;
 
 use App\Models\MassPaymentFile;
 use App\Models\TccAccount;
-use App\Policies\MassPaymentFilePolicy;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
 class UploadMassPaymentFileRequest extends FormRequest
@@ -17,103 +15,232 @@ class UploadMassPaymentFileRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        // Use the MassPaymentFilePolicy to check if user can create mass payment files
-        return Gate::allows('create', MassPaymentFile::class);
+        // Use MassPaymentFilePolicy to check create permission
+        return $this->user() && $this->user()->can('create', MassPaymentFile::class);
     }
 
     /**
      * Get the validation rules that apply to the request.
+     *
+     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
      */
     public function rules(): array
     {
         return [
+            // File validation rules
             'file' => [
                 'required',
                 'file',
                 'mimes:csv,txt',
-                'max:51200', // 50MB max file size
+                'max:10240', // 10MB max file size
                 function ($attribute, $value, $fail) {
-                    if ($value instanceof UploadedFile) {
-                        $this->validateCsvStructure($value, $fail);
+                    // Additional file validation
+                    if (!$value || !$value->isValid()) {
+                        $fail('The uploaded file is invalid.');
+                        return;
                     }
-                }
+
+                    // Check file extension more strictly
+                    $extension = strtolower($value->getClientOriginalExtension());
+                    if (!in_array($extension, ['csv', 'txt'])) {
+                        $fail('The file must be a CSV file with .csv or .txt extension.');
+                        return;
+                    }
+
+                    // Check MIME type more strictly
+                    $mimeType = $value->getMimeType();
+                    $allowedMimeTypes = [
+                        'text/csv',
+                        'text/plain',
+                        'application/csv',
+                        'text/comma-separated-values',
+                        'application/octet-stream'
+                    ];
+                    
+                    if (!in_array($mimeType, $allowedMimeTypes)) {
+                        $fail('The file must be a valid CSV file.');
+                        return;
+                    }
+
+                    // Check file is not empty
+                    if ($value->getSize() === 0) {
+                        $fail('The uploaded file is empty.');
+                        return;
+                    }
+
+                    // Validate CSV structure - basic check
+                    $handle = fopen($value->getPathname(), 'r');
+                    if ($handle === false) {
+                        $fail('Unable to read the uploaded file.');
+                        return;
+                    }
+
+                    // Check for BOM and skip if present
+                    $firstLine = fgets($handle);
+                    if ($firstLine !== false) {
+                        // Remove BOM if present
+                        $firstLine = preg_replace('/^\xEF\xBB\xBF/', '', $firstLine);
+                        
+                        // Basic CSV structure validation
+                        $headers = str_getcsv($firstLine);
+                        if (empty($headers) || count($headers) < 3) {
+                            $fail('The CSV file must contain at least 3 columns.');
+                            fclose($handle);
+                            return;
+                        }
+
+                        // Check minimum required headers (case-insensitive)
+                        $requiredHeaders = ['amount', 'currency', 'beneficiary'];
+                        $headerNames = array_map('strtolower', array_map('trim', $headers));
+                        
+                        foreach ($requiredHeaders as $required) {
+                            if (!in_array(strtolower($required), $headerNames)) {
+                                $fail("The CSV file is missing required column: {$required}.");
+                                fclose($handle);
+                                return;
+                            }
+                        }
+
+                        // Count rows to validate file size limits
+                        $rowCount = 0;
+                        while (($line = fgets($handle)) !== false) {
+                            $rowCount++;
+                            if ($rowCount > 10000) {
+                                $fail('The CSV file cannot contain more than 10,000 rows.');
+                                fclose($handle);
+                                return;
+                            }
+                        }
+
+                        if ($rowCount === 0) {
+                            $fail('The CSV file must contain at least one data row.');
+                        }
+                    } else {
+                        $fail('Unable to read the CSV file headers.');
+                    }
+
+                    fclose($handle);
+                },
             ],
+
+            // TCC Account validation
+            'tcc_account_id' => [
+                'required',
+                'integer',
+                'exists:tcc_accounts,id',
+                function ($attribute, $value, $fail) {
+                    // Validate TCC account belongs to authenticated user's client
+                    $user = Auth::user();
+                    if (!$user || !$user->client_id) {
+                        $fail('User must be associated with a client.');
+                        return;
+                    }
+
+                    $tccAccount = TccAccount::find($value);
+                    if (!$tccAccount) {
+                        $fail('The selected TCC account does not exist.');
+                        return;
+                    }
+
+                    if ($tccAccount->client_id !== $user->client_id) {
+                        $fail('The selected TCC account does not belong to your organization.');
+                        return;
+                    }
+
+                    if (!$tccAccount->is_active) {
+                        $fail('The selected TCC account is not active.');
+                        return;
+                    }
+
+                    if (!$tccAccount->canBeUsedForPayments()) {
+                        $fail('The selected TCC account cannot be used for payments.');
+                        return;
+                    }
+                },
+            ],
+
+            // Optional currency filter - if provided, file must match
             'currency' => [
+                'sometimes',
                 'required',
                 'string',
                 'size:3',
-                Rule::in(['USD', 'EUR', 'GBP', 'SGD', 'HKD', 'AUD', 'CAD', 'JPY', 'CNY', 'THB', 'MYR', 'IDR', 'PHP', 'VND'])
+                'regex:/^[A-Z]{3}$/',
+                Rule::in(config('mass-payments.supported_currencies', ['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD', 'HKD', 'JPY'])),
             ],
-            'tcc_account_id' => [
-                'required',
-                'uuid',
-                'exists:tcc_accounts,id',
-                function ($attribute, $value, $fail) {
-                    $this->validateTccAccountAccess($value, $fail);
-                }
-            ],
+
+            // Optional description
             'description' => [
+                'sometimes',
                 'nullable',
                 'string',
-                'max:500'
+                'max:500',
             ],
-            'payment_date' => [
-                'nullable',
-                'date',
-                'after_or_equal:today',
-                'before_or_equal:' . now()->addDays(30)->format('Y-m-d')
-            ]
+
+            // Optional notification preferences
+            'notify_on_completion' => [
+                'sometimes',
+                'boolean',
+            ],
+
+            'notify_on_failure' => [
+                'sometimes',
+                'boolean',
+            ],
         ];
     }
 
     /**
-     * Get the error messages for the defined validation rules.
+     * Get the validation error messages.
+     *
+     * @return array<string, string>
      */
     public function messages(): array
     {
         return [
-            'file.required' => 'Please select a CSV file to upload.',
-            'file.file' => 'The uploaded file is not valid.',
-            'file.mimes' => 'The file must be in CSV format (.csv or .txt).',
-            'file.max' => 'The file size cannot exceed 50MB.',
-            'currency.required' => 'Currency is required.',
+            // File validation messages
+            'file.required' => 'A CSV file is required for upload.',
+            'file.file' => 'The uploaded item must be a valid file.',
+            'file.mimes' => 'The file must be a CSV file (.csv or .txt extension).',
+            'file.max' => 'The file size cannot exceed 10MB.',
+
+            // TCC Account validation messages
+            'tcc_account_id.required' => 'A TCC account must be selected.',
+            'tcc_account_id.integer' => 'The TCC account ID must be a valid integer.',
+            'tcc_account_id.exists' => 'The selected TCC account does not exist.',
+
+            // Currency validation messages
+            'currency.required' => 'Currency code is required when specified.',
+            'currency.string' => 'Currency must be a text value.',
             'currency.size' => 'Currency code must be exactly 3 characters.',
-            'currency.in' => 'The selected currency is not supported. Supported currencies: USD, EUR, GBP, SGD, HKD, AUD, CAD, JPY, CNY, THB, MYR, IDR, PHP, VND.',
-            'tcc_account_id.required' => 'TCC Account is required.',
-            'tcc_account_id.uuid' => 'Invalid TCC Account ID format.',
-            'tcc_account_id.exists' => 'The selected TCC Account does not exist.',
+            'currency.regex' => 'Currency code must contain only uppercase letters.',
+            'currency.in' => 'The specified currency is not supported.',
+
+            // Description validation messages
+            'description.string' => 'Description must be text.',
             'description.max' => 'Description cannot exceed 500 characters.',
-            'payment_date.date' => 'Payment date must be a valid date.',
-            'payment_date.after_or_equal' => 'Payment date cannot be in the past.',
-            'payment_date.before_or_equal' => 'Payment date cannot be more than 30 days in the future.'
+
+            // Notification validation messages
+            'notify_on_completion.boolean' => 'Completion notification preference must be true or false.',
+            'notify_on_failure.boolean' => 'Failure notification preference must be true or false.',
         ];
     }
 
     /**
      * Get custom attributes for validator errors.
+     *
+     * @return array<string, string>
      */
     public function attributes(): array
     {
         return [
             'file' => 'CSV file',
-            'currency' => 'currency',
-            'tcc_account_id' => 'TCC Account',
-            'description' => 'description',
-            'payment_date' => 'payment date'
+            'tcc_account_id' => 'TCC account',
+            'currency' => 'currency code',
+            'description' => 'file description',
+            'notify_on_completion' => 'completion notification',
+            'notify_on_failure' => 'failure notification',
         ];
-    }
-
-    /**
-     * Configure the validator instance.
-     */
-    public function withValidator($validator): void
-    {
-        $validator->after(function ($validator) {
-            // Additional cross-field validation
-            $this->validateFileCurrencyConsistency($validator);
-            $this->validateTccAccountCurrency($validator);
-            $this->validateFileNameUniqueness($validator);
-        });
     }
 
     /**
@@ -121,292 +248,25 @@ class UploadMassPaymentFileRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
-        // Normalize currency to uppercase
+        // Normalize currency to uppercase if provided
         if ($this->has('currency')) {
             $this->merge([
-                'currency' => strtoupper($this->input('currency'))
+                'currency' => strtoupper(trim($this->get('currency', ''))),
             ]);
         }
 
-        // Set default payment date if not provided
-        if (!$this->has('payment_date') || empty($this->input('payment_date'))) {
-            $this->merge([
-                'payment_date' => now()->addDays(1)->format('Y-m-d')
-            ]);
-        }
+        // Set default notification preferences
+        $this->merge([
+            'notify_on_completion' => $this->boolean('notify_on_completion', true),
+            'notify_on_failure' => $this->boolean('notify_on_failure', true),
+        ]);
 
         // Trim description if provided
         if ($this->has('description')) {
             $this->merge([
-                'description' => trim($this->input('description'))
+                'description' => trim($this->get('description', '')),
             ]);
         }
-    }
-
-    /**
-     * Validate CSV file structure and basic content.
-     */
-    private function validateCsvStructure(UploadedFile $file, callable $fail): void
-    {
-        try {
-            $handle = fopen($file->getRealPath(), 'r');
-            
-            if (!$handle) {
-                $fail('Unable to read the CSV file. Please check file permissions.');
-                return;
-            }
-
-            // Read and validate header row
-            $header = fgetcsv($handle, 0, ',');
-            
-            if (!$header || empty($header)) {
-                $fail('The CSV file appears to be empty or corrupted.');
-                fclose($handle);
-                return;
-            }
-
-            // Required CSV columns
-            $requiredColumns = [
-                'beneficiary_name',
-                'account_number',
-                'bank_code',
-                'amount',
-                'currency',
-                'purpose_code'
-            ];
-
-            // Normalize header columns (trim and lowercase)
-            $normalizedHeader = array_map(function ($column) {
-                return strtolower(trim($column));
-            }, $header);
-
-            // Check for required columns
-            $missingColumns = [];
-            foreach ($requiredColumns as $requiredColumn) {
-                if (!in_array($requiredColumn, $normalizedHeader)) {
-                    $missingColumns[] = $requiredColumn;
-                }
-            }
-
-            if (!empty($missingColumns)) {
-                $fail('Missing required columns: ' . implode(', ', $missingColumns));
-                fclose($handle);
-                return;
-            }
-
-            // Validate file has at least one data row
-            $rowCount = 0;
-            while (($row = fgetcsv($handle, 0, ',')) !== false) {
-                if (!empty(array_filter($row))) { // Count non-empty rows
-                    $rowCount++;
-                }
-                
-                // Limit check to prevent memory issues during validation
-                if ($rowCount > 10000) {
-                    $fail('CSV file cannot contain more than 10,000 payment rows.');
-                    break;
-                }
-            }
-
-            fclose($handle);
-
-            if ($rowCount === 0) {
-                $fail('The CSV file must contain at least one payment row.');
-                return;
-            }
-
-            if ($rowCount > 10000) {
-                $fail('CSV file cannot contain more than 10,000 payment rows.');
-                return;
-            }
-
-        } catch (\Exception $e) {
-            $fail('Error reading CSV file: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Validate that the user has access to the specified TCC Account.
-     */
-    private function validateTccAccountAccess(string $tccAccountId, callable $fail): void
-    {
-        $user = $this->user();
-        
-        if (!$user) {
-            $fail('User authentication required.');
-            return;
-        }
-
-        $tccAccount = TccAccount::find($tccAccountId);
-        
-        if (!$tccAccount) {
-            $fail('The selected TCC Account does not exist.');
-            return;
-        }
-
-        // Check if user's client has access to this TCC Account
-        if ($tccAccount->client_id !== $user->client_id) {
-            $fail('You do not have access to the selected TCC Account.');
-            return;
-        }
-
-        // Check if TCC Account is active
-        if (!$tccAccount->is_active) {
-            $fail('The selected TCC Account is not active.');
-            return;
-        }
-    }
-
-    /**
-     * Validate file and currency consistency.
-     */
-    private function validateFileCurrencyConsistency($validator): void
-    {
-        $file = $this->file('file');
-        $currency = $this->input('currency');
-
-        if (!$file || !$currency) {
-            return;
-        }
-
-        try {
-            $handle = fopen($file->getRealPath(), 'r');
-            
-            if (!$handle) {
-                return;
-            }
-
-            // Skip header row
-            fgetcsv($handle, 0, ',');
-            
-            // Get currency column index from header
-            fseek($handle, 0);
-            $header = fgetcsv($handle, 0, ',');
-            $currencyColumnIndex = array_search('currency', array_map('strtolower', array_map('trim', $header)));
-            
-            if ($currencyColumnIndex === false) {
-                fclose($handle);
-                return;
-            }
-
-            // Check first few rows for currency consistency
-            $inconsistentRows = [];
-            $rowNumber = 1; // Start from data rows (after header)
-            
-            while (($row = fgetcsv($handle, 0, ',')) !== false && $rowNumber <= 10) {
-                if (isset($row[$currencyColumnIndex])) {
-                    $rowCurrency = strtoupper(trim($row[$currencyColumnIndex]));
-                    if ($rowCurrency !== $currency && !empty($rowCurrency)) {
-                        $inconsistentRows[] = $rowNumber + 1; // +1 to account for header row
-                    }
-                }
-                $rowNumber++;
-            }
-
-            fclose($handle);
-
-            if (!empty($inconsistentRows)) {
-                $validator->errors()->add(
-                    'currency',
-                    'Currency mismatch detected in rows: ' . implode(', ', $inconsistentRows) . 
-                    '. All payments must be in ' . $currency . ' currency.'
-                );
-            }
-
-        } catch (\Exception $e) {
-            // Log error but don't fail validation - detailed validation will happen in job
-            logger()->warning('CSV currency validation error: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Validate TCC Account supports the selected currency.
-     */
-    private function validateTccAccountCurrency($validator): void
-    {
-        $tccAccountId = $this->input('tcc_account_id');
-        $currency = $this->input('currency');
-
-        if (!$tccAccountId || !$currency) {
-            return;
-        }
-
-        $tccAccount = TccAccount::find($tccAccountId);
-        
-        if (!$tccAccount) {
-            return;
-        }
-
-        // Check if TCC Account supports the selected currency
-        $supportedCurrencies = $tccAccount->supported_currencies ?? [];
-        
-        if (!empty($supportedCurrencies) && !in_array($currency, $supportedCurrencies)) {
-            $validator->errors()->add(
-                'currency',
-                'The selected TCC Account does not support ' . $currency . ' currency. ' .
-                'Supported currencies: ' . implode(', ', $supportedCurrencies) . '.'
-            );
-        }
-
-        // Check account balance if available
-        $accountBalance = $tccAccount->getBalanceForCurrency($currency);
-        
-        if ($accountBalance !== null && $accountBalance <= 0) {
-            $validator->errors()->add(
-                'tcc_account_id',
-                'Insufficient balance in the selected TCC Account for ' . $currency . ' currency.'
-            );
-        }
-    }
-
-    /**
-     * Validate filename uniqueness for the client within the last 24 hours.
-     */
-    private function validateFileNameUniqueness($validator): void
-    {
-        $file = $this->file('file');
-        $user = $this->user();
-
-        if (!$file || !$user) {
-            return;
-        }
-
-        $originalFilename = $file->getClientOriginalName();
-        
-        // Check for duplicate filenames in the last 24 hours
-        $existingFile = MassPaymentFile::where('client_id', $user->client_id)
-            ->where('original_filename', $originalFilename)
-            ->where('created_at', '>=', now()->subDay())
-            ->whereNotIn('status', [
-                MassPaymentFile::STATUS_CANCELLED,
-                MassPaymentFile::STATUS_FAILED
-            ])
-            ->first();
-
-        if ($existingFile) {
-            $validator->errors()->add(
-                'file',
-                'A file with the same name "' . $originalFilename . '" was uploaded in the last 24 hours. ' .
-                'Please rename your file or wait before uploading again.'
-            );
-        }
-    }
-
-    /**
-     * Get the validated data with additional computed fields.
-     */
-    public function validatedWithComputed(): array
-    {
-        $validated = $this->validated();
-        $user = $this->user();
-        
-        return array_merge($validated, [
-            'client_id' => $user->client_id,
-            'created_by' => $user->id,
-            'original_filename' => $this->file('file')->getClientOriginalName(),
-            'file_size' => $this->file('file')->getSize(),
-            'mime_type' => $this->file('file')->getMimeType()
-        ]);
     }
 
     /**
@@ -414,29 +274,189 @@ class UploadMassPaymentFileRequest extends FormRequest
      */
     protected function failedValidation(\Illuminate\Contracts\Validation\Validator $validator): void
     {
-        // Log validation failures for monitoring
-        logger()->info('Mass payment file upload validation failed', [
+        // Log validation failures for debugging
+        \Illuminate\Support\Facades\Log::warning('Mass payment file upload validation failed', [
             'user_id' => $this->user()?->id,
             'client_id' => $this->user()?->client_id,
             'errors' => $validator->errors()->toArray(),
-            'input' => $this->except(['file'])
+            'input' => $this->except(['file']), // Exclude file from logs
         ]);
 
         parent::failedValidation($validator);
     }
 
     /**
-     * Handle a passed validation attempt.
+     * Configure the validator instance.
      */
-    protected function passedValidation(): void
+    public function withValidator(\Illuminate\Contracts\Validation\Validator $validator): void
     {
-        // Log successful validation for monitoring
-        logger()->info('Mass payment file upload validation passed', [
-            'user_id' => $this->user()?->id,
-            'client_id' => $this->user()?->client_id,
-            'filename' => $this->file('file')?->getClientOriginalName(),
-            'currency' => $this->input('currency'),
-            'tcc_account_id' => $this->input('tcc_account_id')
-        ]);
+        $validator->after(function ($validator) {
+            // Additional cross-field validation
+            $this->validateFileAndTccAccountCurrency($validator);
+            $this->validateFileSizeConstraints($validator);
+        });
+    }
+
+    /**
+     * Validate that file currency matches TCC account currency if specified.
+     */
+    private function validateFileAndTccAccountCurrency(\Illuminate\Contracts\Validation\Validator $validator): void
+    {
+        $tccAccountId = $this->get('tcc_account_id');
+        $currency = $this->get('currency');
+
+        if (!$tccAccountId || !$currency) {
+            return;
+        }
+
+        $tccAccount = TccAccount::find($tccAccountId);
+        if (!$tccAccount) {
+            return;
+        }
+
+        if ($tccAccount->currency !== $currency) {
+            $validator->errors()->add(
+                'currency',
+                "The currency must match the TCC account currency ({$tccAccount->currency})."
+            );
+        }
+    }
+
+    /**
+     * Validate file size constraints based on configuration.
+     */
+    private function validateFileSizeConstraints(\Illuminate\Contracts\Validation\Validator $validator): void
+    {
+        $file = $this->file('file');
+        if (!$file || !$file->isValid()) {
+            return;
+        }
+
+        // Get configuration limits
+        $maxFileSize = config('mass-payments.max_file_size_mb', 10) * 1024 * 1024; // Convert to bytes
+        $maxRows = config('mass-payments.max_rows_per_file', 10000);
+
+        // Check file size
+        if ($file->getSize() > $maxFileSize) {
+            $maxSizeMB = $maxFileSize / 1024 / 1024;
+            $validator->errors()->add(
+                'file',
+                "The file size cannot exceed {$maxSizeMB}MB."
+            );
+            return;
+        }
+
+        // Re-validate row count with configuration
+        $handle = fopen($file->getPathname(), 'r');
+        if ($handle === false) {
+            return;
+        }
+
+        // Skip header row
+        fgets($handle);
+        
+        $rowCount = 0;
+        while (($line = fgets($handle)) !== false) {
+            $rowCount++;
+            if ($rowCount > $maxRows) {
+                $validator->errors()->add(
+                    'file',
+                    "The CSV file cannot contain more than {$maxRows} rows."
+                );
+                break;
+            }
+        }
+
+        fclose($handle);
+    }
+
+    /**
+     * Get validated data with additional processing.
+     *
+     * @param string|null $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public function validated($key = null, $default = null)
+    {
+        $validated = parent::validated($key, $default);
+
+        if ($key !== null) {
+            return $validated;
+        }
+
+        // Add computed fields to validated data
+        $validated['client_id'] = $this->user()->client_id;
+        $validated['uploaded_by'] = $this->user()->id;
+        $validated['original_filename'] = $this->file('file')->getClientOriginalName();
+        $validated['file_size'] = $this->file('file')->getSize();
+
+        // Detect currency from file if not provided
+        if (!isset($validated['currency'])) {
+            $validated['currency'] = $this->detectCurrencyFromFile();
+        }
+
+        return $validated;
+    }
+
+    /**
+     * Detect currency from the uploaded file.
+     */
+    private function detectCurrencyFromFile(): ?string
+    {
+        $file = $this->file('file');
+        if (!$file || !$file->isValid()) {
+            return null;
+        }
+
+        $handle = fopen($file->getPathname(), 'r');
+        if ($handle === false) {
+            return null;
+        }
+
+        // Read and parse header
+        $headerLine = fgets($handle);
+        if ($headerLine === false) {
+            fclose($handle);
+            return null;
+        }
+
+        // Remove BOM if present
+        $headerLine = preg_replace('/^\xEF\xBB\xBF/', '', $headerLine);
+        $headers = str_getcsv($headerLine);
+        
+        // Find currency column index
+        $currencyIndex = null;
+        foreach ($headers as $index => $header) {
+            if (strtolower(trim($header)) === 'currency') {
+                $currencyIndex = $index;
+                break;
+            }
+        }
+
+        if ($currencyIndex === null) {
+            fclose($handle);
+            return null;
+        }
+
+        // Read first data row to get currency
+        $dataLine = fgets($handle);
+        fclose($handle);
+        
+        if ($dataLine === false) {
+            return null;
+        }
+
+        $data = str_getcsv($dataLine);
+        if (!isset($data[$currencyIndex])) {
+            return null;
+        }
+
+        $currency = strtoupper(trim($data[$currencyIndex]));
+        
+        // Validate detected currency
+        $supportedCurrencies = config('mass-payments.supported_currencies', ['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD', 'HKD', 'JPY']);
+        
+        return in_array($currency, $supportedCurrencies) ? $currency : null;
     }
 }

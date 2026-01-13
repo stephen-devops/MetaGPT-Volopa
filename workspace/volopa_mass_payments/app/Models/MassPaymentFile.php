@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Illuminate\Support\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 
 class MassPaymentFile extends Model
 {
@@ -25,14 +25,14 @@ class MassPaymentFile extends Model
     protected $primaryKey = 'id';
 
     /**
-     * Indicates if the model's ID is auto-incrementing.
-     */
-    public $incrementing = false;
-
-    /**
-     * The data type of the auto-incrementing ID.
+     * The "type" of the primary key ID.
      */
     protected $keyType = 'string';
+
+    /**
+     * Indicates if the IDs are auto-incrementing.
+     */
+    public $incrementing = false;
 
     /**
      * The attributes that are mass assignable.
@@ -42,28 +42,24 @@ class MassPaymentFile extends Model
         'tcc_account_id',
         'filename',
         'original_filename',
-        'file_path',
-        'status',
+        'file_size',
         'total_amount',
         'currency',
-        'total_rows',
-        'valid_rows',
-        'invalid_rows',
-        'validation_summary',
+        'status',
         'validation_errors',
-        'created_by',
+        'uploaded_by',
         'approved_by',
         'approved_at',
-        'rejection_reason',
-        'metadata'
     ];
 
     /**
-     * The attributes that should be hidden for serialization.
+     * The attributes that should be guarded from mass assignment.
      */
-    protected $hidden = [
-        'file_path',
-        'deleted_at'
+    protected $guarded = [
+        'id',
+        'created_at',
+        'updated_at',
+        'deleted_at',
     ];
 
     /**
@@ -71,188 +67,165 @@ class MassPaymentFile extends Model
      */
     protected $casts = [
         'id' => 'string',
-        'client_id' => 'string',
-        'tcc_account_id' => 'string',
+        'client_id' => 'integer',
+        'tcc_account_id' => 'integer',
+        'file_size' => 'integer',
         'total_amount' => 'decimal:2',
-        'total_rows' => 'integer',
-        'valid_rows' => 'integer',
-        'invalid_rows' => 'integer',
-        'validation_summary' => 'json',
-        'validation_errors' => 'json',
-        'created_by' => 'string',
-        'approved_by' => 'string',
+        'validation_errors' => 'array',
+        'uploaded_by' => 'integer',
+        'approved_by' => 'integer',
         'approved_at' => 'datetime',
-        'metadata' => 'json',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
-        'deleted_at' => 'datetime'
+        'deleted_at' => 'datetime',
     ];
 
     /**
-     * The attributes that should be mutated to dates.
+     * The attributes that should be hidden for serialization.
      */
-    protected $dates = [
-        'approved_at',
-        'created_at',
-        'updated_at',
-        'deleted_at'
+    protected $hidden = [
+        'deleted_at',
     ];
 
     /**
-     * Default values for attributes.
+     * Status enum constants
      */
-    protected $attributes = [
-        'status' => 'uploading',
-        'total_amount' => '0.00',
-        'total_rows' => 0,
-        'valid_rows' => 0,
-        'invalid_rows' => 0
-    ];
-
-    /**
-     * Status constants for the mass payment file.
-     */
-    public const STATUS_UPLOADING = 'uploading';
-    public const STATUS_PROCESSING = 'processing';
-    public const STATUS_VALIDATION_COMPLETED = 'validation_completed';
+    public const STATUS_DRAFT = 'draft';
+    public const STATUS_VALIDATING = 'validating';
     public const STATUS_VALIDATION_FAILED = 'validation_failed';
-    public const STATUS_PENDING_APPROVAL = 'pending_approval';
+    public const STATUS_AWAITING_APPROVAL = 'awaiting_approval';
     public const STATUS_APPROVED = 'approved';
-    public const STATUS_PROCESSING_PAYMENTS = 'processing_payments';
+    public const STATUS_PROCESSING = 'processing';
     public const STATUS_COMPLETED = 'completed';
-    public const STATUS_CANCELLED = 'cancelled';
     public const STATUS_FAILED = 'failed';
 
     /**
-     * Get all available status values.
+     * Get all available status values
      */
-    public static function getAvailableStatuses(): array
+    public static function getStatuses(): array
     {
         return [
-            self::STATUS_UPLOADING,
-            self::STATUS_PROCESSING,
-            self::STATUS_VALIDATION_COMPLETED,
+            self::STATUS_DRAFT,
+            self::STATUS_VALIDATING,
             self::STATUS_VALIDATION_FAILED,
-            self::STATUS_PENDING_APPROVAL,
+            self::STATUS_AWAITING_APPROVAL,
             self::STATUS_APPROVED,
-            self::STATUS_PROCESSING_PAYMENTS,
+            self::STATUS_PROCESSING,
             self::STATUS_COMPLETED,
-            self::STATUS_CANCELLED,
-            self::STATUS_FAILED
+            self::STATUS_FAILED,
         ];
     }
 
     /**
-     * Get the TCC account that owns the mass payment file.
+     * Get the client that owns the mass payment file.
+     */
+    public function client(): BelongsTo
+    {
+        return $this->belongsTo(Client::class, 'client_id');
+    }
+
+    /**
+     * Get the TCC account associated with the mass payment file.
      */
     public function tccAccount(): BelongsTo
     {
-        return $this->belongsTo(TccAccount::class, 'tcc_account_id', 'id');
+        return $this->belongsTo(TccAccount::class, 'tcc_account_id');
     }
 
     /**
-     * Get the payment instructions for the mass payment file.
+     * Get the user who uploaded the file.
+     */
+    public function uploader(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'uploaded_by');
+    }
+
+    /**
+     * Get the user who approved the file.
+     */
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    /**
+     * Get all payment instructions for this mass payment file.
      */
     public function paymentInstructions(): HasMany
     {
-        return $this->hasMany(PaymentInstruction::class, 'mass_payment_file_id', 'id');
+        return $this->hasMany(PaymentInstruction::class, 'mass_payment_file_id');
     }
 
     /**
-     * Get the approvals for the mass payment file.
+     * Scope to filter by client ID (multi-tenant architecture).
      */
-    public function approvals(): HasMany
-    {
-        return $this->hasMany(MassPaymentFileApproval::class, 'mass_payment_file_id', 'id');
-    }
-
-    /**
-     * Scope a query to only include files for a specific client.
-     */
-    public function scopeForClient($query, string $clientId)
+    public function scopeForClient(Builder $query, int $clientId): Builder
     {
         return $query->where('client_id', $clientId);
     }
 
     /**
-     * Scope a query to only include files with a specific status.
+     * Scope to filter by status.
      */
-    public function scopeWithStatus($query, string $status)
+    public function scopeByStatus(Builder $query, string $status): Builder
     {
         return $query->where('status', $status);
     }
 
     /**
-     * Scope a query to only include files for a specific currency.
+     * Scope to filter by currency.
      */
-    public function scopeForCurrency($query, string $currency)
+    public function scopeByCurrency(Builder $query, string $currency): Builder
     {
         return $query->where('currency', $currency);
     }
 
     /**
-     * Scope a query to only include files created by a specific user.
+     * Scope to get files pending approval.
      */
-    public function scopeCreatedBy($query, string $userId)
+    public function scopePendingApproval(Builder $query): Builder
     {
-        return $query->where('created_by', $userId);
+        return $query->where('status', self::STATUS_AWAITING_APPROVAL);
     }
 
     /**
-     * Scope a query to only include approved files.
+     * Scope to get approved files.
      */
-    public function scopeApproved($query)
+    public function scopeApproved(Builder $query): Builder
     {
-        return $query->whereNotNull('approved_by')
-                    ->whereNotNull('approved_at');
+        return $query->where('status', self::STATUS_APPROVED);
     }
 
     /**
-     * Scope a query to only include files pending approval.
+     * Check if the file is in draft status.
      */
-    public function scopePendingApproval($query)
+    public function isDraft(): bool
     {
-        return $query->where('status', self::STATUS_PENDING_APPROVAL);
+        return $this->status === self::STATUS_DRAFT;
     }
 
     /**
-     * Check if the file is in uploading status.
+     * Check if the file is currently being validated.
      */
-    public function isUploading(): bool
+    public function isValidating(): bool
     {
-        return $this->status === self::STATUS_UPLOADING;
-    }
-
-    /**
-     * Check if the file is being processed.
-     */
-    public function isProcessing(): bool
-    {
-        return $this->status === self::STATUS_PROCESSING;
-    }
-
-    /**
-     * Check if the file validation is completed.
-     */
-    public function isValidationCompleted(): bool
-    {
-        return $this->status === self::STATUS_VALIDATION_COMPLETED;
+        return $this->status === self::STATUS_VALIDATING;
     }
 
     /**
      * Check if the file validation failed.
      */
-    public function isValidationFailed(): bool
+    public function hasValidationFailed(): bool
     {
         return $this->status === self::STATUS_VALIDATION_FAILED;
     }
 
     /**
-     * Check if the file is pending approval.
+     * Check if the file is awaiting approval.
      */
-    public function isPendingApproval(): bool
+    public function isAwaitingApproval(): bool
     {
-        return $this->status === self::STATUS_PENDING_APPROVAL;
+        return $this->status === self::STATUS_AWAITING_APPROVAL;
     }
 
     /**
@@ -264,11 +237,11 @@ class MassPaymentFile extends Model
     }
 
     /**
-     * Check if payments are being processed.
+     * Check if the file is currently processing.
      */
-    public function isProcessingPayments(): bool
+    public function isProcessing(): bool
     {
-        return $this->status === self::STATUS_PROCESSING_PAYMENTS;
+        return $this->status === self::STATUS_PROCESSING;
     }
 
     /**
@@ -280,27 +253,11 @@ class MassPaymentFile extends Model
     }
 
     /**
-     * Check if the file is cancelled.
-     */
-    public function isCancelled(): bool
-    {
-        return $this->status === self::STATUS_CANCELLED;
-    }
-
-    /**
      * Check if the file processing failed.
      */
-    public function isFailed(): bool
+    public function hasFailed(): bool
     {
         return $this->status === self::STATUS_FAILED;
-    }
-
-    /**
-     * Check if the file has validation errors.
-     */
-    public function hasValidationErrors(): bool
-    {
-        return $this->invalid_rows > 0;
     }
 
     /**
@@ -308,158 +265,149 @@ class MassPaymentFile extends Model
      */
     public function canBeApproved(): bool
     {
-        return $this->isPendingApproval() && !$this->hasValidationErrors();
+        return $this->status === self::STATUS_AWAITING_APPROVAL;
     }
 
     /**
-     * Check if the file can be cancelled.
+     * Check if the file can be deleted.
      */
-    public function canBeCancelled(): bool
+    public function canBeDeleted(): bool
     {
         return in_array($this->status, [
-            self::STATUS_UPLOADING,
-            self::STATUS_PROCESSING,
-            self::STATUS_VALIDATION_COMPLETED,
-            self::STATUS_PENDING_APPROVAL
+            self::STATUS_DRAFT,
+            self::STATUS_VALIDATION_FAILED,
+            self::STATUS_FAILED,
+        ]);
+    }
+
+    /**
+     * Mark the file as validating.
+     */
+    public function markAsValidating(): void
+    {
+        $this->update(['status' => self::STATUS_VALIDATING]);
+    }
+
+    /**
+     * Mark the file as validation failed with errors.
+     */
+    public function markAsValidationFailed(array $errors = []): void
+    {
+        $this->update([
+            'status' => self::STATUS_VALIDATION_FAILED,
+            'validation_errors' => $errors,
+        ]);
+    }
+
+    /**
+     * Mark the file as awaiting approval.
+     */
+    public function markAsAwaitingApproval(): void
+    {
+        $this->update([
+            'status' => self::STATUS_AWAITING_APPROVAL,
+            'validation_errors' => null,
+        ]);
+    }
+
+    /**
+     * Mark the file as approved by a specific user.
+     */
+    public function markAsApproved(int $approverId): void
+    {
+        $this->update([
+            'status' => self::STATUS_APPROVED,
+            'approved_by' => $approverId,
+            'approved_at' => now(),
         ]);
     }
 
     /**
      * Mark the file as processing.
      */
-    public function markAsProcessing(): bool
+    public function markAsProcessing(): void
     {
-        return $this->update(['status' => self::STATUS_PROCESSING]);
-    }
-
-    /**
-     * Mark the file validation as completed.
-     */
-    public function markValidationCompleted(array $validationSummary = null): bool
-    {
-        return $this->update([
-            'status' => self::STATUS_VALIDATION_COMPLETED,
-            'validation_summary' => $validationSummary
-        ]);
-    }
-
-    /**
-     * Mark the file validation as failed.
-     */
-    public function markValidationFailed(array $validationErrors = null): bool
-    {
-        return $this->update([
-            'status' => self::STATUS_VALIDATION_FAILED,
-            'validation_errors' => $validationErrors
-        ]);
-    }
-
-    /**
-     * Mark the file as pending approval.
-     */
-    public function markPendingApproval(): bool
-    {
-        return $this->update(['status' => self::STATUS_PENDING_APPROVAL]);
-    }
-
-    /**
-     * Mark the file as approved.
-     */
-    public function markAsApproved(string $approvedBy, Carbon $approvedAt = null): bool
-    {
-        return $this->update([
-            'status' => self::STATUS_APPROVED,
-            'approved_by' => $approvedBy,
-            'approved_at' => $approvedAt ?? Carbon::now()
-        ]);
-    }
-
-    /**
-     * Mark the file as processing payments.
-     */
-    public function markProcessingPayments(): bool
-    {
-        return $this->update(['status' => self::STATUS_PROCESSING_PAYMENTS]);
+        $this->update(['status' => self::STATUS_PROCESSING]);
     }
 
     /**
      * Mark the file as completed.
      */
-    public function markAsCompleted(): bool
+    public function markAsCompleted(): void
     {
-        return $this->update(['status' => self::STATUS_COMPLETED]);
+        $this->update(['status' => self::STATUS_COMPLETED]);
     }
 
     /**
-     * Mark the file as cancelled.
+     * Mark the file as failed with optional errors.
      */
-    public function markAsCancelled(string $rejectionReason = null): bool
+    public function markAsFailed(array $errors = []): void
     {
-        return $this->update([
-            'status' => self::STATUS_CANCELLED,
-            'rejection_reason' => $rejectionReason
-        ]);
-    }
-
-    /**
-     * Mark the file as failed.
-     */
-    public function markAsFailed(string $rejectionReason = null): bool
-    {
-        return $this->update([
+        $this->update([
             'status' => self::STATUS_FAILED,
-            'rejection_reason' => $rejectionReason
+            'validation_errors' => $errors,
         ]);
     }
 
     /**
-     * Update validation statistics.
+     * Get the count of payment instructions.
      */
-    public function updateValidationStats(int $totalRows, int $validRows, int $invalidRows): bool
+    public function getPaymentInstructionsCountAttribute(): int
     {
-        return $this->update([
-            'total_rows' => $totalRows,
-            'valid_rows' => $validRows,
-            'invalid_rows' => $invalidRows
-        ]);
+        return $this->paymentInstructions()->count();
     }
 
     /**
-     * Calculate the validation success rate.
+     * Get the count of successful payment instructions.
      */
-    public function getValidationSuccessRate(): float
+    public function getSuccessfulPaymentsCountAttribute(): int
     {
-        if ($this->total_rows === 0) {
+        return $this->paymentInstructions()
+                    ->where('status', PaymentInstruction::STATUS_COMPLETED)
+                    ->count();
+    }
+
+    /**
+     * Get the count of failed payment instructions.
+     */
+    public function getFailedPaymentsCountAttribute(): int
+    {
+        return $this->paymentInstructions()
+                    ->where('status', PaymentInstruction::STATUS_FAILED)
+                    ->count();
+    }
+
+    /**
+     * Get processing progress as percentage.
+     */
+    public function getProgressPercentageAttribute(): float
+    {
+        $total = $this->getPaymentInstructionsCountAttribute();
+        
+        if ($total === 0) {
             return 0.0;
         }
 
-        return round(($this->valid_rows / $this->total_rows) * 100, 2);
+        $completed = $this->paymentInstructions()
+                          ->whereIn('status', [
+                              PaymentInstruction::STATUS_COMPLETED,
+                              PaymentInstruction::STATUS_FAILED,
+                          ])
+                          ->count();
+
+        return round(($completed / $total) * 100, 2);
     }
 
     /**
-     * Get the human readable file size.
+     * Boot the model and apply global scopes.
      */
-    public function getFormattedFileSize(): string
+    protected static function booted(): void
     {
-        if (!file_exists($this->file_path)) {
-            return 'Unknown';
-        }
-
-        $bytes = filesize($this->file_path);
-        $units = ['B', 'KB', 'MB', 'GB'];
-        
-        for ($i = 0; $bytes > 1024 && $i < count($units) - 1; $i++) {
-            $bytes /= 1024;
-        }
-        
-        return round($bytes, 2) . ' ' . $units[$i];
-    }
-
-    /**
-     * Get the duration since creation in human readable format.
-     */
-    public function getProcessingDuration(): string
-    {
-        return $this->created_at->diffForHumans(Carbon::now(), true);
+        // Apply client scoping globally for multi-tenant architecture
+        static::addGlobalScope('client', function (Builder $builder) {
+            if (auth()->check() && auth()->user()->client_id) {
+                $builder->where('client_id', auth()->user()->client_id);
+            }
+        });
     }
 }

@@ -3,11 +3,11 @@
 ```php
 <?php
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\V1\MassPaymentFileController;
 use App\Http\Controllers\Api\V1\PaymentInstructionController;
 use App\Http\Controllers\Api\V1\TemplateController;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -20,342 +20,364 @@ use App\Http\Controllers\Api\V1\TemplateController;
 |
 */
 
-// Health check route (no authentication required)
-Route::get('/health', function (Request $request) {
+/*
+|--------------------------------------------------------------------------
+| Health Check Route
+|--------------------------------------------------------------------------
+*/
+Route::get('/health', function () {
     return response()->json([
         'status' => 'ok',
         'timestamp' => now()->toISOString(),
         'version' => config('app.version', '1.0.0'),
-        'environment' => app()->environment(),
-        'service' => 'Volopa Mass Payments API'
+        'service' => 'Mass Payments API',
     ]);
-})->name('api.health');
+});
 
-// API v1 routes with versioning, authentication and rate limiting
-Route::prefix('v1')->name('api.v1.')->group(function () {
+/*
+|--------------------------------------------------------------------------
+| API Version 1 Routes
+|--------------------------------------------------------------------------
+|
+| All V1 API routes with proper middleware, throttling, and authentication.
+| Routes follow RESTful conventions and include proper naming for URL generation.
+|
+*/
+Route::prefix('v1')->group(function () {
     
-    // Apply authentication middleware to all v1 routes
-    Route::middleware(['auth:api', 'client.scope'])->group(function () {
+    /*
+    |--------------------------------------------------------------------------
+    | Authentication Required Routes
+    |--------------------------------------------------------------------------
+    */
+    Route::middleware(['auth:sanctum', 'throttle:60,1'])->group(function () {
         
-        // Mass Payment Files API Routes
-        Route::prefix('mass-payment-files')->name('mass-payment-files.')->group(function () {
-            
-            // List mass payment files with filtering and pagination
-            Route::get('/', [MassPaymentFileController::class, 'index'])
-                ->middleware(['throttle:60,1'])
-                ->name('index');
-            
-            // Upload new mass payment file
-            Route::post('/', [MassPaymentFileController::class, 'store'])
-                ->middleware(['throttle:10,1'])
-                ->name('store');
-            
-            // Get specific mass payment file details
-            Route::get('/{massPaymentFile}', [MassPaymentFileController::class, 'show'])
-                ->middleware(['throttle:120,1'])
-                ->name('show');
-            
-            // Delete mass payment file (only if in draft/failed status)
-            Route::delete('/{massPaymentFile}', [MassPaymentFileController::class, 'destroy'])
-                ->middleware(['throttle:20,1'])
-                ->name('destroy');
-            
-            // Approve mass payment file for processing
-            Route::post('/{massPaymentFile}/approve', [MassPaymentFileController::class, 'approve'])
-                ->middleware(['throttle:30,1'])
-                ->name('approve');
-            
-            // Cancel mass payment file
-            Route::post('/{massPaymentFile}/cancel', [MassPaymentFileController::class, 'cancel'])
-                ->middleware(['throttle:20,1'])
-                ->name('cancel');
-            
-            // Download original uploaded file
-            Route::get('/{massPaymentFile}/download', [MassPaymentFileController::class, 'download'])
-                ->middleware(['throttle:30,1'])
-                ->name('download');
-            
-            // Get validation errors for a file
-            Route::get('/{massPaymentFile}/validation-errors', [MassPaymentFileController::class, 'getValidationErrors'])
-                ->middleware(['throttle:60,1'])
-                ->name('validation-errors');
-            
-            // Resubmit failed mass payment file
-            Route::post('/{massPaymentFile}/resubmit', [MassPaymentFileController::class, 'resubmit'])
-                ->middleware(['throttle:10,1'])
-                ->name('resubmit');
-            
-            // Export processed file results
-            Route::get('/{massPaymentFile}/export', [MassPaymentFileController::class, 'export'])
-                ->middleware(['throttle:20,1'])
-                ->name('export');
-            
-            // Get processing status and progress
-            Route::get('/{massPaymentFile}/status', [MassPaymentFileController::class, 'getStatus'])
-                ->middleware(['throttle:120,1'])
-                ->name('status');
-            
-            // Get audit trail for file
-            Route::get('/{massPaymentFile}/audit-log', [MassPaymentFileController::class, 'getAuditLog'])
-                ->middleware(['throttle:30,1', 'permission:mass_payments.audit'])
-                ->name('audit-log');
-            
-            // Force approve file (admin only)
-            Route::post('/{massPaymentFile}/force-approve', [MassPaymentFileController::class, 'forceApprove'])
-                ->middleware(['throttle:10,1', 'permission:mass_payments.force_approve'])
-                ->name('force-approve');
-            
-            // Bulk operations on multiple files
-            Route::post('/bulk/cancel', [MassPaymentFileController::class, 'bulkCancel'])
-                ->middleware(['throttle:10,1', 'permission:mass_payments.bulk_operations'])
-                ->name('bulk.cancel');
-            
-            Route::post('/bulk/delete', [MassPaymentFileController::class, 'bulkDelete'])
-                ->middleware(['throttle:5,1', 'permission:mass_payments.bulk_operations'])
-                ->name('bulk.delete');
-            
-            Route::post('/bulk/export', [MassPaymentFileController::class, 'bulkExport'])
-                ->middleware(['throttle:5,1', 'permission:mass_payments.bulk_operations'])
-                ->name('bulk.export');
+        /*
+        |--------------------------------------------------------------------------
+        | Mass Payment Files Management
+        |--------------------------------------------------------------------------
+        */
+        Route::apiResource('mass-payment-files', MassPaymentFileController::class, [
+            'parameters' => ['mass-payment-files' => 'mass_payment_file']
+        ])->names([
+            'index' => 'api.v1.mass-payment-files.index',
+            'store' => 'api.v1.mass-payment-files.store', 
+            'show' => 'api.v1.mass-payment-files.show',
+            'update' => 'api.v1.mass-payment-files.update',
+            'destroy' => 'api.v1.mass-payment-files.destroy',
+        ]);
+
+        // Additional mass payment file routes
+        Route::prefix('mass-payment-files/{mass_payment_file}')->group(function () {
+            // Approve payment file
+            Route::post('/approve', [MassPaymentFileController::class, 'approve'])
+                ->name('api.v1.mass-payment-files.approve')
+                ->middleware('throttle:10,1'); // Stricter rate limit for approvals
+
+            // Download original file
+            Route::get('/download', [MassPaymentFileController::class, 'download'])
+                ->name('api.v1.mass-payment-files.download')
+                ->middleware('throttle:30,1');
+
+            // Get validation errors
+            Route::get('/validation-errors', [MassPaymentFileController::class, 'validationErrors'])
+                ->name('api.v1.mass-payment-files.validation-errors');
+
+            // Retry failed processing
+            Route::post('/retry', [MassPaymentFileController::class, 'retry'])
+                ->name('api.v1.mass-payment-files.retry')
+                ->middleware('throttle:5,1');
+
+            // Cancel processing
+            Route::post('/cancel', [MassPaymentFileController::class, 'cancel'])
+                ->name('api.v1.mass-payment-files.cancel')
+                ->middleware('throttle:5,1');
+
+            // Get processing status
+            Route::get('/status', [MassPaymentFileController::class, 'status'])
+                ->name('api.v1.mass-payment-files.status');
+
+            // Export processing report
+            Route::get('/export', [MassPaymentFileController::class, 'export'])
+                ->name('api.v1.mass-payment-files.export')
+                ->middleware('throttle:10,1');
+
+            // Get file statistics
+            Route::get('/statistics', [MassPaymentFileController::class, 'statistics'])
+                ->name('api.v1.mass-payment-files.statistics');
         });
-        
-        // Payment Instructions API Routes
-        Route::prefix('payment-instructions')->name('payment-instructions.')->group(function () {
-            
-            // List payment instructions with filtering and pagination
-            Route::get('/', [PaymentInstructionController::class, 'index'])
-                ->middleware(['throttle:120,1'])
-                ->name('index');
-            
-            // Create individual payment instruction
-            Route::post('/', [PaymentInstructionController::class, 'store'])
-                ->middleware(['throttle:30,1'])
-                ->name('store');
-            
-            // Get specific payment instruction details
-            Route::get('/{paymentInstruction}', [PaymentInstructionController::class, 'show'])
-                ->middleware(['throttle:120,1'])
-                ->name('show');
-            
-            // Update payment instruction (only if pending)
-            Route::put('/{paymentInstruction}', [PaymentInstructionController::class, 'update'])
-                ->middleware(['throttle:30,1'])
-                ->name('update');
-            
-            // Delete payment instruction (only if pending)
-            Route::delete('/{paymentInstruction}', [PaymentInstructionController::class, 'destroy'])
-                ->middleware(['throttle:20,1'])
-                ->name('destroy');
-            
-            // Retry failed payment instruction
-            Route::post('/{paymentInstruction}/retry', [PaymentInstructionController::class, 'retry'])
-                ->middleware(['throttle:10,1'])
-                ->name('retry');
-            
-            // Cancel payment instruction
-            Route::post('/{paymentInstruction}/cancel', [PaymentInstructionController::class, 'cancel'])
-                ->middleware(['throttle:20,1'])
-                ->name('cancel');
-            
-            // Get payment instruction status and tracking info
-            Route::get('/{paymentInstruction}/status', [PaymentInstructionController::class, 'getStatus'])
-                ->middleware(['throttle:120,1'])
-                ->name('status');
-            
-            // Get payment instruction receipt/confirmation
-            Route::get('/{paymentInstruction}/receipt', [PaymentInstructionController::class, 'getReceipt'])
-                ->middleware(['throttle:30,1'])
-                ->name('receipt');
-            
-            // Get payment instruction audit trail
-            Route::get('/{paymentInstruction}/audit-log', [PaymentInstructionController::class, 'getAuditLog'])
-                ->middleware(['throttle:30,1', 'permission:payment_instructions.audit'])
-                ->name('audit-log');
-            
-            // Bulk operations on multiple payment instructions
-            Route::post('/bulk/cancel', [PaymentInstructionController::class, 'bulkCancel'])
-                ->middleware(['throttle:10,1', 'permission:payment_instructions.bulk_operations'])
-                ->name('bulk.cancel');
-            
-            Route::post('/bulk/retry', [PaymentInstructionController::class, 'bulkRetry'])
-                ->middleware(['throttle:5,1', 'permission:payment_instructions.bulk_operations'])
-                ->name('bulk.retry');
-            
-            Route::post('/bulk/export', [PaymentInstructionController::class, 'bulkExport'])
-                ->middleware(['throttle:5,1', 'permission:payment_instructions.bulk_operations'])
-                ->name('bulk.export');
-            
-            // Search payment instructions
-            Route::get('/search/{query}', [PaymentInstructionController::class, 'search'])
-                ->middleware(['throttle:60,1'])
-                ->name('search');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Payment Instructions Management
+        |--------------------------------------------------------------------------
+        */
+        Route::apiResource('payment-instructions', PaymentInstructionController::class, [
+            'only' => ['index', 'show']
+        ])->names([
+            'index' => 'api.v1.payment-instructions.index',
+            'show' => 'api.v1.payment-instructions.show',
+        ]);
+
+        // Additional payment instruction routes
+        Route::prefix('payment-instructions/{payment_instruction}')->group(function () {
+            // Cancel individual payment instruction
+            Route::post('/cancel', [PaymentInstructionController::class, 'cancel'])
+                ->name('api.v1.payment-instructions.cancel')
+                ->middleware('throttle:10,1');
+
+            // Retry individual payment instruction
+            Route::post('/retry', [PaymentInstructionController::class, 'retry'])
+                ->name('api.v1.payment-instructions.retry')
+                ->middleware('throttle:5,1');
+
+            // Get validation errors for instruction
+            Route::get('/validation-errors', [PaymentInstructionController::class, 'validationErrors'])
+                ->name('api.v1.payment-instructions.validation-errors');
+
+            // Download payment receipt (for completed payments)
+            Route::get('/receipt', [PaymentInstructionController::class, 'receipt'])
+                ->name('api.v1.payment-instructions.receipt')
+                ->middleware('throttle:30,1');
+
+            // Get transaction details
+            Route::get('/transaction', [PaymentInstructionController::class, 'transaction'])
+                ->name('api.v1.payment-instructions.transaction');
         });
-        
-        // Template Generation API Routes
-        Route::prefix('templates')->name('templates.')->group(function () {
-            
-            // Download CSV template for mass payments
-            Route::get('/download', [TemplateController::class, 'download'])
-                ->middleware(['throttle:30,1'])
-                ->name('download');
-            
-            // Get available template types
-            Route::get('/types', [TemplateController::class, 'getTemplateTypes'])
-                ->middleware(['throttle:60,1'])
-                ->name('types');
-            
-            // Get supported currencies for templates
-            Route::get('/currencies', [TemplateController::class, 'getSupportedCurrencies'])
-                ->middleware(['throttle:60,1'])
-                ->name('currencies');
-            
-            // Get template field definitions for specific currency
-            Route::get('/fields', [TemplateController::class, 'getTemplateFields'])
-                ->middleware(['throttle:60,1'])
-                ->name('fields');
-            
-            // Download template with pre-populated beneficiary data
-            Route::post('/download-with-beneficiaries', [TemplateController::class, 'downloadWithBeneficiaries'])
-                ->middleware(['throttle:20,1'])
-                ->name('download-with-beneficiaries');
-            
-            // Get template validation rules for currency
-            Route::get('/validation-rules', [TemplateController::class, 'getValidationRules'])
-                ->middleware(['throttle:60,1'])
-                ->name('validation-rules');
-            
-            // Preview template structure without download
-            Route::get('/preview', [TemplateController::class, 'preview'])
-                ->middleware(['throttle:60,1'])
-                ->name('preview');
+
+        // Bulk operations on payment instructions
+        Route::prefix('payment-instructions/bulk')->group(function () {
+            // Cancel multiple payment instructions
+            Route::post('/cancel', [PaymentInstructionController::class, 'bulkCancel'])
+                ->name('api.v1.payment-instructions.bulk-cancel')
+                ->middleware('throttle:5,1');
+
+            // Retry multiple payment instructions
+            Route::post('/retry', [PaymentInstructionController::class, 'bulkRetry'])
+                ->name('api.v1.payment-instructions.bulk-retry')
+                ->middleware('throttle:3,1');
+
+            // Export payment instructions
+            Route::post('/export', [PaymentInstructionController::class, 'bulkExport'])
+                ->name('api.v1.payment-instructions.bulk-export')
+                ->middleware('throttle:10,1');
         });
-        
-        // Dashboard and Statistics Routes
-        Route::prefix('dashboard')->name('dashboard.')->group(function () {
-            
-            // Get dashboard summary statistics
-            Route::get('/summary', [MassPaymentFileController::class, 'getDashboardSummary'])
-                ->middleware(['throttle:60,1'])
-                ->name('summary');
-            
-            // Get recent activity feed
-            Route::get('/activity', [MassPaymentFileController::class, 'getRecentActivity'])
-                ->middleware(['throttle:60,1'])
-                ->name('activity');
-            
-            // Get payment statistics and analytics
-            Route::get('/statistics', [PaymentInstructionController::class, 'getStatistics'])
-                ->middleware(['throttle:30,1'])
-                ->name('statistics');
-            
-            // Get pending approvals count
-            Route::get('/pending-approvals', [MassPaymentFileController::class, 'getPendingApprovals'])
-                ->middleware(['throttle:120,1'])
-                ->name('pending-approvals');
-            
-            // Get processing status overview
-            Route::get('/processing-status', [MassPaymentFileController::class, 'getProcessingStatus'])
-                ->middleware(['throttle:60,1'])
-                ->name('processing-status');
+
+        /*
+        |--------------------------------------------------------------------------
+        | Template Downloads
+        |--------------------------------------------------------------------------
+        */
+        Route::prefix('templates')->group(function () {
+            // Get template information
+            Route::get('/info', [TemplateController::class, 'getTemplateInfo'])
+                ->name('api.v1.templates.info');
+
+            // Download recipient template with existing beneficiaries
+            Route::get('/recipients/{currency}', [TemplateController::class, 'downloadRecipientTemplate'])
+                ->name('api.v1.templates.recipients')
+                ->middleware('throttle:20,1')
+                ->where('currency', '[A-Z]{3}');
+
+            // Download blank template
+            Route::get('/blank/{currency}', [TemplateController::class, 'downloadBlankTemplate'])
+                ->name('api.v1.templates.blank')
+                ->middleware('throttle:30,1')
+                ->where('currency', '[A-Z]{3}');
+
+            // Get template preview (headers and sample data)
+            Route::get('/preview/{currency}', [TemplateController::class, 'getTemplatePreview'])
+                ->name('api.v1.templates.preview')
+                ->where('currency', '[A-Z]{3}');
+
+            // Get currency-specific template requirements
+            Route::get('/requirements/{currency}', [TemplateController::class, 'getCurrencyRequirements'])
+                ->name('api.v1.templates.requirements')
+                ->where('currency', '[A-Z]{3}');
         });
-        
-        // Reporting and Export Routes
-        Route::prefix('reports')->name('reports.')->group(function () {
-            
-            // Generate payments report
-            Route::post('/payments', [PaymentInstructionController::class, 'generatePaymentsReport'])
-                ->middleware(['throttle:10,1', 'permission:reports.generate'])
-                ->name('payments');
-            
-            // Generate files report
-            Route::post('/files', [MassPaymentFileController::class, 'generateFilesReport'])
-                ->middleware(['throttle:10,1', 'permission:reports.generate'])
-                ->name('files');
-            
-            // Generate compliance report
-            Route::post('/compliance', [MassPaymentFileController::class, 'generateComplianceReport'])
-                ->middleware(['throttle:5,1', 'permission:reports.compliance'])
-                ->name('compliance');
-            
-            // Get available report templates
-            Route::get('/templates', [TemplateController::class, 'getReportTemplates'])
-                ->middleware(['throttle:30,1'])
-                ->name('templates');
-            
-            // Download generated report
-            Route::get('/{reportId}/download', [MassPaymentFileController::class, 'downloadReport'])
-                ->middleware(['throttle:30,1'])
-                ->name('download');
-            
-            // Get report generation status
-            Route::get('/{reportId}/status', [MassPaymentFileController::class, 'getReportStatus'])
-                ->middleware(['throttle:60,1'])
-                ->name('status');
-        });
-        
-        // System Information and Configuration Routes
-        Route::prefix('system')->name('system.')->group(function () {
-            
-            // Get supported currencies and limits
-            Route::get('/currencies', [TemplateController::class, 'getSystemCurrencies'])
-                ->middleware(['throttle:60,1'])
-                ->name('currencies');
-            
-            // Get payment method configurations
-            Route::get('/payment-methods', [PaymentInstructionController::class, 'getPaymentMethods'])
-                ->middleware(['throttle:60,1'])
-                ->name('payment-methods');
-            
-            // Get user permissions and capabilities
-            Route::get('/permissions', function (Request $request) {
-                $user = $request->user();
+
+        /*
+        |--------------------------------------------------------------------------
+        | System Information Routes
+        |--------------------------------------------------------------------------
+        */
+        Route::prefix('system')->group(function () {
+            // Get supported currencies
+            Route::get('/currencies', function () {
                 return response()->json([
                     'success' => true,
-                    'data' => [
-                        'user_id' => $user->id,
-                        'client_id' => $user->client_id,
-                        'permissions' => $user->getAllPermissions()->pluck('name'),
-                        'roles' => $user->getRoleNames(),
-                        'capabilities' => [
-                            'can_create_mass_payments' => $user->can('create', \App\Models\MassPaymentFile::class),
-                            'can_approve_payments' => $user->hasRole(['admin', 'finance_manager', 'approver']),
-                            'can_bulk_operations' => $user->hasPermission('mass_payments.bulk_operations'),
-                            'can_view_compliance' => $user->hasPermission('mass_payments.compliance'),
-                            'can_generate_reports' => $user->hasPermission('reports.generate')
-                        ]
-                    ],
-                    'meta' => [
-                        'timestamp' => now()->toISOString()
-                    ]
+                    'data' => config('mass-payments.supported_currencies', []),
                 ]);
-            })
-                ->middleware(['throttle:60,1'])
-                ->name('permissions');
-            
-            // Get client configuration and limits
-            Route::get('/client-config', [MassPaymentFileController::class, 'getClientConfig'])
-                ->middleware(['throttle:30,1'])
-                ->name('client-config');
-            
-            // Get system status and health metrics
-            Route::get('/status', function (Request $request) {
+            })->name('api.v1.system.currencies');
+
+            // Get purpose codes
+            Route::get('/purpose-codes', function () {
+                $user = auth()->user();
+                $country = $user->country ?? 'US';
+                
                 return response()->json([
                     'success' => true,
                     'data' => [
-                        'api_version' => 'v1',
-                        'system_status' => 'operational',
-                        'queue_status' => 'healthy',
-                        'database_status' => 'connected',
-                        'cache_status' => 'operational',
-                        'maintenance_mode' => app()->isDownForMaintenance(),
-                        'features' => [
-                            'mass_payments' => true,
-                            'individual_payments' => true,
-                            'bulk_operations' => true,
-                            'compliance_reporting' => true,
-                            'real_time_notifications' => true
-                        ]
+                        'all_purpose_codes' => config('mass-payments.purpose_codes', []),
+                        'country_specific' => config("mass-payments.country_purpose_codes.{$country}", []),
+                        'user_country' => $country,
                     ],
-                    'meta' => [
-                        'timestamp' => now()->toISOString(),
-                        
+                ]);
+            })->name('api.v1.system.purpose-codes');
+
+            // Get system configuration
+            Route::get('/config', function () {
+                return response()->json([
+                    'success' => true,
+                    'data' => [
+                        'max_file_size_mb' => config('mass-payments.max_file_size_mb', 10),
+                        'max_rows_per_file' => config('mass-payments.max_rows_per_file', 10000),
+                        'min_rows_per_file' => config('mass-payments.min_rows_per_file', 1),
+                        'supported_file_extensions' => config('mass-payments.allowed_file_extensions', ['csv', 'txt']),
+                        'max_amount_per_instruction' => config('mass-payments.validation.max_amount_per_instruction', 999999.99),
+                        'min_amount_per_instruction' => config('mass-payments.validation.min_amount_per_instruction', 0.01),
+                        'approval_threshold' => config('mass-payments.approval.approval_threshold', 100000.00),
+                        'auto_approve_threshold' => config('mass-payments.approval.auto_approve_threshold', 1000.00),
+                    ],
+                ]);
+            })->name('api.v1.system.config');
+
+            // Get system limits for current user
+            Route::get('/limits', function () {
+                $user = auth()->user();
+                
+                return response()->json([
+                    'success' => true,
+                    'data' => [
+                        'daily_upload_limit' => config('mass-payments.security.max_uploads_per_day', 100),
+                        'daily_approval_limit' => config('mass-payments.approval.daily_approval_limit', 50),
+                        'rate_limit_per_minute' => config('mass-payments.security.rate_limit_per_minute', 60),
+                        'concurrent_processing_limit' => config('mass-payments.processing.max_concurrent_jobs', 5),
+                        'user_permissions' => [
+                            'can_upload' => $user->can('create', \App\Models\MassPaymentFile::class),
+                            'can_approve' => method_exists($user, 'hasPermission') ? $user->hasPermission('mass_payments.approve') : false,
+                            'can_view_all' => method_exists($user, 'hasPermission') ? $user->hasPermission('mass_payments.view_all') : false,
+                        ],
+                    ],
+                ]);
+            })->name('api.v1.system.limits');
+        });
+
+        /*
+        |--------------------------------------------------------------------------
+        | Statistics and Analytics Routes
+        |--------------------------------------------------------------------------
+        */
+        Route::prefix('analytics')->middleware('throttle:30,1')->group(function () {
+            // Get dashboard statistics
+            Route::get('/dashboard', function (Request $request) {
+                $user = auth()->user();
+                $clientId = $user->client_id;
+                
+                if (!$clientId) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'User must be associated with a client',
+                    ], 403);
+                }
+
+                // Get date range from request
+                $dateFrom = $request->get('date_from', now()->subDays(30)->toDateString());
+                $dateTo = $request->get('date_to', now()->toDateString());
+
+                // Basic statistics query
+                $stats = \App\Models\MassPaymentFile::where('client_id', $clientId)
+                    ->whereBetween('created_at', [$dateFrom, $dateTo])
+                    ->selectRaw('
+                        COUNT(*) as total_files,
+                        SUM(total_amount) as total_amount,
+                        COUNT(CASE WHEN status = "completed" THEN 1 END) as completed_files,
+                        COUNT(CASE WHEN status = "failed" THEN 1 END) as failed_files,
+                        COUNT(CASE WHEN status = "processing" THEN 1 END) as processing_files,
+                        COUNT(CASE WHEN status = "awaiting_approval" THEN 1 END) as pending_approval_files
+                    ')
+                    ->first();
+
+                return response()->json([
+                    'success' => true,
+                    'data' => [
+                        'period' => [
+                            'from' => $dateFrom,
+                            'to' => $dateTo,
+                        ],
+                        'statistics' => $stats,
+                        'generated_at' => now()->toISOString(),
+                    ],
+                ]);
+            })->name('api.v1.analytics.dashboard');
+
+            // Get payment volume trends
+            Route::get('/trends', function (Request $request) {
+                $user = auth()->user();
+                $clientId = $user->client_id;
+                
+                if (!$clientId) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'User must be associated with a client',
+                    ], 403);
+                }
+
+                $days = min((int) $request->get('days', 30), 365);
+                $dateFrom = now()->subDays($days);
+
+                $trends = \App\Models\MassPaymentFile::where('client_id', $clientId)
+                    ->where('created_at', '>=', $dateFrom)
+                    ->selectRaw('
+                        DATE(created_at) as date,
+                        COUNT(*) as files_count,
+                        SUM(total_amount) as total_amount,
+                        AVG(total_amount) as avg_amount
+                    ')
+                    ->groupBy('date')
+                    ->orderBy('date')
+                    ->get();
+
+                return response()->json([
+                    'success' => true,
+                    'data' => [
+                        'period_days' => $days,
+                        'trends' => $trends,
+                        'generated_at' => now()->toISOString(),
+                    ],
+                ]);
+            })->name('api.v1.analytics.trends');
+        });
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Public Routes (No Authentication Required)
+    |--------------------------------------------------------------------------
+    */
+    
+    // Get supported currencies (public access for form building)
+    Route::get('/public/currencies', function () {
+        return response()->json([
+            'success' => true,
+            'data' => array_keys(config('mass-payments.supported_currencies', [])),
+            'details' => config('mass-payments.supported_currencies', []),
+        ]);
+    })->name('api.v1.public.currencies');
+
+    // Get purpose codes (public access)
+    Route::get('/public/purpose-codes', function () {
+        return response()->json([
+            'success' => true,
+            'data' => config('mass-payments.purpose_codes', []),
+        ]);
+    })->name('api.v1.public.purpose-codes');
+
+    // Get API documentation info
+    Route::get('/public/info', function () {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'name' => 'Volopa Mass Payments API',
+                'version' => 'v1.0.0',
+                'description' => 'RESTful API for bulk payment processing with CSV upload support',

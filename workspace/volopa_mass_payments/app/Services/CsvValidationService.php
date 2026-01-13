@@ -6,349 +6,431 @@
 namespace App\Services;
 
 use App\Models\Beneficiary;
-use App\Models\TccAccount;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Cache;
+use App\Models\PaymentInstruction;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Cache;
 use League\Csv\Reader;
 use League\Csv\Exception as CsvException;
+use Carbon\Carbon;
+use Exception;
+use InvalidArgumentException;
 
 class CsvValidationService
 {
     /**
-     * Maximum number of rows allowed in a CSV file.
+     * Maximum allowed rows per CSV file
      */
-    private const MAX_ROWS = 10000;
+    protected int $maxRows;
 
     /**
-     * Maximum file size allowed in bytes (50MB).
+     * Minimum allowed rows per CSV file
      */
-    private const MAX_FILE_SIZE = 52428800;
+    protected int $minRows;
 
     /**
-     * Required CSV columns.
+     * Maximum amount per payment instruction
      */
-    private const REQUIRED_COLUMNS = [
-        'beneficiary_name',
-        'account_number',
-        'bank_code',
-        'amount',
-        'currency',
-        'purpose_code'
-    ];
+    protected float $maxAmountPerInstruction;
 
     /**
-     * Optional CSV columns.
+     * Minimum amount per payment instruction
      */
-    private const OPTIONAL_COLUMNS = [
-        'beneficiary_address',
-        'beneficiary_country',
-        'bank_name',
-        'bank_address',
-        'swift_code',
-        'iban',
-        'routing_number',
-        'remittance_information',
-        'payment_reference',
-        'beneficiary_email',
-        'beneficiary_phone',
-        'intermediate_bank_code',
-        'intermediate_bank_name',
-        'intermediate_swift_code'
-    ];
+    protected float $minAmountPerInstruction;
 
     /**
-     * Supported currencies.
+     * Maximum total file amount
      */
-    private const SUPPORTED_CURRENCIES = [
-        'USD', 'EUR', 'GBP', 'SGD', 'HKD', 'AUD', 'CAD', 'JPY', 
-        'CNY', 'THB', 'MYR', 'IDR', 'PHP', 'VND'
-    ];
+    protected float $maxTotalFileAmount;
 
     /**
-     * Valid purpose codes.
+     * Required CSV headers
      */
-    private const PURPOSE_CODES = [
-        'SAL' => 'Salary',
-        'DIV' => 'Dividend',
-        'INT' => 'Interest',
-        'FEE' => 'Fee',
-        'RFD' => 'Refund',
-        'TRD' => 'Trade',
-        'SVC' => 'Service',
-        'SUP' => 'Supplier',
-        'INV' => 'Investment',
-        'OTH' => 'Other'
-    ];
+    protected array $requiredHeaders;
 
     /**
-     * Currency-specific validation rules.
+     * Optional CSV headers
      */
-    private const CURRENCY_RULES = [
-        'USD' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'EUR' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => true,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'GBP' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'SGD' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'HKD' => [
-            'min_amount' => 0.01,
-            'max_amount' => 9999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'AUD' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'CAD' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'JPY' => [
-            'min_amount' => 1.00,
-            'max_amount' => 99999999.00,
-            'decimal_places' => 0,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => true,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'CNY' => [
-            'min_amount' => 0.01,
-            'max_amount' => 9999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => true,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['TRD', 'SVC', 'SUP']
-        ],
-        'THB' => [
-            'min_amount' => 0.01,
-            'max_amount' => 9999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'MYR' => [
-            'min_amount' => 0.01,
-            'max_amount' => 999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => false,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'IDR' => [
-            'min_amount' => 1.00,
-            'max_amount' => 999999999.00,
-            'decimal_places' => 0,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'PHP' => [
-            'min_amount' => 0.01,
-            'max_amount' => 9999999.99,
-            'decimal_places' => 2,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ],
-        'VND' => [
-            'min_amount' => 1.00,
-            'max_amount' => 999999999.00,
-            'decimal_places' => 0,
-            'requires_purpose_code' => true,
-            'requires_beneficiary_address' => true,
-            'requires_swift_code' => false,
-            'max_remittance_length' => 140,
-            'allowed_purpose_codes' => ['SAL', 'DIV', 'INT', 'FEE', 'RFD', 'TRD', 'SVC', 'SUP', 'INV', 'OTH']
-        ]
-    ];
+    protected array $optionalHeaders;
 
     /**
-     * Validate uploaded CSV file structure and content.
-     *
-     * @param UploadedFile $file
-     * @return array
+     * Supported currencies
      */
-    public function validateFile(UploadedFile $file): array
+    protected array $supportedCurrencies;
+
+    /**
+     * Purpose codes configuration
+     */
+    protected array $purposeCodes;
+
+    /**
+     * Country-specific purpose codes
+     */
+    protected array $countryPurposeCodes;
+
+    /**
+     * Currency-specific settings
+     */
+    protected array $currencySettings;
+
+    /**
+     * Constructor
+     */
+    public function __construct()
     {
-        Log::info('Starting CSV file validation', [
-            'filename' => $file->getClientOriginalName(),
-            'size' => $file->getSize(),
-            'mime_type' => $file->getMimeType()
+        $this->maxRows = config('mass-payments.max_rows_per_file', 10000);
+        $this->minRows = config('mass-payments.min_rows_per_file', 1);
+        $this->maxAmountPerInstruction = config('mass-payments.validation.max_amount_per_instruction', 999999.99);
+        $this->minAmountPerInstruction = config('mass-payments.validation.min_amount_per_instruction', 0.01);
+        $this->maxTotalFileAmount = config('mass-payments.validation.max_total_file_amount', 10000000.00);
+        $this->requiredHeaders = config('mass-payments.validation.required_csv_headers', [
+            'amount', 'currency', 'beneficiary_name', 'beneficiary_account', 'bank_code'
         ]);
+        $this->optionalHeaders = config('mass-payments.validation.optional_csv_headers', [
+            'reference', 'purpose_code', 'beneficiary_address', 'beneficiary_country', 'beneficiary_city', 'intermediary_bank', 'special_instructions'
+        ]);
+        $this->supportedCurrencies = array_keys(config('mass-payments.supported_currencies', ['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD', 'HKD', 'JPY']));
+        $this->purposeCodes = array_keys(config('mass-payments.purpose_codes', []));
+        $this->countryPurposeCodes = config('mass-payments.country_purpose_codes', []);
+        $this->currencySettings = config('mass-payments.currency_settings', []);
+    }
 
-        $validationResult = [
-            'valid' => true,
-            'errors' => [],
-            'warnings' => [],
-            'summary' => [
-                'total_rows' => 0,
-                'valid_rows' => 0,
-                'invalid_rows' => 0,
-                'total_amount' => 0.00,
-                'currencies' => [],
-                'processing_time' => 0
-            ],
-            'row_errors' => [],
-            'header_validation' => null,
-            'file_validation' => null
-        ];
+    /**
+     * Validate CSV file structure and headers
+     *
+     * @param string $filePath
+     * @return array
+     * @throws Exception
+     */
+    public function validateCsvStructure(string $filePath): array
+    {
+        if (empty($filePath) || !file_exists($filePath)) {
+            throw new InvalidArgumentException('Invalid file path provided');
+        }
 
-        $startTime = microtime(true);
+        $errors = [];
+        $warnings = [];
 
         try {
-            // Basic file validation
-            $fileValidation = $this->validateFileBasics($file);
-            $validationResult['file_validation'] = $fileValidation;
+            // Create CSV reader instance
+            $csv = Reader::createFromPath($filePath, 'r');
+            
+            // Handle BOM if present
+            $csv->setHeaderOffset(0);
 
-            if (!$fileValidation['valid']) {
-                $validationResult['valid'] = false;
-                $validationResult['errors'] = array_merge($validationResult['errors'], $fileValidation['errors']);
-                return $validationResult;
+            // Get headers
+            $headers = $csv->getHeader();
+            
+            if (empty($headers)) {
+                $errors[] = 'CSV file contains no headers';
+                return [
+                    'valid' => false,
+                    'errors' => $errors,
+                    'warnings' => $warnings,
+                    'headers' => [],
+                    'row_count' => 0,
+                    'estimated_total_amount' => 0.0,
+                    'detected_currency' => null,
+                ];
             }
 
-            // Read and validate CSV content
-            $reader = Reader::createFromPath($file->getRealPath(), 'r');
-            $reader->setHeaderOffset(0);
+            // Normalize headers (trim and lowercase for comparison)
+            $normalizedHeaders = array_map(function($header) {
+                return strtolower(trim($header));
+            }, $headers);
 
-            // Validate headers
-            $headerValidation = $this->validateHeaders($reader->getHeader());
-            $validationResult['header_validation'] = $headerValidation;
-
-            if (!$headerValidation['valid']) {
-                $validationResult['valid'] = false;
-                $validationResult['errors'] = array_merge($validationResult['errors'], $headerValidation['errors']);
-                return $validationResult;
+            // Validate required headers are present
+            $missingHeaders = [];
+            foreach ($this->requiredHeaders as $requiredHeader) {
+                if (!in_array(strtolower($requiredHeader), $normalizedHeaders)) {
+                    $missingHeaders[] = $requiredHeader;
+                }
             }
 
-            // Process data rows
-            $records = $reader->getRecords();
-            $rowNumber = 2; // Start from row 2 (after header)
-            $totalAmount = 0.00;
-            $currencies = [];
-            $validRows = 0;
-            $invalidRows = 0;
+            if (!empty($missingHeaders)) {
+                $errors[] = 'Missing required headers: ' . implode(', ', $missingHeaders);
+            }
 
-            foreach ($records as $record) {
-                if ($rowNumber > self::MAX_ROWS + 1) { // +1 for header
-                    $validationResult['errors'][] = "File exceeds maximum allowed rows ({$rowNumber})";
-                    $validationResult['valid'] = false;
+            // Check for duplicate headers
+            $duplicateHeaders = array_diff_assoc($normalizedHeaders, array_unique($normalizedHeaders));
+            if (!empty($duplicateHeaders)) {
+                $warnings[] = 'Duplicate headers found: ' . implode(', ', $duplicateHeaders);
+            }
+
+            // Validate header format
+            foreach ($headers as $index => $header) {
+                $trimmedHeader = trim($header);
+                if (empty($trimmedHeader)) {
+                    $errors[] = "Empty header found at column " . ($index + 1);
+                }
+                if (strlen($trimmedHeader) > 50) {
+                    $warnings[] = "Header too long at column " . ($index + 1) . ": " . substr($trimmedHeader, 0, 20) . "...";
+                }
+            }
+
+            // Count data rows and validate file size
+            $records = $csv->getRecords();
+            $rowCount = 0;
+            $estimatedTotalAmount = 0.0;
+            $detectedCurrency = null;
+            $amountColumnIndex = $this->findColumnIndex($headers, 'amount');
+            $currencyColumnIndex = $this->findColumnIndex($headers, 'currency');
+
+            foreach ($records as $rowIndex => $record) {
+                $rowCount++;
+                
+                // Check row count limits
+                if ($rowCount > $this->maxRows) {
+                    $errors[] = "Too many rows in file. Maximum allowed: {$this->maxRows}, found: {$rowCount}";
                     break;
                 }
 
-                $rowValidation = $this->validateRow($record, $rowNumber);
-                
-                if ($rowValidation['valid']) {
-                    $validRows++;
-                    
-                    // Aggregate amounts and currencies
-                    $amount = (float) $record['amount'];
-                    $currency = strtoupper(trim($record['currency']));
-                    
-                    $totalAmount += $amount;
-                    if (!isset($currencies[$currency])) {
-                        $currencies[$currency] = ['count' => 0, 'amount' => 0.00];
-                    }
-                    $currencies[$currency]['count']++;
-                    $currencies[$currency]['amount'] += $amount;
-                } else {
-                    $invalidRows++;
-                    $validationResult['row_errors'][] = $rowValidation;
-                    
-                    if (count($validationResult['row_errors']) >= 100) {
-                        $validationResult['warnings'][] = 'Too many row errors. Validation stopped at row ' . $rowNumber . '. Please fix the issues and try again.';
-                        break;
+                // Estimate total amount and detect currency from first few rows
+                if ($rowCount <= 10 && $amountColumnIndex !== null && isset($record[$amountColumnIndex])) {
+                    $amount = $this->parseAmount($record[$amountColumnIndex]);
+                    if ($amount !== null) {
+                        $estimatedTotalAmount += $amount;
                     }
                 }
 
-                $rowNumber++;
+                // Detect currency from first valid row
+                if ($detectedCurrency === null && $currencyColumnIndex !== null && isset($record[$currencyColumnIndex])) {
+                    $currency = strtoupper(trim($record[$currencyColumnIndex]));
+                    if (in_array($currency, $this->supportedCurrencies)) {
+                        $detectedCurrency = $currency;
+                    }
+                }
+
+                // Validate row has correct number of columns
+                if (count($record) !== count($headers)) {
+                    $warnings[] = "Row " . ($rowIndex + 2) . " has incorrect number of columns. Expected: " . count($headers) . ", found: " . count($record);
+                }
             }
 
-            // Update summary
-            $validationResult['summary'] = [
-                'total_rows' => $rowNumber - 2, // Exclude header
-                'valid_rows' => $validRows,
-                'invalid_rows' => $invalidRows,
-                'total_amount' => round($totalAmount, 2),
-                'currencies' => $currencies,
-                'processing_time' => round((microtime(true) - $startTime) * 1000, 2) // milliseconds
+            // Check minimum row count
+            if ($rowCount < $this->minRows) {
+                $errors[] = "Too few data rows in file. Minimum required: {$this->minRows}, found: {$rowCount}";
+            }
+
+            // Validate estimated total amount
+            if ($estimatedTotalAmount > $this->maxTotalFileAmount) {
+                $warnings[] = "Estimated total file amount ({$estimatedTotalAmount}) exceeds maximum allowed ({$this->maxTotalFileAmount})";
+            }
+
+            return [
+                'valid' => empty($errors),
+                'errors' => $errors,
+                'warnings' => $warnings,
+                'headers' => $headers,
+                'row_count' => $rowCount,
+                'estimated_total_amount' => $estimatedTotalAmount,
+                'detected_currency' => $detectedCurrency,
+                'header_mapping' => $this->createHeaderMapping($headers),
             ];
 
-            // Determine overall validity
-            if ($invalidRows > 0) {
-                $validationResult['valid'] = false;
-                $validationResult['errors'][] = "File contains {$invalidRows} invalid rows";
+        } catch (CsvException $e) {
+            Log::error('CSV parsing error during structure validation', [
+                'file_path' => $filePath,
+                'error' => $e->getMessage(),
+            ]);
+
+            $errors[] = 'Invalid CSV format: ' . $e->getMessage();
+            
+            return [
+                'valid' => false,
+                'errors' => $errors,
+                'warnings' => $warnings,
+                'headers' => [],
+                'row_count' => 0,
+                'estimated_total_amount' => 0.0,
+                'detected_currency' => null,
+            ];
+        } catch (Exception $e) {
+            Log::error('Unexpected error during CSV structure validation', [
+                'file_path' => $filePath,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            throw new Exception('Failed to validate CSV structure: ' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * Validate payment instructions data
+     *
+     * @param array $instructions
+     * @return array
+     */
+    public function validatePaymentInstructions(array $instructions): array
+    {
+        if (empty($instructions)) {
+            return [
+                'valid' => false,
+                'errors' => ['No payment instructions provided'],
+                'instruction_errors' => [],
+                'statistics' => $this->getEmptyStatistics(),
+            ];
+        }
+
+        $globalErrors = [];
+        $instructionErrors = [];
+        $statistics = [
+            'total_instructions' => count($instructions),
+            'valid_instructions' => 0,
+            'invalid_instructions' => 0,
+            'total_amount' => 0.0,
+            'currency_breakdown' => [],
+            'error_summary' => [],
+        ];
+
+        // Track currencies and amounts for cross-validation
+        $currencies = [];
+        $totalAmount = 0.0;
+        $references = [];
+        $beneficiaryAccounts = [];
+
+        foreach ($instructions as $index => $instruction) {
+            $rowNumber = $index + 1;
+            $instructionErrors[$rowNumber] = [];
+
+            // Validate individual instruction
+            $this->validateSingleInstruction($instruction, $rowNumber, $instructionErrors[$rowNumber]);
+
+            // Collect data for cross-validation
+            if (isset($instruction['currency']) && !empty($instruction['currency'])) {
+                $currency = strtoupper(trim($instruction['currency']));
+                $currencies[$currency] = ($currencies[$currency] ?? 0) + 1;
             }
 
-            if ($validRows === 0) {
-                $validationResult['valid'] = false;
-                $validationResult['errors'][] = "File contains no valid payment rows";
+            if (isset($instruction['amount']) && is_numeric($instruction['amount'])) {
+                $amount = (float) $instruction['amount'];
+                $totalAmount += $amount;
             }
 
-            Log::info('CSV file validation completed', [
-                'filename' =>
+            if (isset($instruction['reference']) && !empty($instruction['reference'])) {
+                $reference = trim($instruction['reference']);
+                if (isset($references[$reference])) {
+                    $references[$reference][] = $rowNumber;
+                } else {
+                    $references[$reference] = [$rowNumber];
+                }
+            }
+
+            if (isset($instruction['beneficiary_account']) && !empty($instruction['beneficiary_account'])) {
+                $account = trim($instruction['beneficiary_account']);
+                if (isset($beneficiaryAccounts[$account])) {
+                    $beneficiaryAccounts[$account][] = $rowNumber;
+                } else {
+                    $beneficiaryAccounts[$account] = [$rowNumber];
+                }
+            }
+
+            // Update statistics
+            if (empty($instructionErrors[$rowNumber])) {
+                $statistics['valid_instructions']++;
+            } else {
+                $statistics['invalid_instructions']++;
+                
+                // Collect error types for summary
+                foreach ($instructionErrors[$rowNumber] as $error) {
+                    $errorType = $this->categorizeError($error);
+                    $statistics['error_summary'][$errorType] = ($statistics['error_summary'][$errorType] ?? 0) + 1;
+                }
+            }
+        }
+
+        // Cross-validation checks
+        $this->performCrossValidation($globalErrors, $currencies, $totalAmount, $references, $beneficiaryAccounts);
+
+        // Update statistics
+        $statistics['total_amount'] = $totalAmount;
+        $statistics['currency_breakdown'] = $currencies;
+
+        // Remove empty instruction errors
+        $instructionErrors = array_filter($instructionErrors, function($errors) {
+            return !empty($errors);
+        });
+
+        return [
+            'valid' => empty($globalErrors) && empty($instructionErrors),
+            'errors' => $globalErrors,
+            'instruction_errors' => $instructionErrors,
+            'statistics' => $statistics,
+        ];
+    }
+
+    /**
+     * Validate currency-specific fields for a payment instruction
+     *
+     * @param array $instruction
+     * @param string $currency
+     * @return array
+     */
+    public function validateCurrencySpecificFields(array $instruction, string $currency): array
+    {
+        $errors = [];
+        
+        if (empty($currency) || !in_array($currency, $this->supportedCurrencies)) {
+            $errors[] = 'Invalid or unsupported currency';
+            return $errors;
+        }
+
+        $currencyConfig = $this->currencySettings[$currency] ?? [];
+        
+        if (empty($currencyConfig)) {
+            // If no specific config, use defaults
+            return $errors;
+        }
+
+        // Validate amount precision based on currency
+        if (isset($instruction['amount']) && is_numeric($instruction['amount'])) {
+            $amount = (float) $instruction['amount'];
+            $decimalPlaces = $currencyConfig['decimal_places'] ?? 2;
+            
+            // Check decimal places
+            $amountStr = (string) $amount;
+            if (strpos($amountStr, '.') !== false) {
+                $actualDecimalPlaces = strlen(substr(strrchr($amountStr, '.'), 1));
+                if ($actualDecimalPlaces > $decimalPlaces) {
+                    $errors[] = "Amount has too many decimal places for {$currency}. Maximum allowed: {$decimalPlaces}";
+                }
+            }
+
+            // Check currency-specific amount limits
+            $maxAmount = $currencyConfig['max_amount'] ?? $this->maxAmountPerInstruction;
+            $minAmount = $currencyConfig['min_amount'] ?? $this->minAmountPerInstruction;
+            
+            if ($amount > $maxAmount) {
+                $errors[] = "Amount exceeds maximum allowed for {$currency}: {$maxAmount}";
+            }
+            
+            if ($amount < $minAmount) {
+                $errors[] = "Amount below minimum allowed for {$currency}: {$minAmount}";
+            }
+        }
+
+        // Validate currency-specific required fields
+        if ($currencyConfig['requires_purpose_code'] ?? false) {
+            if (empty($instruction['purpose_code'])) {
+                $errors[] = "Purpose code is required for {$currency} payments";
+            }
+        }
+
+        if ($currencyConfig['requires_swift_code'] ?? false) {
+            if (empty($instruction['swift_code']) && empty($instruction['bank_code'])) {
+                $errors[] = "SWIFT code is required for {$currency} payments";
+            }
+        }
+
+        if ($currencyConfig['requires_iban'] ?? false) {
+            if (empty($instruction['iban']) && empty($instruction['beneficiary_account'])) {
+                $errors[] = "IBAN is required for {$currency} payments";
+            } elseif (!empty($instruction['iban'])) {
+                $this->validateIban($instruction['iban'], $errors);
+            }
+        }
+
+        if ($currencyConfig['requires_sort_code'] ?? false) {
+            if (empty($instruction['sort_code']) && empty($instruction['bank_code'])) {
+                $errors[] = "Sort code is required for {$currency} payments";
+            

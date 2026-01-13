@@ -1,4 +1,3 @@
 league/csv
-pusher/pusher-php-server
-laravel/framework:^10.0
-spatie/laravel-permission
+spatie/laravel-query-builder
+laravel/sanctum

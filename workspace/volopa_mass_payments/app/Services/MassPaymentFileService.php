@@ -1,62 +1,41 @@
-## Code: app/Services/MassPaymentFileService.php
+{
+  "Development Plan": [
+    "app/Services/MassPaymentFileService.php"
+  ],
+  "Incremental Change": [
+    "app/Services/MassPaymentFileService.php: Core business logic service with file upload, approval, validation coordination, status management, and transaction handling"
+  ]
+}
 
+## Code: app/Services/MassPaymentFileService.php
 ```php
 <?php
 
 namespace App\Services;
 
-use App\Models\MassPaymentFile;
-use App\Models\User;
-use App\Models\TccAccount;
 use App\Jobs\ValidateMassPaymentFileJob;
-use App\Jobs\ProcessPaymentInstructionsJob;
-use App\Notifications\ApprovalRequiredNotification;
+use App\Models\MassPaymentFile;
+use App\Models\TccAccount;
+use App\Notifications\PaymentFileApprovalNotification;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
 use Exception;
+use InvalidArgumentException;
 
 class MassPaymentFileService
 {
     /**
-     * The CSV validation service instance.
+     * CSV Validation Service instance
      */
-    private CsvValidationService $csvValidationService;
+    protected CsvValidationService $csvValidationService;
 
     /**
-     * Maximum file size allowed in bytes (50MB).
-     */
-    private const MAX_FILE_SIZE = 52428800;
-
-    /**
-     * Allowed file extensions for uploads.
-     */
-    private const ALLOWED_EXTENSIONS = ['csv', 'txt'];
-
-    /**
-     * Default file storage disk.
-     */
-    private const STORAGE_DISK = 'local';
-
-    /**
-     * Storage path for mass payment files.
-     */
-    private const STORAGE_PATH = 'mass_payment_files';
-
-    /**
-     * Cache TTL for file processing status in seconds.
-     */
-    private const CACHE_TTL = 300;
-
-    /**
-     * Create a new mass payment file service instance.
-     *
-     * @param CsvValidationService $csvValidationService
+     * Constructor
      */
     public function __construct(CsvValidationService $csvValidationService)
     {
@@ -64,391 +43,404 @@ class MassPaymentFileService
     }
 
     /**
-     * Create a new mass payment file from uploaded data.
+     * Upload and process a mass payment file
      *
-     * @param array $data
      * @param UploadedFile $file
+     * @param int $clientId
+     * @param int $tccAccountId
+     * @param array $options
      * @return MassPaymentFile
      * @throws Exception
      */
-    public function create(array $data, UploadedFile $file): MassPaymentFile
-    {
-        Log::info('Creating mass payment file', [
-            'client_id' => $data['client_id'],
-            'created_by' => $data['created_by'],
-            'currency' => $data['currency'],
-            'filename' => $file->getClientOriginalName(),
-            'file_size' => $file->getSize()
-        ]);
+    public function uploadFile(
+        UploadedFile $file, 
+        int $clientId, 
+        int $tccAccountId, 
+        array $options = []
+    ): MassPaymentFile {
+        // Validate input parameters
+        $this->validateUploadParameters($file, $clientId, $tccAccountId);
+
+        // Validate TCC account
+        $tccAccount = $this->validateTccAccount($tccAccountId, $clientId);
+
+        DB::beginTransaction();
 
         try {
-            return DB::transaction(function () use ($data, $file) {
-                // Validate file basic properties
-                $this->validateFileUpload($file);
+            // Store the file securely
+            $storedFilename = $this->storeUploadedFile($file);
 
-                // Store the file
-                $filePath = $this->storeFile($file, $data['client_id']);
+            // Extract initial file metadata
+            $fileMetadata = $this->extractFileMetadata($file, $storedFilename, $options);
 
-                // Prepare mass payment file data
-                $massPaymentFileData = $this->prepareMassPaymentFileData($data, $file, $filePath);
+            // Create mass payment file record
+            $massPaymentFile = $this->createMassPaymentFileRecord(
+                $clientId,
+                $tccAccountId,
+                $fileMetadata,
+                $options
+            );
 
-                // Create the mass payment file record
-                $massPaymentFile = MassPaymentFile::create($massPaymentFileData);
+            // Log the upload
+            $this->logFileUpload($massPaymentFile, $options);
 
-                // Perform initial file validation
-                $initialValidation = $this->performInitialValidation($file);
-                
-                // Update file with initial validation results
-                $this->updateInitialValidationResults($massPaymentFile, $initialValidation);
+            // Dispatch validation job asynchronously
+            $this->dispatchValidationJob($massPaymentFile);
 
-                // Dispatch async validation job
-                $this->dispatchValidationJob($massPaymentFile);
+            // Send notification if enabled
+            $this->sendUploadNotification($massPaymentFile, $options);
 
-                // Cache the processing status
-                $this->cacheProcessingStatus($massPaymentFile->id, 'processing');
+            DB::commit();
 
-                Log::info('Mass payment file created successfully', [
-                    'file_id' => $massPaymentFile->id,
-                    'client_id' => $massPaymentFile->client_id,
-                    'status' => $massPaymentFile->status
-                ]);
+            return $massPaymentFile->fresh();
 
-                return $massPaymentFile;
-            });
         } catch (Exception $e) {
-            Log::error('Failed to create mass payment file', [
-                'client_id' => $data['client_id'] ?? null,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
-            // Clean up stored file if it exists
-            if (isset($filePath)) {
-                $this->cleanupStoredFile($filePath);
+            DB::rollBack();
+            
+            // Clean up stored file on error
+            if (isset($storedFilename)) {
+                $this->cleanupStoredFile($storedFilename);
             }
 
-            throw $e;
-        }
-    }
-
-    /**
-     * Approve a mass payment file.
-     *
-     * @param MassPaymentFile $massPaymentFile
-     * @param User $user
-     * @return bool
-     * @throws Exception
-     */
-    public function approve(MassPaymentFile $massPaymentFile, User $user): bool
-    {
-        Log::info('Approving mass payment file', [
-            'file_id' => $massPaymentFile->id,
-            'client_id' => $massPaymentFile->client_id,
-            'approved_by' => $user->id,
-            'current_status' => $massPaymentFile->status
-        ]);
-
-        try {
-            return DB::transaction(function () use ($massPaymentFile, $user) {
-                // Validate file can be approved
-                $this->validateApprovalEligibility($massPaymentFile, $user);
-
-                // Mark file as approved
-                $approvedAt = Carbon::now();
-                $massPaymentFile->markAsApproved($user->id, $approvedAt);
-
-                // Create approval record
-                $this->createApprovalRecord($massPaymentFile, $user, $approvedAt);
-
-                // Dispatch payment processing job
-                $this->dispatchPaymentProcessingJob($massPaymentFile);
-
-                // Send approval notifications
-                $this->sendApprovalNotifications($massPaymentFile, $user);
-
-                // Update cache
-                $this->cacheProcessingStatus($massPaymentFile->id, 'approved');
-
-                // Clear related caches
-                $this->clearRelatedCaches($massPaymentFile);
-
-                Log::info('Mass payment file approved successfully', [
-                    'file_id' => $massPaymentFile->id,
-                    'approved_by' => $user->id,
-                    'approved_at' => $approvedAt->toISOString()
-                ]);
-
-                return true;
-            });
-        } catch (Exception $e) {
-            Log::error('Failed to approve mass payment file', [
-                'file_id' => $massPaymentFile->id,
-                'user_id' => $user->id,
+            Log::error('Mass payment file upload failed', [
+                'client_id' => $clientId,
+                'tcc_account_id' => $tccAccountId,
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
 
-            throw $e;
+            throw new Exception('Failed to upload mass payment file: ' . $e->getMessage(), 0, $e);
         }
     }
 
     /**
-     * Process validation for a mass payment file.
-     *
-     * @param MassPaymentFile $massPaymentFile
-     * @return void
-     * @throws Exception
-     */
-    public function processValidation(MassPaymentFile $massPaymentFile): void
-    {
-        Log::info('Processing validation for mass payment file', [
-            'file_id' => $massPaymentFile->id,
-            'client_id' => $massPaymentFile->client_id,
-            'status' => $massPaymentFile->status
-        ]);
-
-        try {
-            // Update status to processing
-            $massPaymentFile->markAsProcessing();
-
-            // Cache processing status
-            $this->cacheProcessingStatus($massPaymentFile->id, 'validating');
-
-            // Perform detailed validation
-            $validationResult = $this->performDetailedValidation($massPaymentFile);
-
-            // Update file with validation results
-            $this->updateValidationResults($massPaymentFile, $validationResult);
-
-            // Determine next status based on validation
-            $this->determinePostValidationStatus($massPaymentFile, $validationResult);
-
-            // Send validation completion notifications
-            $this->sendValidationCompletionNotifications($massPaymentFile, $validationResult);
-
-            Log::info('Validation processing completed', [
-                'file_id' => $massPaymentFile->id,
-                'validation_status' => $validationResult['valid'] ? 'passed' : 'failed',
-                'valid_rows' => $validationResult['summary']['valid_rows'] ?? 0,
-                'invalid_rows' => $validationResult['summary']['invalid_rows'] ?? 0
-            ]);
-
-        } catch (Exception $e) {
-            Log::error('Failed to process validation', [
-                'file_id' => $massPaymentFile->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
-            // Mark file as failed
-            $massPaymentFile->markAsFailed('Validation processing failed: ' . $e->getMessage());
-
-            throw $e;
-        }
-    }
-
-    /**
-     * Delete a mass payment file.
-     *
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
-     * @throws Exception
-     */
-    public function delete(MassPaymentFile $massPaymentFile): bool
-    {
-        Log::info('Deleting mass payment file', [
-            'file_id' => $massPaymentFile->id,
-            'client_id' => $massPaymentFile->client_id,
-            'status' => $massPaymentFile->status
-        ]);
-
-        try {
-            return DB::transaction(function () use ($massPaymentFile) {
-                // Validate file can be deleted
-                $this->validateDeletionEligibility($massPaymentFile);
-
-                // Store file path for cleanup
-                $filePath = $massPaymentFile->file_path;
-
-                // Soft delete the file record
-                $massPaymentFile->delete();
-
-                // Clean up stored file
-                if ($filePath) {
-                    $this->cleanupStoredFile($filePath);
-                }
-
-                // Clear related caches
-                $this->clearRelatedCaches($massPaymentFile);
-
-                // Clear processing status cache
-                $this->clearProcessingStatusCache($massPaymentFile->id);
-
-                Log::info('Mass payment file deleted successfully', [
-                    'file_id' => $massPaymentFile->id
-                ]);
-
-                return true;
-            });
-        } catch (Exception $e) {
-            Log::error('Failed to delete mass payment file', [
-                'file_id' => $massPaymentFile->id,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
-            throw $e;
-        }
-    }
-
-    /**
-     * Get processing status for a mass payment file.
+     * Approve a mass payment file
      *
      * @param string $fileId
-     * @return array|null
+     * @param int $approverId
+     * @param array $options
+     * @return MassPaymentFile
+     * @throws Exception
      */
-    public function getProcessingStatus(string $fileId): ?array
+    public function approveFile(string $fileId, int $approverId, array $options = []): MassPaymentFile
     {
-        $cacheKey = "mass_payment_file_status:{$fileId}";
-        
-        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($fileId) {
-            $file = MassPaymentFile::find($fileId);
-            
-            if (!$file) {
-                return null;
+        // Validate parameters
+        if (empty($fileId) || $approverId <= 0) {
+            throw new InvalidArgumentException('Invalid file ID or approver ID provided');
+        }
+
+        // Find and validate the file
+        $massPaymentFile = MassPaymentFile::find($fileId);
+        if (!$massPaymentFile) {
+            throw new Exception('Mass payment file not found');
+        }
+
+        // Validate approval eligibility
+        $this->validateApprovalEligibility($massPaymentFile, $approverId, $options);
+
+        DB::beginTransaction();
+
+        try {
+            // Reserve funds in TCC account if required
+            if (!isset($options['skip_fund_reservation']) || !$options['skip_fund_reservation']) {
+                $this->reserveFundsForPayment($massPaymentFile);
             }
 
-            return [
-                'status' => $file->status,
-                'total_rows' => $file->total_rows,
-                'valid_rows' => $file->valid_rows,
-                'invalid_rows' => $file->invalid_rows,
-                'total_amount' => $file->total_amount,
-                'currency' => $file->currency,
-                'validation_progress' => $this->calculateValidationProgress($file),
-                'processing_progress' => $this->calculateProcessingProgress($file),
-                'last_updated' => $file->updated_at->toISOString()
+            // Mark file as approved
+            $massPaymentFile->markAsApproved($approverId);
+
+            // Add approval notes if provided
+            if (!empty($options['approval_notes'])) {
+                $this->addApprovalNotes($massPaymentFile, $options['approval_notes']);
+            }
+
+            // Log the approval
+            $this->logFileApproval($massPaymentFile, $approverId, $options);
+
+            // Dispatch processing job if auto-process is enabled
+            if ($this->shouldAutoProcessAfterApproval($options)) {
+                $this->dispatchProcessingJob($massPaymentFile);
+            }
+
+            // Send approval notifications
+            $this->sendApprovalNotifications($massPaymentFile, $approverId, $options);
+
+            DB::commit();
+
+            return $massPaymentFile->fresh();
+
+        } catch (Exception $e) {
+            DB::rollBack();
+
+            Log::error('Mass payment file approval failed', [
+                'file_id' => $fileId,
+                'approver_id' => $approverId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            throw new Exception('Failed to approve mass payment file: ' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * Get comprehensive file status information
+     *
+     * @param string $fileId
+     * @param array $options
+     * @return array
+     * @throws Exception
+     */
+    public function getFileStatus(string $fileId, array $options = []): array
+    {
+        if (empty($fileId)) {
+            throw new InvalidArgumentException('File ID is required');
+        }
+
+        // Find the file with necessary relationships
+        $relations = $options['include'] ?? ['paymentInstructions', 'tccAccount', 'client', 'uploader', 'approver'];
+        
+        $massPaymentFile = MassPaymentFile::with($relations)->find($fileId);
+        
+        if (!$massPaymentFile) {
+            throw new Exception('Mass payment file not found');
+        }
+
+        // Build comprehensive status information
+        return [
+            'file_id' => $massPaymentFile->id,
+            'status' => $massPaymentFile->status,
+            'status_display' => $this->getStatusDisplay($massPaymentFile->status),
+            'progress_percentage' => $massPaymentFile->progress_percentage,
+            'created_at' => $massPaymentFile->created_at,
+            'updated_at' => $massPaymentFile->updated_at,
+            'file_info' => [
+                'original_filename' => $massPaymentFile->original_filename,
+                'file_size' => $massPaymentFile->file_size,
+                'total_amount' => $massPaymentFile->total_amount,
+                'currency' => $massPaymentFile->currency,
+            ],
+            'counts' => [
+                'total_instructions' => $massPaymentFile->payment_instructions_count,
+                'successful_payments' => $massPaymentFile->successful_payments_count,
+                'failed_payments' => $massPaymentFile->failed_payments_count,
+                'pending_payments' => $this->getPendingPaymentsCount($massPaymentFile),
+            ],
+            'validation_info' => [
+                'has_errors' => !empty($massPaymentFile->validation_errors),
+                'error_count' => is_array($massPaymentFile->validation_errors) 
+                    ? count($massPaymentFile->validation_errors) : 0,
+                'errors' => $massPaymentFile->validation_errors ?? [],
+            ],
+            'approval_info' => [
+                'approved_by' => $massPaymentFile->approved_by,
+                'approved_at' => $massPaymentFile->approved_at,
+                'approver' => $massPaymentFile->approver ? [
+                    'id' => $massPaymentFile->approver->id,
+                    'name' => $massPaymentFile->approver->name ?? 'Unknown',
+                ] : null,
+            ],
+            'upload_info' => [
+                'uploaded_by' => $massPaymentFile->uploaded_by,
+                'uploader' => $massPaymentFile->uploader ? [
+                    'id' => $massPaymentFile->uploader->id,
+                    'name' => $massPaymentFile->uploader->name ?? 'Unknown',
+                ] : null,
+            ],
+            'tcc_account_info' => $massPaymentFile->tccAccount ? [
+                'id' => $massPaymentFile->tccAccount->id,
+                'account_name' => $massPaymentFile->tccAccount->account_name,
+                'currency' => $massPaymentFile->tccAccount->currency,
+                'balance' => $massPaymentFile->tccAccount->balance,
+                'available_balance' => $massPaymentFile->tccAccount->available_balance,
+            ] : null,
+            'processing_info' => [
+                'can_be_approved' => $massPaymentFile->canBeApproved(),
+                'can_be_deleted' => $massPaymentFile->canBeDeleted(),
+                'is_processing' => $massPaymentFile->isProcessing(),
+                'is_completed' => $massPaymentFile->isCompleted(),
+                'has_failed' => $massPaymentFile->hasFailed(),
+            ],
+            'timestamps' => [
+                'created_at' => $massPaymentFile->created_at,
+                'updated_at' => $massPaymentFile->updated_at,
+                'approved_at' => $massPaymentFile->approved_at,
+            ],
+        ];
+    }
+
+    /**
+     * Delete a mass payment file (soft delete)
+     *
+     * @param string $fileId
+     * @param array $options
+     * @return bool
+     * @throws Exception
+     */
+    public function deleteFile(string $fileId, array $options = []): bool
+    {
+        if (empty($fileId)) {
+            throw new InvalidArgumentException('File ID is required');
+        }
+
+        // Find the file
+        $massPaymentFile = MassPaymentFile::find($fileId);
+        if (!$massPaymentFile) {
+            throw new Exception('Mass payment file not found');
+        }
+
+        // Check if file can be deleted
+        if (!$massPaymentFile->canBeDeleted() && !($options['force_delete'] ?? false)) {
+            throw new Exception('Mass payment file cannot be deleted in its current status');
+        }
+
+        DB::beginTransaction();
+
+        try {
+            // Release reserved funds if any
+            if ($massPaymentFile->isApproved() || $massPaymentFile->isProcessing()) {
+                $this->releaseFundsForPayment($massPaymentFile);
+            }
+
+            // Soft delete the file and related payment instructions
+            $this->performSoftDelete($massPaymentFile);
+
+            // Clean up physical file if specified
+            if ($options['delete_physical_file'] ?? false) {
+                $this->cleanupStoredFile($massPaymentFile->filename);
+            }
+
+            // Log the deletion
+            $this->logFileDeletion($massPaymentFile, $options);
+
+            // Send deletion notification if enabled
+            if ($options['notify_deletion'] ?? false) {
+                $this->sendDeletionNotification($massPaymentFile, $options);
+            }
+
+            DB::commit();
+
+            return true;
+
+        } catch (Exception $e) {
+            DB::rollBack();
+
+            Log::error('Mass payment file deletion failed', [
+                'file_id' => $fileId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            throw new Exception('Failed to delete mass payment file: ' . $e->getMessage(), 0, $e);
+        }
+    }
+
+    /**
+     * Get file statistics and analytics
+     *
+     * @param array $filters
+     * @return array
+     */
+    public function getFileStatistics(array $filters = []): array
+    {
+        $cacheKey = 'mass_payment_file_stats_' . md5(json_encode($filters));
+        $cacheTtl = config('mass-payments.cache.currency_cache_minutes', 60);
+
+        return Cache::remember($cacheKey, $cacheTtl, function () use ($filters) {
+            $query = MassPaymentFile::query();
+
+            // Apply filters
+            if (!empty($filters['client_id'])) {
+                $query->where('client_id', $filters['client_id']);
+            }
+
+            if (!empty($filters['currency'])) {
+                $query->where('currency', $filters['currency']);
+            }
+
+            if (!empty($filters['status'])) {
+                $query->where('status', $filters['status']);
+            }
+
+            if (!empty($filters['date_from'])) {
+                $query->whereDate('created_at', '>=', $filters['date_from']);
+            }
+
+            if (!empty($filters['date_to'])) {
+                $query->whereDate('created_at', '<=', $filters['date_to']);
+            }
+
+            // Get basic counts
+            $stats = [
+                'total_files' => $query->count(),
+                'total_amount' => $query->sum('total_amount'),
+                'status_breakdown' => $query->groupBy('status')
+                    ->selectRaw('status, count(*) as count, sum(total_amount) as total_amount')
+                    ->get()
+                    ->keyBy('status')
+                    ->toArray(),
+                'currency_breakdown' => $query->groupBy('currency')
+                    ->selectRaw('currency, count(*) as count, sum(total_amount) as total_amount')
+                    ->get()
+                    ->keyBy('currency')
+                    ->toArray(),
+                'daily_stats' => $this->getDailyStats($query, $filters),
+                'performance_metrics' => $this->getPerformanceMetrics($query),
             ];
+
+            return $stats;
         });
     }
 
     /**
-     * Validate file upload requirements.
+     * Reprocess a failed mass payment file
      *
-     * @param UploadedFile $file
-     * @return void
+     * @param string $fileId
+     * @param array $options
+     * @return MassPaymentFile
      * @throws Exception
      */
-    private function validateFileUpload(UploadedFile $file): void
+    public function reprocessFile(string $fileId, array $options = []): MassPaymentFile
     {
-        // Check file size
-        if ($file->getSize() > self::MAX_FILE_SIZE) {
-            throw new Exception('File size exceeds maximum allowed size of ' . self::MAX_FILE_SIZE . ' bytes');
+        if (empty($fileId)) {
+            throw new InvalidArgumentException('File ID is required');
         }
 
-        // Check file extension
-        $extension = strtolower($file->getClientOriginalExtension());
-        if (!in_array($extension, self::ALLOWED_EXTENSIONS)) {
-            throw new Exception('File extension not allowed. Allowed extensions: ' . implode(', ', self::ALLOWED_EXTENSIONS));
+        $massPaymentFile = MassPaymentFile::find($fileId);
+        if (!$massPaymentFile) {
+            throw new Exception('Mass payment file not found');
         }
 
-        // Check if file is valid
-        if (!$file->isValid()) {
-            throw new Exception('Uploaded file is not valid');
+        if (!$massPaymentFile->hasFailed() && !($options['force_reprocess'] ?? false)) {
+            throw new Exception('Only failed files can be reprocessed');
         }
 
-        // Check MIME type
-        $mimeType = $file->getMimeType();
-        $allowedMimeTypes = ['text/csv', 'text/plain', 'application/csv'];
-        if (!in_array($mimeType, $allowedMimeTypes)) {
-            throw new Exception('File MIME type not allowed. File must be a CSV file');
-        }
-    }
+        DB::beginTransaction();
 
-    /**
-     * Store uploaded file to disk.
-     *
-     * @param UploadedFile $file
-     * @param string $clientId
-     * @return string
-     * @throws Exception
-     */
-    private function storeFile(UploadedFile $file, string $clientId): string
-    {
         try {
-            // Generate unique filename
-            $filename = $this->generateUniqueFilename($file, $clientId);
-            
-            // Create storage path
-            $storagePath = self::STORAGE_PATH . '/' . $clientId . '/' . date('Y/m/d');
-            
-            // Store file
-            $filePath = $file->storeAs($storagePath, $filename, self::STORAGE_DISK);
-            
-            if (!$filePath) {
-                throw new Exception('Failed to store uploaded file');
+            // Reset file status
+            $massPaymentFile->update(['status' => MassPaymentFile::STATUS_APPROVED]);
+
+            // Reset payment instruction statuses if needed
+            if ($options['reset_instructions'] ?? true) {
+                $this->resetPaymentInstructionStatuses($massPaymentFile);
             }
 
-            return $filePath;
+            // Clear previous validation errors
+            $massPaymentFile->update(['validation_errors' => null]);
+
+            // Log the reprocess
+            $this->logFileReprocess($massPaymentFile, $options);
+
+            // Dispatch processing job
+            $this->dispatchProcessingJob($massPaymentFile);
+
+            DB::commit();
+
+            return $massPaymentFile->fresh();
+
         } catch (Exception $e) {
-            Log::error('Failed to store file', [
-                'client_id' => $clientId,
-                'original_filename' => $file->getClientOriginalName(),
-                'error' => $e->getMessage()
-            ]);
+            DB::rollBack();
 
-            throw new Exception('Failed to store uploaded file: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Generate unique filename for stored file.
-     *
-     * @param UploadedFile $file
-     * @param string $clientId
-     * @return string
-     */
-    private function generateUniqueFilename(UploadedFile $file, string $clientId): string
-    {
-        $originalName = $file->getClientOriginalName();
-        $extension = $file->getClientOriginalExtension();
-        $nameWithoutExtension = pathinfo($originalName, PATHINFO_FILENAME);
-        
-        // Sanitize filename
-        $sanitizedName = preg_replace('/[^A-Za-z0-9\-_.]/', '_', $nameWithoutExtension);
-        $sanitizedName = preg_replace('/_+/', '_', $sanitizedName);
-        $sanitizedName = trim($sanitizedName, '_');
-        
-        // Generate unique identifier
-        $uniqueId = Str::uuid()->toString();
-        $timestamp = now()->format('Y-m-d_H-i-s');
-        
-        return "{$clientId}_{$timestamp}_{$sanitizedName}_{$uniqueId}.{$extension}";
-    }
-
-    /**
-     * Prepare mass payment file data for creation.
-     *
-     * @param array $data
-     * @param UploadedFile $file
-     * @param string $filePath
-     * @return array
-     */
-    private function prepareMassPaymentFileData(array $data, UploadedFile $file, string $filePath): array
-    {
-        return [
-            'client_id' => $data['client_id'],
-            'tcc_account_id' => $data['tcc_account_id'],
-            'filename' => $this->extractFilenameFromPath($filePath),
-            'original_filename' => $file->getClientOriginalName(),
-            'file_path' => $filePath,
-            'status' => MassPaymentFile::STATUS_UPLOADING,
-            'currency' => $data['currency'],
-            'total_amount' => 0.00,
-            'total_rows' => 0,
-            'valid_rows' => 0,
-            'invalid_rows' => 0,
-            'created_by' => $data['created_by'],
-            'metadata' => [
-                'file_size' => $file->getSize(),
-                'mime_type' => $
+            Log::error('Mass payment file reprocess failed', [
+                'file_id' => $fileId,
