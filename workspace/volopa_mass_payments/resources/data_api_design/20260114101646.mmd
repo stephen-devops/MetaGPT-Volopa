@@ -92,7 +92,7 @@ classDiagram
     MassPaymentFileService --> CsvValidationService
     ValidateMassPaymentFileJob --> CsvValidationService
     ValidateMassPaymentFileJob --> MassPaymentFile
-    MassPaymentFile ||--o{ PaymentInstruction
+    MassPaymentFile "1" --> "*" PaymentInstruction : has many
     MassPaymentFileResource --> MassPaymentFile
     MassPaymentFilePolicy --> MassPaymentFile
     UploadMassPaymentFileRequest --> MassPaymentFilePolicy
