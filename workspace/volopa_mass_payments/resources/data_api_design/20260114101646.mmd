@@ -1,0 +1,98 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class MassPaymentFileController {
+        +index(Request request): JsonResponse
+        +store(UploadMassPaymentFileRequest request): JsonResponse
+        +show(string id): JsonResponse
+        +approve(ApproveMassPaymentFileRequest request, string id): JsonResponse
+        +destroy(string id): JsonResponse
+    }
+    
+    class MassPaymentFileService {
+        +create(array data, UploadedFile file): MassPaymentFile
+        +approve(MassPaymentFile file, User user): bool
+        +delete(MassPaymentFile file): bool
+        +getStatusSummary(MassPaymentFile file): array
+        -validateFileFormat(UploadedFile file): bool
+        -storeCsvFile(UploadedFile file): string
+    }
+    
+    class CsvValidationService {
+        +validateCsvRows(string filePath, string currency): array
+        +validatePaymentInstruction(array row, string currency): array
+        -validateCurrencySpecificRules(array row, string currency): array
+        -validateBeneficiaryData(array row): array
+        -validateAmountFormat(string amount, string currency): bool
+    }
+    
+    class MassPaymentFile {
+        +id: string
+        +client_id: string
+        +tcc_account_id: string
+        +filename: string
+        +file_path: string
+        +total_amount: decimal
+        +currency: string
+        +status: string
+        +validation_errors: json
+        +created_at: timestamp
+        +updated_at: timestamp
+        +client(): BelongsTo
+        +tccAccount(): BelongsTo
+        +paymentInstructions(): HasMany
+        +scopeForClient(Builder query, string clientId): Builder
+    }
+    
+    class PaymentInstruction {
+        +id: string
+        +mass_payment_file_id: string
+        +beneficiary_id: string
+        +amount: decimal
+        +currency: string
+        +purpose_code: string
+        +reference: string
+        +status: string
+        +validation_errors: json
+        +created_at: timestamp
+        +massPaymentFile(): BelongsTo
+        +beneficiary(): BelongsTo
+    }
+    
+    class ValidateMassPaymentFileJob {
+        +massPaymentFile: MassPaymentFile
+        +handle(CsvValidationService validationService): void
+        +failed(Exception exception): void
+    }
+    
+    class MassPaymentFileResource {
+        +toArray(Request request): array
+        -formatValidationErrors(array errors): array
+        -calculateProgress(): int
+    }
+    
+    class UploadMassPaymentFileRequest {
+        +authorize(): bool
+        +rules(): array
+        -validateFileSize(): bool
+        -validateFileType(): bool
+    }
+    
+    class MassPaymentFilePolicy {
+        +view(User user, MassPaymentFile file): bool
+        +approve(User user, MassPaymentFile file): bool
+        +delete(User user, MassPaymentFile file): bool
+        -checkClientAccess(User user, MassPaymentFile file): bool
+    }
+    
+    MassPaymentFileController --> MassPaymentFileService
+    MassPaymentFileController --> UploadMassPaymentFileRequest
+    MassPaymentFileController --> MassPaymentFileResource
+    MassPaymentFileService --> MassPaymentFile
+    MassPaymentFileService --> CsvValidationService
+    ValidateMassPaymentFileJob --> CsvValidationService
+    ValidateMassPaymentFileJob --> MassPaymentFile
+    MassPaymentFile ||--o{ PaymentInstruction
+    MassPaymentFileResource --> MassPaymentFile
+    MassPaymentFilePolicy --> MassPaymentFile
+    UploadMassPaymentFileRequest --> MassPaymentFilePolicy

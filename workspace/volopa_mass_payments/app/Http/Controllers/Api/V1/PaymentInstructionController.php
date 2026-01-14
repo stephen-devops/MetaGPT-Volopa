@@ -1,3 +1,5 @@
+Looking at the context and requirements, I need to implement the `PaymentInstructionController.php` file. This controller handles REST API endpoints for payment instruction operations including listing, viewing, and status management. Based on the design patterns and data structures provided, this controller should be thin and follow the established architectural patterns.
+
 ## Code: app/Http/Controllers/Api/V1/PaymentInstructionController.php
 
 ```php
@@ -6,438 +8,443 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\GetPaymentInstructionsRequest;
 use App\Http\Resources\PaymentInstructionResource;
 use App\Models\PaymentInstruction;
 use App\Models\MassPaymentFile;
-use Illuminate\Http\JsonResponse;
+use App\Services\PaymentProcessingService;
+use App\Policies\MassPaymentFilePolicy;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Validation\ValidationException;
 use Exception;
-use Symfony\Component\HttpFoundation\Response as BaseResponse;
 
 class PaymentInstructionController extends Controller
 {
     /**
-     * Items per page for pagination
+     * The payment processing service.
      */
-    protected int $perPage;
+    private PaymentProcessingService $paymentProcessingService;
 
     /**
-     * Maximum items per page allowed
+     * Default pagination size.
      */
-    protected int $maxPerPage;
+    private const DEFAULT_PER_PAGE = 20;
 
     /**
-     * Cache TTL for statistics in minutes
+     * Maximum pagination size.
      */
-    protected int $statisticsCacheTtl;
+    private const MAX_PER_PAGE = 100;
 
     /**
-     * Constructor
+     * Cache TTL for status summary in minutes.
      */
-    public function __construct()
+    private const STATUS_CACHE_TTL = 5;
+
+    /**
+     * Valid status values for filtering.
+     */
+    private const VALID_STATUSES = [
+        'draft',
+        'validated',
+        'validation_failed',
+        'pending',
+        'processing',
+        'completed',
+        'failed',
+        'cancelled'
+    ];
+
+    /**
+     * Valid sort fields.
+     */
+    private const VALID_SORT_FIELDS = [
+        'created_at',
+        'updated_at',
+        'amount',
+        'row_number',
+        'status',
+        'beneficiary_name',
+        'currency',
+        'processed_at'
+    ];
+
+    /**
+     * Create a new controller instance.
+     */
+    public function __construct(PaymentProcessingService $paymentProcessingService)
     {
-        $this->perPage = config('mass-payments.pagination.per_page', 20);
-        $this->maxPerPage = config('mass-payments.pagination.max_per_page', 100);
-        $this->statisticsCacheTtl = config('mass-payments.cache.currency_cache_minutes', 60);
-
-        // Apply authentication middleware
-        $this->middleware('auth:api');
+        $this->paymentProcessingService = $paymentProcessingService;
         
-        // Apply Volopa authentication middleware
-        $this->middleware('volopa.auth');
-
-        // Apply throttling
-        $this->middleware('throttle:' . config('mass-payments.security.rate_limit_per_minute', 60) . ',1');
+        // Apply authentication middleware
+        $this->middleware(['auth:api', 'volopa.auth'])->except([]);
+        
+        // Apply rate limiting
+        $this->middleware('throttle:120,1')->only(['index', 'show']);
+        $this->middleware('throttle:60,1')->except(['index', 'show']);
     }
 
     /**
      * Display a listing of payment instructions.
-     *
-     * @param GetPaymentInstructionsRequest $request
-     * @return JsonResponse
      */
-    public function index(GetPaymentInstructionsRequest $request): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         try {
-            Log::info('Payment instructions index request', [
-                'user_id' => Auth::id(),
-                'client_id' => Auth::user()->client_id ?? null,
-                'filters' => $request->except(['page', 'per_page']),
+            // Validate query parameters
+            $validated = $request->validate([
+                'mass_payment_file_id' => 'nullable|string|uuid',
+                'status' => 'nullable|string|in:' . implode(',', self::VALID_STATUSES),
+                'currency' => 'nullable|string|size:3',
+                'beneficiary_type' => 'nullable|string|in:individual,business',
+                'per_page' => 'nullable|integer|min:1|max:' . self::MAX_PER_PAGE,
+                'page' => 'nullable|integer|min:1',
+                'sort' => 'nullable|string|in:' . implode(',', self::VALID_SORT_FIELDS),
+                'direction' => 'nullable|string|in:asc,desc',
+                'search' => 'nullable|string|max:255',
+                'min_amount' => 'nullable|numeric|min:0',
+                'max_amount' => 'nullable|numeric|gt:min_amount',
+                'date_from' => 'nullable|date',
+                'date_to' => 'nullable|date|after_or_equal:date_from',
+                'include_errors' => 'nullable|boolean',
+                'include' => 'nullable|string',
+                'export' => 'nullable|boolean',
             ]);
 
-            // Get validated data
-            $validatedData = $request->validated();
-
-            // Validate pagination parameters
-            $perPage = min(
-                (int) $request->get('per_page', $this->perPage),
-                $this->maxPerPage
-            );
-
-            if ($perPage < 1) {
-                $perPage = $this->perPage;
+            // Check mass payment file access if specified
+            if (!empty($validated['mass_payment_file_id'])) {
+                $massPaymentFile = MassPaymentFile::findOrFail($validated['mass_payment_file_id']);
+                Gate::authorize('viewInstructions', $massPaymentFile);
+            } else {
+                // General authorization for viewing payment instructions
+                Gate::authorize('viewAny', MassPaymentFile::class);
             }
 
-            // Build base query with global scope (client filtering)
+            // Build the query with client scoping
             $query = PaymentInstruction::query();
 
-            // Apply eager loading based on include parameter
-            $includes = $this->getEagerLoadRelations($validatedData['include'] ?? []);
-            if (!empty($includes)) {
-                $query->with($includes);
+            // Apply mass payment file filter
+            if (!empty($validated['mass_payment_file_id'])) {
+                $query->where('mass_payment_file_id', $validated['mass_payment_file_id']);
             }
 
-            // Apply filters
-            $this->applyFilters($query, $validatedData);
+            // Apply other filters
+            $this->applyInstructionFilters($query, $validated);
 
             // Apply sorting
-            $this->applySorting($query, $validatedData);
+            $sortField = $validated['sort'] ?? 'row_number';
+            $sortDirection = $validated['direction'] ?? 'asc';
+            $query->orderBy($sortField, $sortDirection);
 
-            // Add counts for statistics if requested
-            if ($validatedData['include_statistics'] ?? false) {
-                $query->withCount([
-                    'massPaymentFile',
-                ]);
+            // Add secondary sort for consistent ordering
+            if ($sortField !== 'row_number') {
+                $query->orderBy('row_number', 'asc');
             }
 
-            // Filter by final states only
-            if ($validatedData['final_states_only'] ?? false) {
-                $query->whereIn('status', [
-                    PaymentInstruction::STATUS_COMPLETED,
-                    PaymentInstruction::STATUS_FAILED,
-                    PaymentInstruction::STATUS_CANCELLED,
-                ]);
-            }
+            // Apply eager loading if requested
+            $this->applyInstructionEagerLoading($query, $validated['include'] ?? '');
 
-            // Filter by processable states only
-            if ($validatedData['processable_only'] ?? false) {
-                $query->whereNotIn('status', [
-                    PaymentInstruction::STATUS_COMPLETED,
-                    PaymentInstruction::STATUS_FAILED,
-                    PaymentInstruction::STATUS_CANCELLED,
-                    PaymentInstruction::STATUS_VALIDATION_FAILED,
-                ]);
-            }
-
-            // Group by if specified
-            if (!empty($validatedData['group_by'])) {
-                $this->applyGroupBy($query, $validatedData['group_by']);
-            }
-
-            // Check if export is requested
-            if (!empty($validatedData['export_format'])) {
-                return $this->exportPaymentInstructions($query, $validatedData);
+            // Handle export request
+            if ($validated['export'] ?? false) {
+                return $this->exportInstructions($query, $validated);
             }
 
             // Paginate results
+            $perPage = min($validated['per_page'] ?? self::DEFAULT_PER_PAGE, self::MAX_PER_PAGE);
             $instructions = $query->paginate($perPage);
 
-            // Get statistics if requested
-            $statistics = null;
-            if ($validatedData['include_statistics'] ?? false) {
-                $statistics = $this->getPaymentInstructionStatistics($validatedData);
-            }
+            // Transform to API resources
+            $resourceCollection = PaymentInstructionResource::collection($instructions);
 
-            Log::info('Payment instructions retrieved successfully', [
-                'user_id' => Auth::id(),
-                'total_instructions' => $instructions->total(),
-                'current_page' => $instructions->currentPage(),
-                'per_page' => $instructions->perPage(),
-                'filters_applied' => count($this->getAppliedFilters($validatedData)),
-            ]);
+            // Add summary statistics
+            $summaryStats = $this->getInstructionsSummary($query->clone(), $validated);
 
-            $response = [
+            return response()->json([
                 'success' => true,
                 'message' => 'Payment instructions retrieved successfully',
-                'data' => PaymentInstructionResource::collection($instructions),
-                'meta' => [
-                    'pagination' => [
+                'data' => $resourceCollection->response()->getData(true)['data'],
+                'meta' => array_merge(
+                    $resourceCollection->response()->getData(true)['meta'] ?? [],
+                    [
+                        'summary_statistics' => $summaryStats,
+                        'filters_applied' => $this->getAppliedInstructionFilters($validated),
+                        'total_count' => $instructions->total(),
                         'current_page' => $instructions->currentPage(),
-                        'last_page' => $instructions->lastPage(),
                         'per_page' => $instructions->perPage(),
-                        'total' => $instructions->total(),
-                        'from' => $instructions->firstItem(),
-                        'to' => $instructions->lastItem(),
+                        'last_page' => $instructions->lastPage(),
                         'has_more_pages' => $instructions->hasMorePages(),
-                    ],
-                    'filters_applied' => $this->getAppliedFilters($validatedData),
-                ],
-            ];
-
-            if ($statistics !== null) {
-                $response['meta']['statistics'] = $statistics;
-            }
-
-            return response()->json($response, Response::HTTP_OK);
+                    ]
+                ),
+                'links' => $resourceCollection->response()->getData(true)['links'],
+            ]);
 
         } catch (Exception $e) {
             Log::error('Failed to retrieve payment instructions', [
                 'user_id' => Auth::id(),
+                'client_id' => Auth::user()->client_id ?? null,
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'filters' => $validated ?? [],
             ]);
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve payment instructions',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+            if ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                return $this->errorResponse('Mass payment file not found', 404);
+            }
+
+            return $this->errorResponse('Failed to retrieve payment instructions', 500);
         }
     }
 
     /**
      * Display the specified payment instruction.
-     *
-     * @param string $id
-     * @return JsonResponse
      */
     public function show(string $id): JsonResponse
     {
         try {
-            Log::info('Payment instruction show request', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id(),
-            ]);
+            // Find the payment instruction
+            $instruction = PaymentInstruction::findOrFail($id);
 
-            // Find the payment instruction with relationships
-            $instruction = PaymentInstruction::with([
-                'massPaymentFile:id,original_filename,status,currency,total_amount,client_id,created_at,approved_at',
-                'massPaymentFile.client:id,name,code',
-                'massPaymentFile.uploader:id,name,email',
-                'massPaymentFile.approver:id,name,email',
-                'beneficiary:id,name,account_number,bank_code,country,address,city,created_at'
-            ])
-            ->findOrFail($id);
+            // Load the mass payment file for authorization
+            $instruction->load('massPaymentFile');
 
-            // Check authorization - user must belong to same client as the file
-            $user = Auth::user();
-            if ($user->client_id !== $instruction->massPaymentFile->client_id) {
-                Log::warning('Unauthorized access attempt to payment instruction', [
-                    'instruction_id' => $id,
-                    'user_id' => $user->id,
-                    'user_client_id' => $user->client_id,
-                    'instruction_client_id' => $instruction->massPaymentFile->client_id,
-                ]);
+            // Authorize the action
+            Gate::authorize('viewInstructions', $instruction->massPaymentFile);
 
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Access denied. Payment instruction not found or you do not have permission to view it.',
-                ], Response::HTTP_NOT_FOUND);
-            }
+            // Load additional relationships
+            $instruction->load(['beneficiary']);
 
-            Log::info('Payment instruction retrieved successfully', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id(),
-                'status' => $instruction->status,
-                'amount' => $instruction->amount,
-                'currency' => $instruction->currency,
-            ]);
+            // Transform to API resource
+            $resource = new PaymentInstructionResource($instruction);
+
+            // Get processing details if available
+            $processingDetails = $this->getProcessingDetails($instruction);
+
+            // Get related instructions (same file)
+            $relatedInstructions = $this->getRelatedInstructions($instruction);
 
             return response()->json([
                 'success' => true,
                 'message' => 'Payment instruction retrieved successfully',
-                'data' => new PaymentInstructionResource($instruction),
-            ], Response::HTTP_OK);
-
-        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
-            Log::warning('Payment instruction not found', [
-                'instruction_id' => $id,
-                'user_id' => Auth::id(),
+                'data' => $resource,
+                'meta' => [
+                    'processing_details' => $processingDetails,
+                    'related_instructions' => $relatedInstructions,
+                    'user_capabilities' => [
+                        'can_retry' => $this->canRetryInstruction($instruction),
+                        'can_cancel' => $instruction->canBeCancelled(),
+                        'can_view_file' => Gate::allows('view', $instruction->massPaymentFile),
+                    ],
+                    'status_history' => $this->getInstructionStatusHistory($instruction),
+                ],
+                'links' => [
+                    'mass_payment_file' => route('api.v1.mass-payment-files.show', [
+                        'id' => $instruction->mass_payment_file_id
+                    ]),
+                    'beneficiary' => $instruction->beneficiary_id 
+                        ? route('api.v1.beneficiaries.show', ['id' => $instruction->beneficiary_id])
+                        : null,
+                    'retry' => $this->canRetryInstruction($instruction) 
+                        ? route('api.v1.payment-instructions.retry', ['id' => $instruction->id])
+                        : null,
+                ],
             ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Payment instruction not found',
-            ], Response::HTTP_NOT_FOUND);
 
         } catch (Exception $e) {
             Log::error('Failed to retrieve payment instruction', [
                 'instruction_id' => $id,
                 'user_id' => Auth::id(),
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+            ]);
+
+            if ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                return $this->errorResponse('Payment instruction not found', 404);
+            }
+
+            return $this->errorResponse('Failed to retrieve payment instruction', 500);
+        }
+    }
+
+    /**
+     * Retry a failed payment instruction.
+     */
+    public function retry(string $id): JsonResponse
+    {
+        DB::beginTransaction();
+
+        try {
+            // Find the payment instruction
+            $instruction = PaymentInstruction::findOrFail($id);
+
+            // Load the mass payment file for authorization
+            $instruction->load('massPaymentFile');
+
+            // Authorize the action
+            Gate::authorize('viewInstructions', $instruction->massPaymentFile);
+
+            // Check if instruction can be retried
+            if (!$this->canRetryInstruction($instruction)) {
+                return $this->errorResponse(
+                    'Payment instruction cannot be retried in current status: ' . $instruction->status,
+                    400
+                );
+            }
+
+            Log::info('Payment instruction retry started', [
+                'instruction_id' => $instruction->id,
+                'user_id' => Auth::id(),
+                'current_status' => $instruction->status,
+                'amount' => $instruction->amount,
+            ]);
+
+            // Retry the instruction using service
+            $retried = $this->paymentProcessingService->retryPaymentInstruction($instruction);
+
+            if (!$retried) {
+                throw new Exception('Failed to retry payment instruction');
+            }
+
+            DB::commit();
+
+            // Refresh the model to get updated data
+            $instruction = $instruction->fresh();
+
+            // Transform to API resource
+            $resource = new PaymentInstructionResource($instruction);
+
+            Log::info('Payment instruction retry initiated successfully', [
+                'instruction_id' => $instruction->id,
+                'user_id' => Auth::id(),
+                'new_status' => $instruction->status,
             ]);
 
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve payment instruction',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'success' => true,
+                'message' => 'Payment instruction retry initiated successfully',
+                'data' => $resource,
+                'meta' => [
+                    'retry_initiated_at' => now()->toISOString(),
+                    'previous_status' => $instruction->getOriginal('status'),
+                    'new_status' => $instruction->status,
+                    'retry_count' => $this->getRetryCount($instruction),
+                ],
+            ]);
+
+        } catch (Exception $e) {
+            DB::rollBack();
+
+            Log::error('Payment instruction retry failed', [
+                'instruction_id' => $id,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+
+            if ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                return $this->errorResponse('Payment instruction not found', 404);
+            }
+
+            return $this->errorResponse('Failed to retry payment instruction: ' . $e->getMessage(), 500);
         }
     }
 
     /**
-     * Apply filters to the query
-     *
-     * @param Builder $query
-     * @param array $filters
-     * @return void
+     * Cancel a pending payment instruction.
      */
-    protected function applyFilters(Builder $query, array $filters): void
+    public function cancel(string $id): JsonResponse
     {
-        // File ID filter
-        if (!empty($filters['file_id'])) {
-            $query->where('mass_payment_file_id', $filters['file_id']);
-        }
+        DB::beginTransaction();
 
-        // Status filter (single)
-        if (!empty($filters['status'])) {
-            $query->where('status', $filters['status']);
-        }
+        try {
+            // Find the payment instruction
+            $instruction = PaymentInstruction::findOrFail($id);
 
-        // Status filter (multiple)
-        if (!empty($filters['statuses']) && is_array($filters['statuses'])) {
-            $query->whereIn('status', $filters['statuses']);
-        }
+            // Load the mass payment file for authorization
+            $instruction->load('massPaymentFile');
 
-        // Currency filter (single)
-        if (!empty($filters['currency'])) {
-            $query->where('currency', strtoupper($filters['currency']));
-        }
+            // Authorize the action
+            Gate::authorize('viewInstructions', $instruction->massPaymentFile);
 
-        // Currency filter (multiple)
-        if (!empty($filters['currencies']) && is_array($filters['currencies'])) {
-            $currencies = array_map('strtoupper', $filters['currencies']);
-            $query->whereIn('currency', $currencies);
-        }
-
-        // Beneficiary ID filter
-        if (!empty($filters['beneficiary_id'])) {
-            $query->where('beneficiary_id', (int) $filters['beneficiary_id']);
-        }
-
-        // Amount range filters
-        if (isset($filters['min_amount']) && is_numeric($filters['min_amount'])) {
-            $query->where('amount', '>=', (float) $filters['min_amount']);
-        }
-
-        if (isset($filters['max_amount']) && is_numeric($filters['max_amount'])) {
-            $query->where('amount', '<=', (float) $filters['max_amount']);
-        }
-
-        // Date range filters
-        if (!empty($filters['created_from'])) {
-            try {
-                $createdFrom = \Carbon\Carbon::parse($filters['created_from']);
-                $query->whereDate('created_at', '>=', $createdFrom);
-            } catch (Exception $e) {
-                Log::warning('Invalid created_from date format', [
-                    'value' => $filters['created_from'],
-                    'error' => $e->getMessage(),
-                ]);
+            // Check if instruction can be cancelled
+            if (!$instruction->canBeCancelled()) {
+                return $this->errorResponse(
+                    'Payment instruction cannot be cancelled in current status: ' . $instruction->status,
+                    400
+                );
             }
-        }
 
-        if (!empty($filters['created_to'])) {
-            try {
-                $createdTo = \Carbon\Carbon::parse($filters['created_to']);
-                $query->whereDate('created_at', '<=', $createdTo);
-            } catch (Exception $e) {
-                Log::warning('Invalid created_to date format', [
-                    'value' => $filters['created_to'],
-                    'error' => $e->getMessage(),
-                ]);
+            Log::info('Payment instruction cancellation started', [
+                'instruction_id' => $instruction->id,
+                'user_id' => Auth::id(),
+                'current_status' => $instruction->status,
+                'amount' => $instruction->amount,
+            ]);
+
+            // Cancel the instruction using service
+            $cancelled = $this->paymentProcessingService->cancelPaymentInstruction($instruction);
+
+            if (!$cancelled) {
+                throw new Exception('Failed to cancel payment instruction');
             }
-        }
 
-        // Purpose code filter
-        if (!empty($filters['purpose_code'])) {
-            $query->where('purpose_code', $filters['purpose_code']);
-        }
+            DB::commit();
 
-        // Reference search
-        if (!empty($filters['reference'])) {
-            $query->where('reference', 'like', '%' . $filters['reference'] . '%');
-        }
+            // Refresh the model to get updated data
+            $instruction = $instruction->fresh();
 
-        // Row number range
-        if (isset($filters['min_row']) && is_numeric($filters['min_row'])) {
-            $query->where('row_number', '>=', (int) $filters['min_row']);
-        }
+            // Transform to API resource
+            $resource = new PaymentInstructionResource($instruction);
 
-        if (isset($filters['max_row']) && is_numeric($filters['max_row'])) {
-            $query->where('row_number', '<=', (int) $filters['max_row']);
-        }
+            Log::info('Payment instruction cancelled successfully', [
+                'instruction_id' => $instruction->id,
+                'user_id' => Auth::id(),
+                'new_status' => $instruction->status,
+            ]);
 
-        // Validation errors filter
-        if (isset($filters['has_validation_errors'])) {
-            if ($filters['has_validation_errors']) {
-                $query->whereNotNull('validation_errors');
-            } else {
-                $query->whereNull('validation_errors');
+            return response()->json([
+                'success' => true,
+                'message' => 'Payment instruction cancelled successfully',
+                'data' => $resource,
+                'meta' => [
+                    'cancelled_at' => now()->toISOString(),
+                    'cancelled_by' => Auth::user()->name,
+                    'previous_status' => $instruction->getOriginal('status'),
+                ],
+            ]);
+
+        } catch (Exception $e) {
+            DB::rollBack();
+
+            Log::error('Payment instruction cancellation failed', [
+                'instruction_id' => $id,
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+
+            if ($e instanceof \Illuminate\Database\Eloquent\ModelNotFoundException) {
+                return $this->errorResponse('Payment instruction not found', 404);
             }
-        }
 
-        // Search query for full-text search
-        if (!empty($filters['search'])) {
-            $search = $filters['search'];
-            $query->where(function ($q) use ($search) {
-                $q->where('reference', 'like', "%{$search}%")
-                  ->orWhere('purpose_code', 'like', "%{$search}%")
-                  ->orWhereHas('beneficiary', function ($beneficiaryQuery) use ($search) {
-                      $beneficiaryQuery->where('name', 'like', "%{$search}%")
-                                      ->orWhere('account_number', 'like', "%{$search}%");
-                  })
-                  ->orWhereHas('massPaymentFile', function ($fileQuery) use ($search) {
-                      $fileQuery->where('original_filename', 'like', "%{$search}%");
-                  });
-            });
+            return $this->errorResponse('Failed to cancel payment instruction: ' . $e->getMessage(), 500);
         }
     }
 
     /**
-     * Apply sorting to the query
-     *
-     * @param Builder $query
-     * @param array $params
-     * @return void
+     * Get status summary for payment instructions.
      */
-    protected function applySorting(Builder $query, array $params): void
+    public function status(Request $request): JsonResponse
     {
-        $sortBy = $params['sort_by'] ?? 'created_at';
-        $sortDirection = $params['sort_direction'] ?? 'desc';
+        try {
+            // Validate query parameters
+            $validated = $request->validate([
+                'mass_payment_file_id' => 'nullable|string|uuid',
+                'currency' => 'nullable|string|size:3',
+                'date_from' => 'nullable|date',
+                'date_to' => 'nullable|date|after_or_equal:date_from',
+            ]);
 
-        $allowedSortFields = [
-            'created_at',
-            'updated_at',
-            'amount',
-            'currency',
-            'status',
-            'row_number',
-            'reference',
-            'purpose_code',
-        ];
-
-        if (in_array($sortBy, $allowedSortFields)) {
-            $sortDirection = in_array(strtolower($sortDirection), ['asc', 'desc']) 
-                ? strtolower($sortDirection) 
-                : 'desc';
-            $query->orderBy($sortBy, $sortDirection);
-        } else {
-            // Default sorting
-            $query->orderBy('created_at', 'desc');
-        }
-    }
-
-    /**
-     * Apply grouping to the query
-     *
-     * @param Builder $query
-     * @param string $groupBy
-     * @return void
-     */
-    protected function applyGroupBy(Builder $query, string $groupBy): void
-    {
-        $allowedGroupByFields = ['status', 'currency', 'purpose_code', 'beneficiary_id'];
-
-        if (in_array($groupBy, $allowedGroupByFields)) {
-            $query->select([
-                $groupBy,
-                DB::raw('COUNT(*
+            // Check mass payment file access if specified
+            if (!empty($validated['mass_payment_file_id'])) {
+                $massPaymentFile = MassPaymentFile::findOrFail($validated['mass_payment_file_id']);
+                Gate::authorize('view

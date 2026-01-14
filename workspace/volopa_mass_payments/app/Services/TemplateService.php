@@ -6,457 +6,414 @@
 namespace App\Services;
 
 use App\Models\Beneficiary;
-use App\Models\Client;
-use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Collection;
+use Illuminate\Http\Response;
 use League\Csv\Writer;
-use League\Csv\Exception as CsvException;
 use Exception;
-use InvalidArgumentException;
 
 class TemplateService
 {
     /**
-     * Enable recipient templates flag
+     * Cache TTL for template data in minutes.
      */
-    protected bool $enableRecipientTemplates;
+    private const CACHE_TTL = 30;
 
     /**
-     * Maximum recipients in template
+     * Default template format.
      */
-    protected int $maxRecipientsInTemplate;
+    private const DEFAULT_FORMAT = 'csv';
 
     /**
-     * Template cache minutes
+     * Maximum number of beneficiaries to include in template.
      */
-    protected int $templateCacheMinutes;
+    private const MAX_BENEFICIARIES = 1000;
 
     /**
-     * Include sample data flag
+     * Supported template formats.
      */
-    protected bool $includeSampleData;
+    private const SUPPORTED_FORMATS = ['csv', 'xlsx', 'json'];
 
     /**
-     * Template formats
+     * Template types.
      */
-    protected array $templateFormats;
+    private const TEMPLATE_TYPES = ['basic', 'detailed', 'with_beneficiaries'];
 
     /**
-     * Supported currencies
+     * Currencies that require invoice details.
      */
-    protected array $supportedCurrencies;
+    private const INVOICE_REQUIRED_CURRENCIES = ['INR'];
 
     /**
-     * Currency specific settings
+     * Currencies that require incorporation number for business recipients.
      */
-    protected array $currencySettings;
+    private const INCORPORATION_REQUIRED_CURRENCIES = ['TRY'];
 
     /**
-     * Purpose codes
+     * Generate and download mass payment template.
      */
-    protected array $purposeCodes;
-
-    /**
-     * Required CSV headers
-     */
-    protected array $requiredHeaders;
-
-    /**
-     * Optional CSV headers
-     */
-    protected array $optionalHeaders;
-
-    /**
-     * Constructor
-     */
-    public function __construct()
+    public function generateTemplate(array $params): array
     {
-        $this->enableRecipientTemplates = config('mass-payments.templates.enable_recipient_templates', true);
-        $this->maxRecipientsInTemplate = config('mass-payments.templates.max_recipients_in_template', 1000);
-        $this->templateCacheMinutes = config('mass-payments.templates.template_cache_minutes', 60);
-        $this->includeSampleData = config('mass-payments.templates.include_sample_data', true);
-        $this->templateFormats = config('mass-payments.templates.template_formats', ['csv', 'xlsx']);
-        $this->supportedCurrencies = array_keys(config('mass-payments.supported_currencies', ['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD', 'HKD', 'JPY']));
-        $this->currencySettings = config('mass-payments.currency_settings', []);
-        $this->purposeCodes = array_keys(config('mass-payments.purpose_codes', []));
-        $this->requiredHeaders = config('mass-payments.validation.required_csv_headers', [
-            'amount', 'currency', 'beneficiary_name', 'beneficiary_account', 'bank_code'
-        ]);
-        $this->optionalHeaders = config('mass-payments.validation.optional_csv_headers', [
-            'reference', 'purpose_code', 'beneficiary_address', 'beneficiary_country', 'beneficiary_city', 'intermediary_bank', 'special_instructions'
-        ]);
-    }
-
-    /**
-     * Generate recipient template with existing beneficiaries for a client and currency
-     *
-     * @param string $currency
-     * @param int $clientId
-     * @return string
-     * @throws Exception
-     */
-    public function generateRecipientTemplate(string $currency, int $clientId): string
-    {
-        // Validate parameters
-        $this->validateTemplateParameters($currency, $clientId);
-
-        // Check if recipient templates are enabled
-        if (!$this->enableRecipientTemplates) {
-            throw new Exception('Recipient templates are not enabled');
-        }
-
-        Log::info('Generating recipient template', [
-            'currency' => $currency,
-            'client_id' => $clientId,
-        ]);
-
         try {
-            // Get recipients for the client and currency
-            $recipients = $this->getRecipientsByClientAndCurrency($clientId, $currency);
+            $startTime = microtime(true);
 
-            // Generate CSV content with recipients
-            $csvContent = $this->buildRecipientCsvContent($currency, $recipients);
+            // Validate and normalize parameters
+            $params = $this->normalizeTemplateParams($params);
 
-            // Store template temporarily and return file path
-            return $this->storeTemporaryTemplate($csvContent, "recipient_template_{$currency}_{$clientId}");
-
-        } catch (Exception $e) {
-            Log::error('Failed to generate recipient template', [
-                'currency' => $currency,
-                'client_id' => $clientId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+            Log::info('Generating mass payment template', [
+                'currency' => $params['currency'],
+                'format' => $params['format'],
+                'template_type' => $params['template_type'],
+                'user_id' => Auth::id(),
+                'client_id' => Auth::user()->client_id ?? null,
             ]);
 
-            throw new Exception('Failed to generate recipient template: ' . $e->getMessage(), 0, $e);
+            // Generate template content based on format
+            $templateData = match ($params['format']) {
+                'csv' => $this->generateCsvTemplate($params),
+                'xlsx' => $this->generateExcelTemplate($params),
+                'json' => $this->generateJsonTemplate($params),
+                default => throw new Exception('Unsupported template format: ' . $params['format'])
+            };
+
+            $processingTime = round(microtime(true) - $startTime, 2);
+
+            Log::info('Template generation completed', [
+                'currency' => $params['currency'],
+                'format' => $params['format'],
+                'processing_time' => $processingTime,
+                'content_size' => strlen($templateData['content']),
+            ]);
+
+            return [
+                'content' => $templateData['content'],
+                'filename' => $templateData['filename'],
+                'content_type' => $templateData['content_type'],
+                'size' => strlen($templateData['content']),
+                'generated_at' => now()->toISOString(),
+                'metadata' => $this->getTemplateMetadata($params),
+            ];
+
+        } catch (Exception $e) {
+            Log::error('Template generation failed', [
+                'params' => $params,
+                'error' => $e->getMessage(),
+                'user_id' => Auth::id(),
+            ]);
+
+            throw $e;
         }
     }
 
     /**
-     * Generate blank template for a specific currency
-     *
-     * @param string $currency
-     * @return string
-     * @throws Exception
+     * Get template headers based on currency and requirements.
      */
-    public function generateBlankTemplate(string $currency): string
+    public function getTemplateHeaders(string $currency, string $templateType = 'basic'): array
     {
-        // Validate currency
-        if (empty($currency) || !in_array(strtoupper($currency), $this->supportedCurrencies)) {
-            throw new InvalidArgumentException('Invalid or unsupported currency provided');
+        $cacheKey = "template_headers_{$currency}_{$templateType}";
+        
+        return Cache::remember($cacheKey, self::CACHE_TTL, function () use ($currency, $templateType) {
+            $headers = $this->getBaseHeaders();
+
+            // Add currency-specific headers
+            $headers = array_merge($headers, $this->getCurrencySpecificHeaders($currency));
+
+            // Add template type specific headers
+            $headers = array_merge($headers, $this->getTemplateTypeHeaders($templateType));
+
+            return $headers;
+        });
+    }
+
+    /**
+     * Get sample data for template based on currency and filters.
+     */
+    public function getSampleData(array $params): array
+    {
+        $currency = strtoupper($params['currency']);
+        $sampleCount = min($params['sample_rows_count'] ?? 5, 100);
+
+        $sampleData = [];
+
+        for ($i = 1; $i <= $sampleCount; $i++) {
+            $sampleRow = $this->generateSampleRow($currency, $i);
+            $sampleData[] = $sampleRow;
         }
 
+        return $sampleData;
+    }
+
+    /**
+     * Get beneficiaries filtered by currency and criteria.
+     */
+    public function getBeneficiariesForTemplate(array $filters): Collection
+    {
+        $query = Beneficiary::query()
+            ->where('client_id', Auth::user()->client_id)
+            ->active();
+
+        // Apply filters
+        if (!empty($filters['country'])) {
+            $query->where('country', strtoupper($filters['country']));
+        }
+
+        if (!empty($filters['type']) && $filters['type'] !== 'all') {
+            $query->where('type', $filters['type']);
+        }
+
+        if (!empty($filters['status']) && $filters['status'] !== 'all') {
+            if ($filters['status'] === 'verified') {
+                $query->verified();
+            } elseif ($filters['status'] === 'active') {
+                $query->active();
+            }
+        }
+
+        // Apply currency filter if beneficiary supports it
+        $currency = $filters['currency'] ?? null;
+        if ($currency) {
+            $query->byCurrency(strtoupper($currency));
+        }
+
+        // Limit results
+        $limit = min($filters['limit'] ?? 100, self::MAX_BENEFICIARIES);
+        
+        return $query->orderBy('name')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
+     * Generate CSV template.
+     */
+    private function generateCsvTemplate(array $params): array
+    {
+        $headers = $this->getTemplateHeaders($params['currency'], $params['template_type']);
+        $content = '';
+
+        // Create CSV writer
+        $csv = Writer::createFromString($content);
+
+        // Add BOM for Excel compatibility
+        $csv->insertOne(array_keys($headers));
+
+        // Add instructions row if requested
+        if ($params['include_instructions']) {
+            $instructionRow = $this->generateInstructionRow($headers, $params['currency']);
+            $csv->insertOne($instructionRow);
+        }
+
+        // Add sample data if requested
+        if ($params['include_sample_data']) {
+            $sampleData = $this->getSampleData($params);
+            foreach ($sampleData as $row) {
+                $csvRow = [];
+                foreach (array_keys($headers) as $header) {
+                    $csvRow[] = $row[$header] ?? '';
+                }
+                $csv->insertOne($csvRow);
+            }
+        }
+
+        // Add beneficiary data if requested
+        if ($params['include_beneficiaries']) {
+            $beneficiaries = $this->getBeneficiariesForTemplate($params['beneficiary_filters']);
+            foreach ($beneficiaries as $beneficiary) {
+                $beneficiaryRow = $this->convertBeneficiaryToRow($beneficiary, $headers);
+                $csv->insertOne($beneficiaryRow);
+            }
+        }
+
+        // If no data rows added, add empty template rows
+        if (!$params['include_sample_data'] && !$params['include_beneficiaries']) {
+            for ($i = 0; $i < 3; $i++) {
+                $csv->insertOne(array_fill(0, count($headers), ''));
+            }
+        }
+
+        $filename = $this->generateFilename($params, 'csv');
+
+        return [
+            'content' => $csv->toString(),
+            'filename' => $filename,
+            'content_type' => 'text/csv',
+        ];
+    }
+
+    /**
+     * Generate Excel template.
+     */
+    private function generateExcelTemplate(array $params): array
+    {
+        // For now, generate CSV and return with Excel MIME type
+        // In a real implementation, you would use PhpSpreadsheet
+        $csvTemplate = $this->generateCsvTemplate($params);
+        
+        $filename = $this->generateFilename($params, 'xlsx');
+
+        return [
+            'content' => $csvTemplate['content'],
+            'filename' => $filename,
+            'content_type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        ];
+    }
+
+    /**
+     * Generate JSON template.
+     */
+    private function generateJsonTemplate(array $params): array
+    {
+        $headers = $this->getTemplateHeaders($params['currency'], $params['template_type']);
+        
+        $templateStructure = [
+            'version' => '1.0',
+            'currency' => $params['currency'],
+            'template_type' => $params['template_type'],
+            'generated_at' => now()->toISOString(),
+            'headers' => $headers,
+            'instructions' => $this->getFieldInstructions($headers, $params['currency']),
+            'validation_rules' => $params['include_validation_rules'] ? $this->getValidationRules($params['currency']) : null,
+            'sample_data' => $params['include_sample_data'] ? $this->getSampleData($params) : [],
+            'beneficiaries' => $params['include_beneficiaries'] ? $this->getBeneficiaryData($params) : [],
+        ];
+
+        $filename = $this->generateFilename($params, 'json');
+
+        return [
+            'content' => json_encode($templateStructure, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
+            'filename' => $filename,
+            'content_type' => 'application/json',
+        ];
+    }
+
+    /**
+     * Get base required headers for all templates.
+     */
+    private function getBaseHeaders(): array
+    {
+        return [
+            'beneficiary_name' => 'Beneficiary Name (Required)',
+            'amount' => 'Payment Amount (Required)',
+            'reference' => 'Payment Reference (Required)',
+            'purpose_code' => 'Purpose Code (Required)',
+            'beneficiary_email' => 'Beneficiary Email (Required)',
+            'beneficiary_country' => 'Country Code (Required)',
+            'beneficiary_type' => 'Beneficiary Type (individual/business)',
+        ];
+    }
+
+    /**
+     * Get currency-specific headers.
+     */
+    private function getCurrencySpecificHeaders(string $currency): array
+    {
         $currency = strtoupper($currency);
-
-        Log::info('Generating blank template', [
-            'currency' => $currency,
-        ]);
-
-        try {
-            // Check cache first
-            $cacheKey = "blank_template_{$currency}";
-            
-            if ($this->templateCacheMinutes > 0) {
-                $cachedPath = Cache::get($cacheKey);
-                if ($cachedPath && Storage::exists($cachedPath)) {
-                    Log::debug('Returning cached blank template', ['currency' => $currency]);
-                    return Storage::path($cachedPath);
-                }
-            }
-
-            // Generate CSV content
-            $csvContent = $this->buildBlankCsvContent($currency);
-
-            // Store template temporarily
-            $templatePath = $this->storeTemporaryTemplate($csvContent, "blank_template_{$currency}");
-
-            // Cache the template path if caching is enabled
-            if ($this->templateCacheMinutes > 0) {
-                Cache::put($cacheKey, str_replace(Storage::path(''), '', $templatePath), $this->templateCacheMinutes);
-            }
-
-            return $templatePath;
-
-        } catch (Exception $e) {
-            Log::error('Failed to generate blank template', [
-                'currency' => $currency,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            throw new Exception('Failed to generate blank template: ' . $e->getMessage(), 0, $e);
-        }
-    }
-
-    /**
-     * Get recipients by client and currency
-     *
-     * @param int $clientId
-     * @param string $currency
-     * @return Collection
-     */
-    public function getRecipientsByClientAndCurrency(int $clientId, string $currency): Collection
-    {
-        if ($clientId <= 0) {
-            throw new InvalidArgumentException('Invalid client ID provided');
-        }
-
-        if (empty($currency) || !in_array(strtoupper($currency), $this->supportedCurrencies)) {
-            throw new InvalidArgumentException('Invalid or unsupported currency provided');
-        }
-
-        $currency = strtoupper($currency);
-
-        Log::debug('Fetching recipients for template', [
-            'client_id' => $clientId,
-            'currency' => $currency,
-        ]);
-
-        try {
-            // Get beneficiaries for the client that have been used with this currency
-            // or all beneficiaries if no currency-specific filtering is needed
-            $recipients = Beneficiary::where('client_id', $clientId)
-                ->when($this->shouldFilterByCurrency($currency), function ($query) use ($currency) {
-                    // Filter by beneficiaries who have received payments in this currency
-                    $query->whereHas('paymentInstructions', function ($q) use ($currency) {
-                        $q->where('currency', $currency);
-                    });
-                })
-                ->orderBy('name')
-                ->limit($this->maxRecipientsInTemplate)
-                ->get(['id', 'name', 'account_number', 'bank_code', 'country', 'address', 'city']);
-
-            Log::info('Recipients fetched for template', [
-                'client_id' => $clientId,
-                'currency' => $currency,
-                'recipient_count' => $recipients->count(),
-            ]);
-
-            return $recipients;
-
-        } catch (Exception $e) {
-            Log::error('Failed to fetch recipients for template', [
-                'client_id' => $clientId,
-                'currency' => $currency,
-                'error' => $e->getMessage(),
-            ]);
-
-            // Return empty collection on error
-            return new Collection();
-        }
-    }
-
-    /**
-     * Build CSV content for recipient template
-     *
-     * @param string $currency
-     * @param Collection $recipients
-     * @return string
-     * @throws Exception
-     */
-    protected function buildRecipientCsvContent(string $currency, Collection $recipients): string
-    {
-        try {
-            // Create CSV writer
-            $csv = Writer::createFromString();
-
-            // Set BOM for Excel compatibility
-            $csv->insertOne(["\xEF\xBB\xBF"]);
-
-            // Get headers for this currency
-            $headers = $this->getTemplateHeaders($currency);
-            $csv->insertOne($headers);
-
-            // Add recipient data
-            foreach ($recipients as $recipient) {
-                $row = $this->buildRecipientRow($recipient, $currency, $headers);
-                $csv->insertOne($row);
-            }
-
-            // Add sample rows if enabled and we have fewer than 3 recipients
-            if ($this->includeSampleData && $recipients->count() < 3) {
-                $sampleRowsToAdd = 3 - $recipients->count();
-                for ($i = 0; $i < $sampleRowsToAdd; $i++) {
-                    $sampleRow = $this->buildSampleRow($currency, $headers, $i + 1);
-                    $csv->insertOne($sampleRow);
-                }
-            }
-
-            return $csv->toString();
-
-        } catch (CsvException $e) {
-            throw new Exception('Failed to build recipient CSV content: ' . $e->getMessage(), 0, $e);
-        }
-    }
-
-    /**
-     * Build CSV content for blank template
-     *
-     * @param string $currency
-     * @return string
-     * @throws Exception
-     */
-    protected function buildBlankCsvContent(string $currency): string
-    {
-        try {
-            // Create CSV writer
-            $csv = Writer::createFromString();
-
-            // Set BOM for Excel compatibility
-            $csv->insertOne(["\xEF\xBB\xBF"]);
-
-            // Get headers for this currency
-            $headers = $this->getTemplateHeaders($currency);
-            $csv->insertOne($headers);
-
-            // Add sample rows if enabled
-            if ($this->includeSampleData) {
-                for ($i = 1; $i <= 3; $i++) {
-                    $sampleRow = $this->buildSampleRow($currency, $headers, $i);
-                    $csv->insertOne($sampleRow);
-                }
-            }
-
-            return $csv->toString();
-
-        } catch (CsvException $e) {
-            throw new Exception('Failed to build blank CSV content: ' . $e->getMessage(), 0, $e);
-        }
-    }
-
-    /**
-     * Get template headers for a specific currency
-     *
-     * @param string $currency
-     * @return array
-     */
-    protected function getTemplateHeaders(string $currency): array
-    {
         $headers = [];
 
-        // Add required headers
-        foreach ($this->requiredHeaders as $header) {
-            $headers[] = $this->formatHeaderName($header);
+        // Add invoice fields for required currencies
+        if (in_array($currency, self::INVOICE_REQUIRED_CURRENCIES)) {
+            $headers['invoice_number'] = 'Invoice Number (Required for ' . $currency . ')';
+            $headers['invoice_date'] = 'Invoice Date (YYYY-MM-DD, Required for ' . $currency . ')';
         }
 
-        // Add currency-specific required headers
-        $currencyConfig = $this->currencySettings[$currency] ?? [];
-        
-        if ($currencyConfig['requires_iban'] ?? false) {
-            $headers[] = 'IBAN';
+        // Add incorporation number for business recipients in certain currencies
+        if (in_array($currency, self::INCORPORATION_REQUIRED_CURRENCIES)) {
+            $headers['incorporation_number'] = 'Incorporation Number (Required for business in ' . $currency . ')';
         }
 
-        if ($currencyConfig['requires_swift_code'] ?? false) {
-            $headers[] = 'SWIFT Code';
-        }
-
-        if ($currencyConfig['requires_sort_code'] ?? false) {
-            $headers[] = 'Sort Code';
-        }
-
-        if ($currencyConfig['requires_bsb'] ?? false) {
-            $headers[] = 'BSB';
-        }
-
-        // Add optional headers that are commonly used
-        $commonOptionalHeaders = ['reference', 'purpose_code', 'beneficiary_address', 'beneficiary_country', 'beneficiary_city'];
-        
-        foreach ($commonOptionalHeaders as $header) {
-            if (in_array($header, $this->optionalHeaders)) {
-                $headers[] = $this->formatHeaderName($header);
-            }
-        }
-
-        return array_unique($headers);
+        return $headers;
     }
 
     /**
-     * Build recipient row data
-     *
-     * @param Beneficiary $recipient
-     * @param string $currency
-     * @param array $headers
-     * @return array
+     * Get template type specific headers.
      */
-    protected function buildRecipientRow(Beneficiary $recipient, string $currency, array $headers): array
+    private function getTemplateTypeHeaders(string $templateType): array
     {
-        $row = [];
-
-        foreach ($headers as $header) {
-            $value = match (strtolower(str_replace(' ', '_', $header))) {
-                'amount' => $this->getSampleAmount($currency),
-                'currency' => $currency,
-                'beneficiary_name' => $recipient->name ?? '',
-                'beneficiary_account', 'account_number' => $recipient->account_number ?? '',
-                'bank_code' => $recipient->bank_code ?? '',
-                'beneficiary_address', 'address' => $recipient->address ?? '',
-                'beneficiary_country', 'country' => $recipient->country ?? '',
-                'beneficiary_city', 'city' => $recipient->city ?? '',
-                'reference' => 'Payment to ' . ($recipient->name ?? 'Beneficiary'),
-                'purpose_code' => $this->getDefaultPurposeCode($currency),
-                'iban' => '', // Leave blank for user to fill
-                'swift_code' => '', // Leave blank for user to fill
-                'sort_code' => '', // Leave blank for user to fill
-                'bsb' => '', // Leave blank for user to fill
-                'intermediary_bank' => '',
-                'special_instructions' => '',
-                default => '',
-            };
-
-            $row[] = $value;
-        }
-
-        return $row;
+        return match ($templateType) {
+            'detailed' => [
+                'beneficiary_address_line1' => 'Address Line 1',
+                'beneficiary_address_line2' => 'Address Line 2',
+                'beneficiary_city' => 'City',
+                'beneficiary_state' => 'State/Province',
+                'beneficiary_postal_code' => 'Postal Code',
+                'beneficiary_phone' => 'Phone Number',
+            ],
+            'with_beneficiaries' => [
+                'beneficiary_account_number' => 'Account Number',
+                'beneficiary_sort_code' => 'Sort Code',
+                'beneficiary_iban' => 'IBAN',
+                'beneficiary_swift_code' => 'SWIFT/BIC Code',
+                'beneficiary_bank_name' => 'Bank Name',
+                'beneficiary_bank_address' => 'Bank Address',
+            ],
+            default => []
+        };
     }
 
     /**
-     * Build sample row data
-     *
-     * @param string $currency
-     * @param array $headers
-     * @param int $rowNumber
-     * @return array
+     * Generate instruction row for CSV template.
      */
-    protected function buildSampleRow(string $currency, array $headers, int $rowNumber): array
+    private function generateInstructionRow(array $headers, string $currency): array
     {
-        $row = [];
-
-        foreach ($headers as $header) {
-            $value = match (strtolower(str_replace(' ', '_', $header))) {
-                'amount' => $this->getSampleAmount($currency),
-                'currency' => $currency,
-                'beneficiary_name' => "Sample Beneficiary {$rowNumber}",
-                'beneficiary_account', 'account_number' => $this->getSampleAccountNumber($currency, $rowNumber),
-                'bank_code' => $this->getSampleBankCode($currency),
-                'beneficiary_address', 'address' => "123 Sample Street {$rowNumber}",
-                'beneficiary_country', 'country' => $this->getSampleCountry($currency),
-                'beneficiary_city', 'city' => $this->getSampleCity($currency),
-                'reference' => "Sample Payment Reference {$rowNumber}",
-                'purpose_code' => $this->getDefaultPurposeCode($currency),
-                'iban' => $this->getSampleIban($currency),
-                'swift_code' => $this->getSampleSwiftCode($currency),
-                'sort_code' => $this->getSampleSortCode($currency),
-                'bsb' => $this->getSampleBsb($currency),
-                'intermediary_bank' => '',
-                'special_instructions' => '',
-                default => '',
-            };
-
-            $row[] = $value;
+        $instructions = [];
+        
+        foreach (array_keys($headers) as $header) {
+            $instructions[] = $this->getFieldInstruction($header, $currency);
         }
 
-        return $row;
+        return $instructions;
     }
 
     /**
-     * Store template temporarily
-     *
-     * @param string $content
-     * @param string $filename
-     * @return string
-     * @throws Exception
+     * Get instruction for a specific field.
      */
-    protected function storeTemporaryTemplate(
+    private function getFieldInstruction(string $field, string $currency): string
+    {
+        return match ($field) {
+            'beneficiary_name' => 'Full name of the recipient (2-100 characters)',
+            'amount' => 'Payment amount in ' . $currency . ' (0.01 - 1,000,000.00)',
+            'reference' => 'Unique payment reference (up to 255 characters)',
+            'purpose_code' => 'Valid purpose code (e.g., P0101, P0201)',
+            'beneficiary_email' => 'Valid email address of recipient',
+            'beneficiary_country' => 'ISO 3166-1 alpha-2 country code (e.g., US, GB)',
+            'beneficiary_type' => 'Either "individual" or "business"',
+            'invoice_number' => 'Invoice number (required for ' . $currency . ', max 50 chars)',
+            'invoice_date' => 'Invoice date in YYYY-MM-DD format',
+            'incorporation_number' => 'Company incorporation number (required for business in ' . $currency . ')',
+            'beneficiary_account_number' => 'Bank account number',
+            'beneficiary_sort_code' => 'Bank sort code (UK banks)',
+            'beneficiary_iban' => 'International Bank Account Number',
+            'beneficiary_swift_code' => 'SWIFT/BIC code (8 or 11 characters)',
+            'beneficiary_bank_name' => 'Name of recipient bank',
+            'beneficiary_bank_address' => 'Address of recipient bank',
+            'beneficiary_address_line1' => 'Primary address line',
+            'beneficiary_address_line2' => 'Secondary address line (optional)',
+            'beneficiary_city' => 'City name',
+            'beneficiary_state' => 'State or province',
+            'beneficiary_postal_code' => 'Postal or ZIP code',
+            'beneficiary_phone' => 'Phone number with country code',
+            default => 'Enter ' . str_replace(['_', 'beneficiary'], [' ', ''], $field)
+        };
+    }
+
+    /**
+     * Generate sample row data.
+     */
+    private function generateSampleRow(string $currency, int $index): array
+    {
+        $sampleData = [
+            'beneficiary_name' => "Sample Recipient {$index}",
+            'amount' => number_format(rand(100, 5000), 2, '.', ''),
+            'reference' => "REF-" . str_pad($index, 6, '0', STR_PAD_LEFT),
+            'purpose_code' => 'P0101',
+            'beneficiary_email' => "recipient{$index}@example.com",
+            'beneficiary_country' => $this->getSampleCountryCode($index),
+            'beneficiary_type' => $index % 2 === 0 ? 'individual' : 'business',
+        ];
+
+        // Add currency-specific sample data
+        if (in_array($currency, self::INVOICE_REQUIRED_CURRENCIES)) {
+            $sampleData['invoice_number'] = "INV-2024-" . str_pad($index, 4, '0', STR_PAD_LEFT);
+            $sampleData['invoice_date'] = now()->subDays(rand(1, 30))->format('Y-m-

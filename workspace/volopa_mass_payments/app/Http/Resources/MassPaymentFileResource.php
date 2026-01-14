@@ -1,450 +1,342 @@
-## Code: app/Http/Resources/MassPaymentFileResource.php
-
-```php
 <?php
 
 namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Facades\Auth;
+use Carbon\Carbon;
 
 class MassPaymentFileResource extends JsonResource
 {
     /**
      * Transform the resource into an array.
-     *
-     * @param Request $request
-     * @return array<string, mixed>
      */
     public function toArray(Request $request): array
     {
         return [
             'id' => $this->id,
-            'client_id' => $this->client_id,
-            'tcc_account_id' => $this->tcc_account_id,
             'filename' => $this->filename,
-            'original_filename' => $this->original_filename,
-            'file_size' => $this->file_size,
-            'file_size_formatted' => $this->formatFileSize($this->file_size),
-            'total_amount' => (float) $this->total_amount,
-            'total_amount_formatted' => number_format($this->total_amount, 2) . ' ' . $this->currency,
             'currency' => $this->currency,
             'status' => $this->status,
-            'status_display' => $this->getStatusDisplay($this->status),
+            'formatted_status' => $this->getFormattedStatus(),
+            'status_color' => $this->getStatusColor(),
+            'total_amount' => $this->total_amount,
+            'formatted_amount' => $this->getFormattedAmount(),
+            'total_instructions' => $this->total_instructions,
+            'valid_instructions' => $this->valid_instructions,
+            'invalid_instructions' => $this->invalid_instructions,
+            'success_rate' => $this->getSuccessRate(),
+            'progress_percentage' => $this->calculateProgress(),
             'validation_errors' => $this->when(
-                $this->hasValidationErrors() && $this->canViewValidationErrors($request),
-                $this->validation_errors
+                $this->hasValidationErrors(),
+                $this->formatValidationErrors($this->validation_errors ?? [])
             ),
             'validation_error_count' => $this->getValidationErrorCount(),
-            'uploaded_by' => $this->uploaded_by,
-            'approved_by' => $this->approved_by,
-            'approved_at' => $this->approved_at?->toISOString(),
-            'created_at' => $this->created_at->toISOString(),
-            'updated_at' => $this->updated_at->toISOString(),
-            
-            // Progress and statistics
-            'progress_percentage' => $this->progress_percentage,
-            'payment_counts' => [
-                'total_instructions' => $this->payment_instructions_count,
-                'successful_payments' => $this->successful_payments_count,
-                'failed_payments' => $this->failed_payments_count,
-                'pending_payments' => $this->payment_instructions_count - $this->successful_payments_count - $this->failed_payments_count,
+            'file_size' => $this->getFileSizeAttribute(),
+            'tcc_account' => [
+                'id' => $this->tcc_account_id,
+                'name' => $this->whenLoaded('tccAccount', function () {
+                    return $this->tccAccount->account_name ?? 'Unknown Account';
+                }),
             ],
-
-            // Processing status flags
-            'can_be_approved' => $this->canBeApproved(),
-            'can_be_deleted' => $this->canBeDeleted(),
-            'is_processing' => $this->isProcessing(),
-            'is_completed' => $this->isCompleted(),
-            'has_failed' => $this->hasFailed(),
-            'is_draft' => $this->isDraft(),
-            'is_validating' => $this->isValidating(),
-            'has_validation_failed' => $this->hasValidationFailed(),
-            'is_awaiting_approval' => $this->isAwaitingApproval(),
-            'is_approved' => $this->isApproved(),
-
-            // Related data - conditionally loaded
-            'client' => $this->whenLoaded('client', function () {
-                return [
-                    'id' => $this->client->id,
-                    'name' => $this->client->name ?? 'Unknown Client',
-                    'code' => $this->client->code ?? null,
-                ];
-            }),
-
-            'tcc_account' => $this->whenLoaded('tccAccount', function () {
-                return [
-                    'id' => $this->tccAccount->id,
-                    'account_name' => $this->tccAccount->account_name,
-                    'account_number' => $this->tccAccount->getMaskedAccountNumberAttribute(),
-                    'currency' => $this->tccAccount->currency,
-                    'balance' => (float) $this->tccAccount->balance,
-                    'available_balance' => (float) $this->tccAccount->available_balance,
-                    'balance_formatted' => $this->tccAccount->getFormattedBalanceAttribute(),
-                    'available_balance_formatted' => $this->tccAccount->getFormattedAvailableBalanceAttribute(),
-                    'is_active' => $this->tccAccount->is_active,
-                    'account_type' => $this->tccAccount->account_type,
-                ];
-            }),
-
-            'uploader' => $this->whenLoaded('uploader', function () {
-                return [
-                    'id' => $this->uploader->id,
-                    'name' => $this->uploader->name ?? 'Unknown User',
-                    'email' => $this->when(
-                        $this->canViewUserDetails($request),
-                        $this->uploader->email
-                    ),
-                ];
-            }),
-
-            'approver' => $this->whenLoaded('approver', function () {
-                return $this->approver ? [
-                    'id' => $this->approver->id,
-                    'name' => $this->approver->name ?? 'Unknown User',
-                    'email' => $this->when(
-                        $this->canViewUserDetails($request),
-                        $this->approver->email
-                    ),
-                ] : null;
-            }),
-
-            'payment_instructions' => PaymentInstructionResource::collection(
-                $this->whenLoaded('paymentInstructions')
+            'approval_info' => $this->when(
+                $this->isApproved(),
+                [
+                    'approved_by' => $this->approved_by,
+                    'approved_at' => $this->approved_at?->toISOString(),
+                    'approved_at_formatted' => $this->approved_at?->format('M j, Y g:i A'),
+                ]
             ),
-
-            // Additional metadata
-            'metadata' => [
-                'days_since_upload' => $this->created_at->diffInDays(now()),
-                'hours_since_last_update' => $this->updated_at->diffInHours(now()),
-                'processing_duration' => $this->getProcessingDuration(),
-                'approval_duration' => $this->getApprovalDuration(),
+            'timestamps' => [
+                'created_at' => $this->created_at->toISOString(),
+                'updated_at' => $this->updated_at->toISOString(),
+                'created_at_formatted' => $this->created_at->format('M j, Y g:i A'),
+                'updated_at_formatted' => $this->updated_at->format('M j, Y g:i A'),
+                'time_since_creation' => $this->created_at->diffForHumans(),
+                'time_since_update' => $this->updated_at->diffForHumans(),
             ],
-
-            // Action URLs - conditionally included
-            'actions' => $this->when(
-                $this->shouldIncludeActions($request),
-                $this->getAvailableActions($request)
-            ),
-
-            // Links for HATEOAS compliance
-            'links' => [
-                'self' => route('api.v1.mass-payment-files.show', $this->id),
-                'payment_instructions' => route('api.v1.payment-instructions.index', ['file_id' => $this->id]),
-                'download' => $this->when(
-                    $this->canDownload($request),
-                    route('api.v1.mass-payment-files.download', $this->id)
+            'capabilities' => [
+                'can_be_approved' => $this->canBeApproved(),
+                'can_be_deleted' => $this->canBeDeleted(),
+                'is_processing' => $this->isProcessing(),
+                'is_completed' => $this->isCompleted(),
+                'has_failed' => $this->hasFailed(),
+            ],
+            'statistics' => [
+                'processing_progress' => $this->calculateProgress(),
+                'error_percentage' => $this->calculateErrorPercentage(),
+                'average_amount' => $this->calculateAverageAmount(),
+                'estimated_completion_time' => $this->when(
+                    $this->isProcessing(),
+                    $this->estimateCompletionTime()
                 ),
+            ],
+            'links' => [
+                'self' => route('api.v1.mass-payment-files.show', ['id' => $this->id]),
+                'approve' => $this->when(
+                    $this->canBeApproved(),
+                    route('api.v1.mass-payment-files.approve', ['id' => $this->id])
+                ),
+                'payment_instructions' => route('api.v1.payment-instructions.index', [
+                    'mass_payment_file_id' => $this->id
+                ]),
             ],
         ];
     }
 
     /**
-     * Get display-friendly status name
-     *
-     * @param string $status
-     * @return string
+     * Get formatted amount with currency symbol.
      */
-    protected function getStatusDisplay(string $status): string
+    private function getFormattedAmount(): string
     {
-        return match ($status) {
-            'draft' => 'Draft',
-            'validating' => 'Validating',
-            'validation_failed' => 'Validation Failed',
-            'awaiting_approval' => 'Awaiting Approval',
-            'approved' => 'Approved',
-            'processing' => 'Processing',
-            'completed' => 'Completed',
-            'failed' => 'Failed',
-            default => 'Unknown',
-        };
+        return number_format($this->total_amount, 2) . ' ' . strtoupper($this->currency);
     }
 
     /**
-     * Format file size for human readability
-     *
-     * @param int $bytes
-     * @return string
+     * Format validation errors for API response.
      */
-    protected function formatFileSize(int $bytes): string
+    private function formatValidationErrors(array $errors): array
     {
-        if ($bytes === 0) {
-            return '0 B';
+        if (empty($errors)) {
+            return [];
         }
 
-        $units = ['B', 'KB', 'MB', 'GB'];
-        $factor = floor(log($bytes, 1024));
-        $factor = min($factor, count($units) - 1);
+        $formattedErrors = [];
 
-        return round($bytes / pow(1024, $factor), 2) . ' ' . $units[$factor];
+        foreach ($errors as $index => $error) {
+            if (is_array($error)) {
+                // Structured error format
+                $formattedErrors[] = [
+                    'index' => $index,
+                    'row_number' => $error['row_number'] ?? null,
+                    'field' => $error['field'] ?? null,
+                    'message' => $error['message'] ?? 'Unknown error',
+                    'value' => $error['value'] ?? null,
+                    'severity' => $error['severity'] ?? 'error',
+                ];
+            } else {
+                // Simple string error format
+                $formattedErrors[] = [
+                    'index' => $index,
+                    'row_number' => null,
+                    'field' => null,
+                    'message' => (string) $error,
+                    'value' => null,
+                    'severity' => 'error',
+                ];
+            }
+        }
+
+        return [
+            'count' => count($formattedErrors),
+            'errors' => $formattedErrors,
+            'summary' => $this->generateErrorSummary($formattedErrors),
+        ];
     }
 
     /**
-     * Get validation error count
-     *
-     * @return int
+     * Calculate processing progress as percentage.
      */
-    protected function getValidationErrorCount(): int
+    private function calculateProgress(): int
     {
-        if (!$this->validation_errors || !is_array($this->validation_errors)) {
-            return 0;
+        switch ($this->status) {
+            case 'draft':
+                return 0;
+            case 'validating':
+                return 25;
+            case 'validation_failed':
+                return 25;
+            case 'awaiting_approval':
+                return 50;
+            case 'approved':
+                return 75;
+            case 'processing':
+                // Dynamic progress based on payment instruction statuses
+                return $this->calculateDynamicProgress();
+            case 'completed':
+                return 100;
+            case 'failed':
+                return 100;
+            default:
+                return 0;
+        }
+    }
+
+    /**
+     * Calculate dynamic progress for processing status.
+     */
+    private function calculateDynamicProgress(): int
+    {
+        if ($this->total_instructions === 0) {
+            return 75;
         }
 
-        $count = 0;
+        // Get completed instructions count (you might need to load this relationship)
+        $completedCount = $this->whenLoaded('paymentInstructions', function () {
+            return $this->paymentInstructions
+                ->whereIn('status', ['completed', 'failed', 'cancelled'])
+                ->count();
+        }, 0);
 
-        // Count global errors
-        if (isset($this->validation_errors['global_errors']) && is_array($this->validation_errors['global_errors'])) {
-            $count += count($this->validation_errors['global_errors']);
+        if ($completedCount === 0) {
+            return 75; // Just started processing
         }
 
-        // Count instruction errors
-        if (isset($this->validation_errors['instruction_errors']) && is_array($this->validation_errors['instruction_errors'])) {
-            foreach ($this->validation_errors['instruction_errors'] as $instructionErrors) {
-                if (is_array($instructionErrors)) {
-                    $count += count($instructionErrors);
+        // Calculate progress between 75% (started) and 100% (completed)
+        $processingProgress = ($completedCount / $this->total_instructions) * 25; // 25% range for processing
+        return min(75 + $processingProgress, 100);
+    }
+
+    /**
+     * Calculate error percentage.
+     */
+    private function calculateErrorPercentage(): float
+    {
+        if ($this->total_instructions === 0) {
+            return 0.0;
+        }
+
+        return round(($this->invalid_instructions / $this->total_instructions) * 100, 2);
+    }
+
+    /**
+     * Calculate average payment amount.
+     */
+    private function calculateAverageAmount(): float
+    {
+        if ($this->total_instructions === 0) {
+            return 0.0;
+        }
+
+        return round($this->total_amount / $this->total_instructions, 2);
+    }
+
+    /**
+     * Estimate completion time for processing files.
+     */
+    private function estimateCompletionTime(): ?string
+    {
+        if (!$this->isProcessing()) {
+            return null;
+        }
+
+        // Get processing start time
+        $processingStarted = $this->updated_at;
+        $now = Carbon::now();
+        $elapsedMinutes = $processingStarted->diffInMinutes($now);
+
+        if ($elapsedMinutes === 0) {
+            // Just started, estimate based on instruction count
+            $estimatedMinutes = $this->estimateProcessingTime();
+        } else {
+            // Calculate based on current progress
+            $progressPercent = $this->calculateDynamicProgress();
+            if ($progressPercent <= 75) {
+                // Still in initial processing phase
+                $estimatedMinutes = $this->estimateProcessingTime();
+            } else {
+                // Calculate remaining time based on current rate
+                $actualProgress = $progressPercent - 75; // Processing progress only
+                if ($actualProgress > 0) {
+                    $remainingProgress = 25 - $actualProgress; // Remaining in processing phase
+                    $ratePerMinute = $actualProgress / $elapsedMinutes;
+                    $estimatedMinutes = $ratePerMinute > 0 ? ($remainingProgress / $ratePerMinute) : 15;
+                } else {
+                    $estimatedMinutes = 15; // Default estimate
                 }
             }
         }
 
-        return $count;
+        $estimatedCompletion = $now->addMinutes($estimatedMinutes);
+        return $estimatedCompletion->toISOString();
     }
 
     /**
-     * Check if user can view validation errors
-     *
-     * @param Request $request
-     * @return bool
+     * Estimate processing time based on instruction count.
      */
-    protected function canViewValidationErrors(Request $request): bool
+    private function estimateProcessingTime(): int
     {
-        $user = Auth::user();
-
-        if (!$user) {
-            return false;
-        }
-
-        // User can view validation errors for their own client's files
-        if ($user->client_id !== $this->client_id) {
-            return false;
-        }
-
-        // Check specific permission if available
-        if (method_exists($user, 'can')) {
-            return $user->can('viewValidationErrors', $this->resource);
-        }
-
-        return true;
-    }
-
-    /**
-     * Check if user can view user details
-     *
-     * @param Request $request
-     * @return bool
-     */
-    protected function canViewUserDetails(Request $request): bool
-    {
-        $user = Auth::user();
-
-        if (!$user) {
-            return false;
-        }
-
-        // Same client users can view each other's details
-        return $user->client_id === $this->client_id;
-    }
-
-    /**
-     * Check if user can download file
-     *
-     * @param Request $request
-     * @return bool
-     */
-    protected function canDownload(Request $request): bool
-    {
-        $user = Auth::user();
-
-        if (!$user || $user->client_id !== $this->client_id) {
-            return false;
-        }
-
-        if (method_exists($user, 'can')) {
-            return $user->can('download', $this->resource);
-        }
-
-        return true;
-    }
-
-    /**
-     * Check if actions should be included in response
-     *
-     * @param Request $request
-     * @return bool
-     */
-    protected function shouldIncludeActions(Request $request): bool
-    {
-        // Include actions for detail views or when explicitly requested
-        return $request->route()->getName() === 'api.v1.mass-payment-files.show' ||
-               $request->boolean('include_actions', false);
-    }
-
-    /**
-     * Get available actions for the current user and file state
-     *
-     * @param Request $request
-     * @return array
-     */
-    protected function getAvailableActions(Request $request): array
-    {
-        $user = Auth::user();
-        $actions = [];
-
-        if (!$user || $user->client_id !== $this->client_id) {
-            return $actions;
-        }
-
-        // Approve action
-        if ($this->canBeApproved() && method_exists($user, 'can') && $user->can('approve', $this->resource)) {
-            $actions['approve'] = [
-                'available' => true,
-                'url' => route('api.v1.mass-payment-files.approve', $this->id),
-                'method' => 'POST',
-                'label' => 'Approve',
-            ];
-        }
-
-        // Delete action
-        if ($this->canBeDeleted() && method_exists($user, 'can') && $user->can('delete', $this->resource)) {
-            $actions['delete'] = [
-                'available' => true,
-                'url' => route('api.v1.mass-payment-files.destroy', $this->id),
-                'method' => 'DELETE',
-                'label' => 'Delete',
-                'confirm_message' => 'Are you sure you want to delete this payment file?',
-            ];
-        }
-
-        // Download action
-        if ($this->canDownload($request)) {
-            $actions['download'] = [
-                'available' => true,
-                'url' => route('api.v1.mass-payment-files.download', $this->id),
-                'method' => 'GET',
-                'label' => 'Download',
-            ];
-        }
-
-        // View validation errors action
-        if ($this->hasValidationFailed() && $this->canViewValidationErrors($request)) {
-            $actions['view_errors'] = [
-                'available' => true,
-                'url' => route('api.v1.mass-payment-files.validation-errors', $this->id),
-                'method' => 'GET',
-                'label' => 'View Validation Errors',
-            ];
-        }
-
-        // Retry processing action
-        if ($this->hasFailed() && method_exists($user, 'can') && $user->can('reprocess', $this->resource)) {
-            $actions['retry'] = [
-                'available' => true,
-                'url' => route('api.v1.mass-payment-files.retry', $this->id),
-                'method' => 'POST',
-                'label' => 'Retry Processing',
-            ];
-        }
-
-        // Cancel processing action
-        if ($this->isProcessing() && method_exists($user, 'can') && $user->can('cancel', $this->resource)) {
-            $actions['cancel'] = [
-                'available' => true,
-                'url' => route('api.v1.mass-payment-files.cancel', $this->id),
-                'method' => 'POST',
-                'label' => 'Cancel Processing',
-                'confirm_message' => 'Are you sure you want to cancel processing?',
-            ];
-        }
-
-        return $actions;
-    }
-
-    /**
-     * Get processing duration in human-readable format
-     *
-     * @return string|null
-     */
-    protected function getProcessingDuration(): ?string
-    {
-        if (!$this->approved_at) {
-            return null;
-        }
-
-        $endTime = $this->isCompleted() || $this->hasFailed() ? $this->updated_at : now();
-        $duration = $this->approved_at->diffInSeconds($endTime);
-
-        if ($duration < 60) {
-            return $duration . ' seconds';
-        } elseif ($duration < 3600) {
-            return round($duration / 60) . ' minutes';
+        // Rough estimates based on instruction count
+        if ($this->total_instructions <= 50) {
+            return 2; // 2 minutes
+        } elseif ($this->total_instructions <= 200) {
+            return 5; // 5 minutes
+        } elseif ($this->total_instructions <= 500) {
+            return 10; // 10 minutes
+        } elseif ($this->total_instructions <= 1000) {
+            return 20; // 20 minutes
         } else {
-            return round($duration / 3600, 1) . ' hours';
+            // For large files, estimate 1 instruction per 1.5 seconds
+            return max(30, intval($this->total_instructions * 1.5 / 60));
         }
     }
 
     /**
-     * Get approval duration in human-readable format
-     *
-     * @return string|null
+     * Generate error summary for validation errors.
      */
-    protected function getApprovalDuration(): ?string
+    private function generateErrorSummary(array $formattedErrors): array
     {
-        if (!$this->approved_at) {
-            return null;
+        $errorsByField = [];
+        $errorsBySeverity = ['error' => 0, 'warning' => 0, 'info' => 0];
+        $mostCommonErrors = [];
+
+        foreach ($formattedErrors as $error) {
+            // Group by field
+            $field = $error['field'] ?? 'unknown';
+            $errorsByField[$field] = ($errorsByField[$field] ?? 0) + 1;
+
+            // Group by severity
+            $severity = $error['severity'] ?? 'error';
+            $errorsBySeverity[$severity] = ($errorsBySeverity[$severity] ?? 0) + 1;
+
+            // Track common error messages
+            $message = $error['message'];
+            $mostCommonErrors[$message] = ($mostCommonErrors[$message] ?? 0) + 1;
         }
 
-        $duration = $this->created_at->diffInSeconds($this->approved_at);
+        // Sort to get most common
+        arsort($errorsByField);
+        arsort($mostCommonErrors);
 
-        if ($duration < 60) {
-            return $duration . ' seconds';
-        } elseif ($duration < 3600) {
-            return round($duration / 60) . ' minutes';
-        } elseif ($duration < 86400) {
-            return round($duration / 3600, 1) . ' hours';
-        } else {
-            return round($duration / 86400, 1) . ' days';
-        }
-    }
-
-    /**
-     * Check if validation errors exist
-     *
-     * @return bool
-     */
-    protected function hasValidationErrors(): bool
-    {
-        return !empty($this->validation_errors);
-    }
-
-    /**
-     * Get additional attributes when needed
-     *
-     * @param Request $request
-     * @return array<string, mixed>
-     */
-    public function with(Request $request): array
-    {
         return [
-            'meta' => [
-                'resource_type' => 'mass_payment_file',
-                'api_version' => 'v1',
-                'generated_at' => now()->toISOString(),
-                'permissions' => $this->getUserPermissions($request),
-            ],
+            'total_errors' => count($formattedErrors),
+            'by_field' => array_slice($errorsByField, 0, 5, true), // Top 5 fields with errors
+            'by_severity' => $errorsBySeverity,
+            'most_common_errors' => array_slice(array_keys($mostCommonErrors), 0, 3), // Top 3 error messages
+            'fields_with_most_errors' => array_slice(array_keys($errorsByField), 0, 3), // Top 3 problem fields
         ];
     }
 
     /**
-     * Get user permissions for this resource
-     *
-     * @
+     * Get additional attributes when specific conditions are met.
+     */
+    public function with(Request $request): array
+    {
+        $meta = [
+            'timestamp' => Carbon::now()->toISOString(),
+            'api_version' => 'v1',
+        ];
+
+        // Add processing metadata for active files
+        if ($this->isProcessing() || $this->isValidating()) {
+            $meta['processing'] = [
+                'started_at' => $this->updated_at->toISOString(),
+                'elapsed_time' => $this->updated_at->diffForHumans(),
+                'estimated_remaining' => $this->estimateCompletionTime(),
+            ];
+        }
+
+        // Add failure information for failed files
+        if ($this->hasFailed() || $this->hasValidationFailed()) {
+            $meta['failure_info'] = [
+                'failed_at' => $this->updated_at->toISOString(),
+                'can_retry' => $this->canBeDeleted(), // If can be deleted, can potentially be retried
+                'error_count' => $this->getValidationErrorCount(),
+            ];
+        }
+
+        return [
+            'meta' => $meta,
+        ];
+    }
+}

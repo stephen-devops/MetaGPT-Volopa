@@ -1,0 +1,147 @@
+{
+  "Required packages": [
+    "laravel/framework:^10.0",
+    "league/csv:^9.0",
+    "predis/predis:^2.0"
+  ],
+  "Required Other language third-party packages": [
+    "No third-party dependencies required"
+  ],
+  "Logic Analysis": [
+    [
+      "database/migrations/2024_01_01_000001_create_mass_payment_files_table.php",
+      "Creates mass_payment_files table schema with client_id, status, validation_errors columns. No dependencies."
+    ],
+    [
+      "database/migrations/2024_01_01_000002_create_payment_instructions_table.php",
+      "Creates payment_instructions table with foreign key to mass_payment_files. Depends on mass_payment_files migration."
+    ],
+    [
+      "app/Models/MassPaymentFile.php",
+      "Eloquent model for mass payment files with client scoping, relationships to PaymentInstruction. Depends on migration."
+    ],
+    [
+      "app/Models/PaymentInstruction.php",
+      "Eloquent model for individual payment instructions with relationships to MassPaymentFile and Beneficiary. Depends on migration and MassPaymentFile model."
+    ],
+    [
+      "app/Models/Beneficiary.php",
+      "Existing Volopa beneficiary model with client scoping. May need updates for mass payment integration."
+    ],
+    [
+      "app/Models/TccAccount.php",
+      "Existing Volopa TCC account model for funding accounts. May need updates for mass payment integration."
+    ],
+    [
+      "app/Policies/MassPaymentFilePolicy.php",
+      "Authorization policy for mass payment file operations (view, approve, delete) with client isolation. Depends on MassPaymentFile model."
+    ],
+    [
+      "app/Http/Requests/UploadMassPaymentFileRequest.php",
+      "Form request validation for file uploads with file format, size, currency validation. Depends on MassPaymentFilePolicy."
+    ],
+    [
+      "app/Http/Requests/ApproveMassPaymentFileRequest.php",
+      "Form request validation for approval workflow with policy authorization. Depends on MassPaymentFilePolicy."
+    ],
+    [
+      "app/Http/Requests/DownloadTemplateRequest.php",
+      "Form request validation for template downloads with currency filtering. Depends on policies."
+    ],
+    [
+      "config/queue.php",
+      "Queue configuration for Redis connection and job processing. No dependencies."
+    ],
+    [
+      "app/Services/MassPaymentFileService.php",
+      "Business logic for file creation, approval workflow, status management. Depends on MassPaymentFile model."
+    ],
+    [
+      "app/Services/CsvValidationService.php",
+      "CSV parsing and validation with currency-specific rules (INR, TRY requirements). Depends on models for data validation."
+    ],
+    [
+      "app/Services/TemplateService.php",
+      "Template generation and beneficiary data export filtered by currency. Depends on Beneficiary model."
+    ],
+    [
+      "app/Services/PaymentProcessingService.php",
+      "Payment instruction processing and status updates. Depends on PaymentInstruction model."
+    ],
+    [
+      "app/Jobs/ValidateMassPaymentFileJob.php",
+      "Async job for CSV validation and payment instruction creation. Depends on CsvValidationService and models."
+    ],
+    [
+      "app/Jobs/ProcessPaymentInstructionsJob.php",
+      "Async job for payment processing after approval. Depends on PaymentProcessingService."
+    ],
+    [
+      "app/Notifications/PaymentFileApprovalPending.php",
+      "Laravel notification for approval workflow alerts. Depends on MassPaymentFile model."
+    ],
+    [
+      "app/Http/Middleware/VolopaAuthMiddleware.php",
+      "Custom authentication middleware for OAuth2/WSSE integration. No dependencies."
+    ],
+    [
+      "app/Http/Resources/MassPaymentFileResource.php",
+      "API resource transformer for mass payment file responses with status formatting. Depends on MassPaymentFile model."
+    ],
+    [
+      "app/Http/Resources/PaymentInstructionResource.php",
+      "API resource transformer for payment instruction responses. Depends on PaymentInstruction model."
+    ],
+    [
+      "app/Http/Resources/ValidationErrorResource.php",
+      "API resource transformer for validation error formatting. No model dependencies."
+    ],
+    [
+      "app/Http/Controllers/Api/V1/MassPaymentFileController.php",
+      "RESTful controller for mass payment file operations (CRUD, approval). Depends on services, form requests, and resources."
+    ],
+    [
+      "app/Http/Controllers/Api/V1/PaymentInstructionController.php",
+      "Controller for payment instruction queries and status checks. Depends on services and resources."
+    ],
+    [
+      "app/Http/Controllers/Api/V1/TemplateController.php",
+      "Controller for template download functionality. Depends on TemplateService and form requests."
+    ],
+    [
+      "routes/api.php",
+      "API route definitions with versioning, throttling, and middleware. Depends on all controllers."
+    ]
+  ],
+  "Task list": [
+    "database/migrations/2024_01_01_000001_create_mass_payment_files_table.php",
+    "database/migrations/2024_01_01_000002_create_payment_instructions_table.php",
+    "app/Models/MassPaymentFile.php",
+    "app/Models/PaymentInstruction.php",
+    "app/Models/Beneficiary.php",
+    "app/Models/TccAccount.php",
+    "app/Policies/MassPaymentFilePolicy.php",
+    "app/Http/Requests/UploadMassPaymentFileRequest.php",
+    "app/Http/Requests/ApproveMassPaymentFileRequest.php",
+    "app/Http/Requests/DownloadTemplateRequest.php",
+    "config/queue.php",
+    "app/Services/MassPaymentFileService.php",
+    "app/Services/CsvValidationService.php",
+    "app/Services/TemplateService.php",
+    "app/Services/PaymentProcessingService.php",
+    "app/Jobs/ValidateMassPaymentFileJob.php",
+    "app/Jobs/ProcessPaymentInstructionsJob.php",
+    "app/Notifications/PaymentFileApprovalPending.php",
+    "app/Http/Middleware/VolopaAuthMiddleware.php",
+    "app/Http/Resources/MassPaymentFileResource.php",
+    "app/Http/Resources/PaymentInstructionResource.php",
+    "app/Http/Resources/ValidationErrorResource.php",
+    "app/Http/Controllers/Api/V1/MassPaymentFileController.php",
+    "app/Http/Controllers/Api/V1/PaymentInstructionController.php",
+    "app/Http/Controllers/Api/V1/TemplateController.php",
+    "routes/api.php"
+  ],
+  "Full API spec": "openapi: 3.0.0\ninfo:\n  title: Volopa Mass Payments API\n  version: 5.1.0\n  description: RESTful API for bulk payment processing\npaths:\n  /api/v1/mass-payment-files:\n    get:\n      summary: List mass payment files\n      parameters:\n        - name: status\n          in: query\n          schema:\n            type: string\n            enum: [draft, validating, validation_failed, awaiting_approval, approved, processing, completed, failed]\n    post:\n      summary: Upload mass payment file\n      requestBody:\n        content:\n          multipart/form-data:\n            schema:\n              type: object\n              properties:\n                file:\n                  type: string\n                  format: binary\n                currency:\n                  type: string\n                tcc_account_id:\n                  type: string\n  /api/v1/mass-payment-files/{id}:\n    get:\n      summary: Get mass payment file details\n    post:\n      summary: Approve mass payment file\n      parameters:\n        - name: id\n          in: path\n          required: true\n          schema:\n            type: string\n    delete:\n      summary: Delete mass payment file\n  /api/v1/templates/download:\n    get:\n      summary: Download CSV template\n      parameters:\n        - name: currency\n          in: query\n          required: true\n          schema:\n            type: string\n  /api/v1/payment-instructions:\n    get:\n      summary: List payment instructions\n      parameters:\n        - name: mass_payment_file_id\n          in: query\n          schema:\n            type: string",
+  "Shared Knowledge": "Laravel conventions followed: migrations before models, thin controllers with service layer, FormRequest validation with policies, API Resources for consistent JSON responses, queue jobs for async processing. Multi-tenant isolation using client_id global scopes on all models. Currency-specific validation rules: INR requires invoice_number and invoice_date, TRY requires incorporation_number for business recipients.",
+  "Anything UNCLEAR": "Integration details with existing Volopa recipient management system need clarification for template downloads. OAuth2/WSSE authentication middleware implementation specifics required. Notification delivery mechanism (email/database/WebSocket) needs definition. Complete currency-specific validation rules for all supported currencies needed. Approval workflow permissions regarding self-approval restrictions need clarification."
+}

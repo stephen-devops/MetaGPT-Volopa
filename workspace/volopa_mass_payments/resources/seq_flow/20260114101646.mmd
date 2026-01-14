@@ -1,0 +1,62 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant C as Client
+    participant R as Router
+    participant MC as MassPaymentFileController
+    participant FR as UploadMassPaymentFileRequest
+    participant P as MassPaymentFilePolicy
+    participant S as MassPaymentFileService
+    participant M as MassPaymentFile
+    participant Q as Queue
+    participant J as ValidateMassPaymentFileJob
+    participant VS as CsvValidationService
+    participant AR as MassPaymentFileResource
+    
+    C->>R: POST /api/v1/mass-payment-files
+    R->>MC: store(UploadMassPaymentFileRequest)
+    MC->>FR: validate()
+    FR->>P: authorize()
+    P-->>FR: return bool
+    FR-->>MC: validation passed
+    MC->>S: create(data, file)
+    S->>S: validateFileFormat(file)
+    S->>S: storeCsvFile(file)
+    S->>M: create(validated_data)
+    M-->>S: return MassPaymentFile
+    S->>Q: dispatch(ValidateMassPaymentFileJob)
+    S-->>MC: return MassPaymentFile
+    MC->>AR: new MassPaymentFileResource
+    AR-->>MC: return formatted_response
+    MC-->>C: 201 Created with resource
+    
+    Note over Q,J: Async Processing
+    Q->>J: handle()
+    J->>VS: validateCsvRows(filePath, currency)
+    VS->>VS: validatePaymentInstruction(row, currency)
+    VS->>VS: validateCurrencySpecificRules(row, currency)
+    VS-->>J: return validation_results
+    J->>M: update(status, validation_errors)
+    J->>M: createPaymentInstructions(valid_rows)
+    
+    Note over C,MC: Status Check
+    C->>R: GET /api/v1/mass-payment-files/{id}
+    R->>MC: show(id)
+    MC->>P: authorize(view)
+    P-->>MC: return bool
+    MC->>M: find(id)
+    M-->>MC: return MassPaymentFile
+    MC->>AR: new MassPaymentFileResource
+    AR-->>MC: return formatted_response
+    MC-->>C: 200 OK with status
+    
+    Note over C,MC: Approval Flow
+    C->>R: POST /api/v1/mass-payment-files/{id}/approve
+    R->>MC: approve(ApproveMassPaymentFileRequest, id)
+    MC->>P: authorize(approve)
+    P-->>MC: return bool
+    MC->>S: approve(file, user)
+    S->>M: updateStatus('approved')
+    S->>Q: dispatch(ProcessPaymentInstructionsJob)
+    S-->>MC: return bool
+    MC-->>C: 200 OK approval_success

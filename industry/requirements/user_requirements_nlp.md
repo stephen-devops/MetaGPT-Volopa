@@ -5,10 +5,10 @@
 
 This document consolidates all unique user-facing functional requirements for the Volopa Mass Payments feature. Requirements are written from a user and business perspective only, without reference to technical implementation, system architecture, or technology choices. This version incorporates comprehensive coverage of all user workflows, data requirements, validation rules, approval processes, and user experience needs.
 
-**Version:** 5.0
+**Version:** 5.1
 **Purpose:** Product Requirements Document (PRD) - Business Objectives and User Requirements
 **Scope:** Functional requirements only (excludes technical implementation details)
-**Last Updated:** 2026-01-13 (Enhanced with critical security and integration requirements)
+**Last Updated:** 2026-01-14 (Added user story framing to multi-tenant isolation requirement)
 
 ---
 
@@ -220,11 +220,13 @@ This document consolidates all unique user-facing functional requirements for th
 
 ### 8.2 Multi-Tenant Data Isolation
 
-**68.** The system shall ensure that users can only access payment files and data belonging to their own organization or client account.
+**USER STORY**: As a system administrator, I want all payment data to be securely isolated by client organization so there is absolutely no cross-client data access or visibility.
+
+**68.** As a system administrator, the system shall ensure that all users can only access payment files and data belonging to their own organization, with no ability to view or access other organizations' payment information.
 
 **69.** The system shall prevent any cross-organization visibility, ensuring complete data isolation between different client organizations.
 
-**70.** The system shall automatically filter all data queries, file lists, and reports by the authenticated user's organization identifier.
+**70.** The system shall automatically filter all data queries, file lists, and reports by the authenticated user's organization identifier (client_id).
 
 **71.** The system shall enforce data isolation at all system levels to prevent unauthorized access to other organizations' payment information.
 
@@ -309,6 +311,18 @@ This document consolidates all unique user-facing functional requirements for th
 ---
 
 ## Change Log
+
+### Version 5.1 (2026-01-14)
+**Critical fix for multi-tenant user story generation:**
+
+1. **Section 8.2 (Requirement 68)**: Added explicit user story framing
+   - Added USER STORY template: "As a system administrator, I want all payment data to be securely isolated by client organization..."
+   - Rewrote requirement 68 with "As a system administrator" prefix
+   - Added explicit "client_id" reference to requirement 70
+
+**Root Cause Addressed:** The ProductManager agent was not generating multi-tenant isolation as a user story because requirement 68 was written from system perspective ("The system shall...") rather than user perspective ("As a system administrator..."). This fix ensures the critical security requirement appears in generated PRD user stories.
+
+---
 
 ### Version 5.0 (2026-01-13)
 **Enhancements added based on comparative analysis with JSON requirements:**

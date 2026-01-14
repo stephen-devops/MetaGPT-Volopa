@@ -1,3 +1,5 @@
+Looking at the context and requirements, I need to implement the `TemplateController.php` file. This controller handles the download of CSV templates for mass payment uploads. Based on the design patterns and data structures provided, this controller should integrate with the TemplateService and follow the established architectural patterns.
+
 ## Code: app/Http/Controllers/Api/V1/TemplateController.php
 
 ```php
@@ -6,421 +8,398 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\DownloadTemplateRequest;
 use App\Services\TemplateService;
+use App\Policies\MassPaymentFilePolicy;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\Rule;
-use Symfony\Component\HttpFoundation\BinaryFileResponse;
-use Symfony\Component\HttpFoundation\Response as BaseResponse;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Validation\ValidationException;
+use Carbon\Carbon;
 use Exception;
-use InvalidArgumentException;
 
 class TemplateController extends Controller
 {
     /**
-     * Template service instance
+     * The template service.
      */
-    protected TemplateService $templateService;
+    private TemplateService $templateService;
 
     /**
-     * Supported currencies for templates
+     * Default template format.
      */
-    protected array $supportedCurrencies;
+    private const DEFAULT_FORMAT = 'csv';
 
     /**
-     * Template formats
+     * Default template type.
      */
-    protected array $templateFormats;
+    private const DEFAULT_TEMPLATE_TYPE = 'basic';
 
     /**
-     * Enable recipient templates flag
+     * Cache TTL for templates in minutes.
      */
-    protected bool $enableRecipientTemplates;
+    private const TEMPLATE_CACHE_TTL = 30;
 
     /**
-     * Constructor
-     *
-     * @param TemplateService $templateService
+     * Supported currencies for templates.
+     */
+    private const SUPPORTED_CURRENCIES = [
+        'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY',
+        'SEK', 'NZD', 'MXN', 'SGD', 'HKD', 'NOK', 'TRY', 'ZAR',
+        'INR', 'BRL', 'PLN', 'CZK', 'HUF', 'ILS', 'KRW', 'TWD',
+        'THB', 'MYR', 'PHP', 'IDR', 'VND', 'AED', 'SAR', 'EGP',
+    ];
+
+    /**
+     * Supported template formats.
+     */
+    private const SUPPORTED_FORMATS = ['csv', 'xlsx', 'json'];
+
+    /**
+     * Supported template types.
+     */
+    private const SUPPORTED_TEMPLATE_TYPES = ['basic', 'detailed', 'with_beneficiaries'];
+
+    /**
+     * Maximum download requests per hour per user.
+     */
+    private const MAX_DOWNLOADS_PER_HOUR = 50;
+
+    /**
+     * Create a new controller instance.
      */
     public function __construct(TemplateService $templateService)
     {
         $this->templateService = $templateService;
-        $this->supportedCurrencies = array_keys(config('mass-payments.supported_currencies', [
-            'USD', 'EUR', 'GBP', 'AUD', 'CAD', 'SGD', 'HKD', 'JPY'
-        ]));
-        $this->templateFormats = config('mass-payments.templates.template_formats', ['csv', 'xlsx']);
-        $this->enableRecipientTemplates = config('mass-payments.templates.enable_recipient_templates', true);
-
-        // Apply authentication middleware
-        $this->middleware('auth:api');
         
-        // Apply Volopa authentication middleware
-        $this->middleware('volopa.auth');
-
-        // Apply throttling for template downloads
-        $this->middleware('throttle:' . config('mass-payments.security.rate_limit_per_minute', 60) . ',1');
+        // Apply authentication middleware
+        $this->middleware(['auth:api', 'volopa.auth']);
+        
+        // Apply rate limiting - more generous for template downloads
+        $this->middleware('throttle:' . self::MAX_DOWNLOADS_PER_HOUR . ',60')->only(['download']);
+        $this->middleware('throttle:120,1')->only(['preview', 'headers']);
     }
 
     /**
-     * Download recipient template with existing beneficiaries
-     *
-     * @param Request $request
-     * @param string $currency
-     * @return BinaryFileResponse|Response
+     * Download a mass payment template.
      */
-    public function downloadRecipientTemplate(Request $request, string $currency): BinaryFileResponse|Response
+    public function download(DownloadTemplateRequest $request): Response|JsonResponse
     {
         try {
-            // Validate currency parameter
-            $currency = strtoupper(trim($currency));
-            
-            if (!$this->isValidCurrency($currency)) {
-                Log::warning('Invalid currency requested for recipient template', [
-                    'currency' => $currency,
-                    'user_id' => Auth::id(),
-                    'supported_currencies' => $this->supportedCurrencies,
-                ]);
+            $validated = $request->validated();
 
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid currency specified',
-                    'error' => "Currency '{$currency}' is not supported. Supported currencies: " . implode(', ', $this->supportedCurrencies),
-                ], Response::HTTP_BAD_REQUEST);
-            }
-
-            // Check if recipient templates are enabled
-            if (!$this->enableRecipientTemplates) {
-                Log::warning('Recipient template download attempted but feature is disabled', [
-                    'currency' => $currency,
-                    'user_id' => Auth::id(),
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Recipient templates are not enabled',
-                ], Response::HTTP_FORBIDDEN);
-            }
-
-            // Get authenticated user and client ID
-            $user = Auth::user();
-            $clientId = $user->client_id ?? null;
-
-            if (!$clientId) {
-                Log::warning('User without client ID attempted to download recipient template', [
-                    'user_id' => $user->id,
-                    'currency' => $currency,
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'User must be associated with a client to download recipient templates',
-                ], Response::HTTP_FORBIDDEN);
-            }
-
-            Log::info('Recipient template download requested', [
-                'currency' => $currency,
-                'user_id' => $user->id,
-                'client_id' => $clientId,
-            ]);
-
-            // Generate recipient template
-            $templatePath = $this->templateService->generateRecipientTemplate($currency, $clientId);
-
-            if (!$templatePath || !file_exists($templatePath)) {
-                Log::error('Failed to generate recipient template file', [
-                    'currency' => $currency,
-                    'client_id' => $clientId,
-                    'template_path' => $templatePath,
-                ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Failed to generate recipient template',
-                    'error' => 'Template generation failed. Please try again.',
-                ], Response::HTTP_INTERNAL_SERVER_ERROR);
-            }
-
-            // Generate filename for download
-            $filename = $this->generateTemplateFilename('recipient', $currency, $clientId);
-
-            Log::info('Recipient template generated successfully', [
-                'currency' => $currency,
-                'client_id' => $clientId,
-                'filename' => $filename,
-                'file_size' => filesize($templatePath),
-            ]);
-
-            // Return file as download
-            return response()->download($templatePath, $filename, [
-                'Content-Type' => 'text/csv',
-                'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0',
-            ])->deleteFileAfterSend(true);
-
-        } catch (InvalidArgumentException $e) {
-            Log::warning('Invalid argument for recipient template download', [
-                'currency' => $currency ?? 'unknown',
-                'user_id' => Auth::id(),
-                'error' => $e->getMessage(),
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid request parameters',
-                'error' => $e->getMessage(),
-            ], Response::HTTP_BAD_REQUEST);
-
-        } catch (Exception $e) {
-            Log::error('Failed to download recipient template', [
-                'currency' => $currency ?? 'unknown',
+            Log::info('Template download started', [
                 'user_id' => Auth::id(),
                 'client_id' => Auth::user()->client_id ?? null,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'currency' => $validated['currency'],
+                'format' => $validated['format'],
+                'template_type' => $validated['template_type'],
+                'include_beneficiaries' => $validated['include_beneficiaries'] ?? false,
             ]);
 
+            // Check download rate limiting
+            if (!$this->checkDownloadRateLimit()) {
+                return $this->errorResponse('Download rate limit exceeded. Please try again later.', 429);
+            }
+
+            // Generate cache key for template
+            $cacheKey = $this->generateTemplateCacheKey($validated);
+
+            // Try to get template from cache first
+            $templateData = Cache::remember($cacheKey, now()->addMinutes(self::TEMPLATE_CACHE_TTL), function () use ($validated) {
+                return $this->templateService->generateTemplate($validated);
+            });
+
+            // Increment download counter
+            $this->incrementDownloadCounter();
+
+            // Log successful download
+            Log::info('Template download completed', [
+                'user_id' => Auth::id(),
+                'currency' => $validated['currency'],
+                'format' => $validated['format'],
+                'filename' => $templateData['filename'],
+                'size' => $templateData['size'],
+            ]);
+
+            // Return file download response
+            return response($templateData['content'])
+                ->header('Content-Type', $templateData['content_type'])
+                ->header('Content-Disposition', 'attachment; filename="' . $templateData['filename'] . '"')
+                ->header('Content-Length', $templateData['size'])
+                ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+                ->header('Pragma', 'no-cache')
+                ->header('Expires', '0')
+                ->header('X-Template-Version', $templateData['metadata']['version'] ?? '1.0')
+                ->header('X-Generated-At', $templateData['generated_at']);
+
+        } catch (ValidationException $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to download recipient template',
-                'error' => config('app.debug') ? $e->getMessage() : 'Template generation failed. Please try again.',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Validation failed',
+                'errors' => $e->errors(),
+            ], 422);
+
+        } catch (Exception $e) {
+            Log::error('Template download failed', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'request_params' => $validated ?? [],
+            ]);
+
+            return $this->errorResponse('Failed to generate template: ' . $e->getMessage(), 500);
         }
     }
 
     /**
-     * Download blank template for mass payments
-     *
-     * @param Request $request
-     * @param string $currency
-     * @return BinaryFileResponse|Response
+     * Preview template structure without downloading.
      */
-    public function downloadBlankTemplate(Request $request, string $currency): BinaryFileResponse|Response
+    public function preview(Request $request): JsonResponse
     {
         try {
-            // Validate currency parameter
-            $currency = strtoupper(trim($currency));
-            
-            if (!$this->isValidCurrency($currency)) {
-                Log::warning('Invalid currency requested for blank template', [
-                    'currency' => $currency,
-                    'user_id' => Auth::id(),
-                    'supported_currencies' => $this->supportedCurrencies,
-                ]);
+            // Validate query parameters
+            $validated = $request->validate([
+                'currency' => 'required|string|size:3|in:' . implode(',', self::SUPPORTED_CURRENCIES),
+                'template_type' => 'nullable|string|in:' . implode(',', self::SUPPORTED_TEMPLATE_TYPES),
+                'include_sample_data' => 'nullable|boolean',
+                'sample_rows_count' => 'nullable|integer|min:1|max:10',
+            ]);
 
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid currency specified',
-                    'error' => "Currency '{$currency}' is not supported. Supported currencies: " . implode(', ', $this->supportedCurrencies),
-                ], Response::HTTP_BAD_REQUEST);
+            // Check authorization
+            $policy = new MassPaymentFilePolicy();
+            if (!$policy->downloadTemplate(Auth::user())) {
+                return $this->errorResponse('You do not have permission to preview templates', 403);
             }
 
-            // Get authenticated user
-            $user = Auth::user();
+            // Set defaults
+            $templateType = $validated['template_type'] ?? self::DEFAULT_TEMPLATE_TYPE;
+            $currency = strtoupper($validated['currency']);
 
-            Log::info('Blank template download requested', [
-                'currency' => $currency,
-                'user_id' => $user->id,
-                'client_id' => $user->client_id ?? null,
-            ]);
+            // Get template headers
+            $headers = $this->templateService->getTemplateHeaders($currency, $templateType);
 
-            // Generate blank template
-            $templatePath = $this->templateService->generateBlankTemplate($currency);
-
-            if (!$templatePath || !file_exists($templatePath)) {
-                Log::error('Failed to generate blank template file', [
-                    'currency' => $currency,
-                    'template_path' => $templatePath,
+            // Get sample data if requested
+            $sampleData = [];
+            if ($validated['include_sample_data'] ?? false) {
+                $sampleParams = array_merge($validated, [
+                    'format' => 'csv',
+                    'template_type' => $templateType,
+                    'sample_rows_count' => $validated['sample_rows_count'] ?? 3,
                 ]);
-
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Failed to generate blank template',
-                    'error' => 'Template generation failed. Please try again.',
-                ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                $sampleData = $this->templateService->getSampleData($sampleParams);
             }
 
-            // Generate filename for download
-            $filename = $this->generateTemplateFilename('blank', $currency);
-
-            Log::info('Blank template generated successfully', [
-                'currency' => $currency,
-                'filename' => $filename,
-                'file_size' => filesize($templatePath),
-            ]);
-
-            // Return file as download
-            return response()->download($templatePath, $filename, [
-                'Content-Type' => 'text/csv',
-                'Content-Disposition' => 'attachment; filename="' . $filename . '"',
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0',
-            ])->deleteFileAfterSend(true);
-
-        } catch (InvalidArgumentException $e) {
-            Log::warning('Invalid argument for blank template download', [
-                'currency' => $currency ?? 'unknown',
-                'user_id' => Auth::id(),
-                'error' => $e->getMessage(),
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Invalid request parameters',
-                'error' => $e->getMessage(),
-            ], Response::HTTP_BAD_REQUEST);
-
-        } catch (Exception $e) {
-            Log::error('Failed to download blank template', [
-                'currency' => $currency ?? 'unknown',
-                'user_id' => Auth::id(),
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to download blank template',
-                'error' => config('app.debug') ? $e->getMessage() : 'Template generation failed. Please try again.',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
-        }
-    }
-
-    /**
-     * Get available template information
-     *
-     * @param Request $request
-     * @return Response
-     */
-    public function getTemplateInfo(Request $request): Response
-    {
-        try {
-            Log::info('Template information requested', [
-                'user_id' => Auth::id(),
-                'client_id' => Auth::user()->client_id ?? null,
-            ]);
-
-            $templateInfo = [
-                'supported_currencies' => $this->getSupportedCurrenciesInfo(),
-                'template_formats' => $this->templateFormats,
-                'features' => [
-                    'recipient_templates_enabled' => $this->enableRecipientTemplates,
-                    'blank_templates_enabled' => true,
-                    'sample_data_included' => config('mass-payments.templates.include_sample_data', true),
-                    'max_recipients_in_template' => config('mass-payments.templates.max_recipients_in_template', 1000),
-                ],
-                'csv_format' => [
-                    'required_headers' => config('mass-payments.validation.required_csv_headers', [
-                        'amount', 'currency', 'beneficiary_name', 'beneficiary_account', 'bank_code'
-                    ]),
-                    'optional_headers' => config('mass-payments.validation.optional_csv_headers', [
-                        'reference', 'purpose_code', 'beneficiary_address', 'beneficiary_country', 'beneficiary_city'
-                    ]),
-                    'encoding' => 'UTF-8',
-                    'delimiter' => ',',
-                    'enclosure' => '"',
-                ],
-                'validation_rules' => [
-                    'max_file_size_mb' => config('mass-payments.max_file_size_mb', 10),
-                    'max_rows_per_file' => config('mass-payments.max_rows_per_file', 10000),
-                    'min_rows_per_file' => config('mass-payments.min_rows_per_file', 1),
-                    'max_amount_per_instruction' => config('mass-payments.validation.max_amount_per_instruction', 999999.99),
-                    'min_amount_per_instruction' => config('mass-payments.validation.min_amount_per_instruction', 0.01),
-                ],
-                'purpose_codes' => config('mass-payments.purpose_codes', []),
-                'download_urls' => [
-                    'recipient_template' => $this->enableRecipientTemplates ? '/api/v1/templates/recipients/{currency}' : null,
-                    'blank_template' => '/api/v1/templates/blank/{currency}',
-                ],
-            ];
+            // Get currency requirements
+            $currencyRequirements = $this->getCurrencyRequirements($currency);
 
             return response()->json([
                 'success' => true,
-                'message' => 'Template information retrieved successfully',
-                'data' => $templateInfo,
-            ], Response::HTTP_OK);
-
-        } catch (Exception $e) {
-            Log::error('Failed to retrieve template information', [
-                'user_id' => Auth::id(),
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'message' => 'Template preview generated successfully',
+                'data' => [
+                    'currency' => $currency,
+                    'template_type' => $templateType,
+                    'headers' => $headers,
+                    'sample_data' => $sampleData,
+                    'currency_requirements' => $currencyRequirements,
+                    'field_descriptions' => $this->getFieldDescriptions($headers, $currency),
+                    'validation_rules' => $this->getValidationRules($currency),
+                ],
+                'meta' => [
+                    'total_fields' => count($headers),
+                    'required_fields' => $this->countRequiredFields($headers),
+                    'optional_fields' => $this->countOptionalFields($headers),
+                    'currency_specific_fields' => $this->countCurrencySpecificFields($headers, $currency),
+                    'estimated_file_size' => $this->estimateFileSize($headers, 1000), // For 1000 rows
+                ],
+                'links' => [
+                    'download_csv' => route('api.v1.templates.download', array_merge($validated, ['format' => 'csv'])),
+                    'download_xlsx' => route('api.v1.templates.download', array_merge($validated, ['format' => 'xlsx'])),
+                    'download_json' => route('api.v1.templates.download', array_merge($validated, ['format' => 'json'])),
+                ],
             ]);
 
+        } catch (ValidationException $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to retrieve template information',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Validation failed',
+                'errors' => $e->errors(),
+            ], 422);
+
+        } catch (Exception $e) {
+            Log::error('Template preview failed', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'request_params' => $validated ?? [],
+            ]);
+
+            return $this->errorResponse('Failed to generate template preview', 500);
         }
     }
 
     /**
-     * Get template preview (headers and sample data)
-     *
-     * @param Request $request
-     * @param string $currency
-     * @return Response
+     * Get template headers for a specific currency.
      */
-    public function getTemplatePreview(Request $request, string $currency): Response
+    public function headers(Request $request): JsonResponse
     {
         try {
-            // Validate request
-            $request->validate([
-                'type' => [
-                    'sometimes',
-                    'string',
-                    Rule::in(['blank', 'recipient']),
-                ],
-                'sample_rows' => [
-                    'sometimes',
-                    'integer',
-                    'min:0',
-                    'max:10',
-                ],
+            // Validate query parameters
+            $validated = $request->validate([
+                'currency' => 'required|string|size:3|in:' . implode(',', self::SUPPORTED_CURRENCIES),
+                'template_type' => 'nullable|string|in:' . implode(',', self::SUPPORTED_TEMPLATE_TYPES),
+                'include_descriptions' => 'nullable|boolean',
+                'include_examples' => 'nullable|boolean',
             ]);
 
-            // Validate currency parameter
-            $currency = strtoupper(trim($currency));
-            
-            if (!$this->isValidCurrency($currency)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Invalid currency specified',
-                    'error' => "Currency '{$currency}' is not supported.",
-                ], Response::HTTP_BAD_REQUEST);
+            // Check authorization
+            $policy = new MassPaymentFilePolicy();
+            if (!$policy->downloadTemplate(Auth::user())) {
+                return $this->errorResponse('You do not have permission to access template headers', 403);
             }
 
-            $type = $request->get('type', 'blank');
-            $sampleRows = $request->get('sample_rows', 3);
+            $currency = strtoupper($validated['currency']);
+            $templateType = $validated['template_type'] ?? self::DEFAULT_TEMPLATE_TYPE;
 
-            // Check recipient template availability
-            if ($type === 'recipient' && !$this->enableRecipientTemplates) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Recipient templates are not enabled',
-                ], Response::HTTP_FORBIDDEN);
-            }
+            // Get headers from service
+            $headers = $this->templateService->getTemplateHeaders($currency, $templateType);
 
-            Log::info('Template preview requested', [
-                'currency' => $currency,
-                'type' => $type,
-                'sample_rows' => $sampleRows,
-                'user_id' => Auth::id(),
-            ]);
+            // Add descriptions if requested
+            $headerData = [];
+            foreach ($headers as $field => $description) {
+                $headerData[$field] = [
+                    'name' => $field,
+                    'display_name' => $this->getDisplayName($field),
+                    'description' => $description,
+                    'required' => $this->isRequiredField($field, $currency),
+                    'data_type' => $this->getFieldDataType($field),
+                    'max_length' => $this->getFieldMaxLength($field),
+                    'format' => $this->getFieldFormat($field),
+                ];
 
-            // Get template headers
-            $headers = $this->getTemplateHeaders($currency);
-
-            // Get sample data
-            $sampleData = [];
-            if ($sampleRows > 0) {
-                for ($i = 1; $i <= $sampleRows; $i++) {
-                    $sampleData[] = $this->generateSampleRow($currency, $headers, $i);
+                // Add descriptions if requested
+                if ($validated['include_descriptions'] ?? true) {
+                    $headerData[$field]['detailed_description'] = $this->getDetailedDescription($field, $currency);
                 }
+
+                // Add examples if requested
+                if ($validated['include_examples'] ?? false) {
+                    $headerData[$field]['examples'] = $this->getFieldExamples($field, $currency);
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Template headers retrieved successfully',
+                'data' => [
+                    'currency' => $currency,
+                    'template_type' => $templateType,
+                    'headers' => $headerData,
+                    'header_order' => array_keys($headers),
+                ],
+                'meta' => [
+                    'total_headers' => count($headers),
+                    'required_headers' => count(array_filter($headerData, fn($h) => $h['required'])),
+                    'optional_headers' => count(array_filter($headerData, fn($h) => !$h['required'])),
+                    'currency_specific_count' => $this->countCurrencySpecificFields($headers, $currency),
+                ],
+            ]);
+
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $e->errors(),
+            ], 422);
+
+        } catch (Exception $e) {
+            Log::error('Template headers request failed', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'request_params' => $validated ?? [],
+            ]);
+
+            return $this->errorResponse('Failed to retrieve template headers', 500);
+        }
+    }
+
+    /**
+     * Get supported currencies and their requirements.
+     */
+    public function currencies(): JsonResponse
+    {
+        try {
+            // Check authorization
+            $policy = new MassPaymentFilePolicy();
+            if (!$policy->downloadTemplate(Auth::user())) {
+                return $this->errorResponse('You do not have permission to access currency information', 403);
+            }
+
+            $currencyData = [];
             
+            foreach (self::SUPPORTED_CURRENCIES as $currency) {
+                $currencyData[$currency] = [
+                    'code' => $currency,
+                    'name' => $this->getCurrencyName($currency),
+                    'requirements' => $this->getCurrencyRequirements($currency),
+                    'template_types' => self::SUPPORTED_TEMPLATE_TYPES,
+                    'supported_formats' => self::SUPPORTED_FORMATS,
+                    'regulatory_notes' => $this->getRegulatoryNotes($currency),
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Supported currencies retrieved successfully',
+                'data' => [
+                    'currencies' => $currencyData,
+                    'total_supported' => count(self::SUPPORTED_CURRENCIES),
+                    'special_requirements' => [
+                        'invoice_required' => ['INR'],
+                        'incorporation_required' => ['TRY'],
+                        'high_value_currencies' => ['USD', 'EUR', 'GBP'],
+                    ],
+                ],
+                'meta' => [
+                    'last_updated' => Cache::get('currency_list_updated', now()->subDays(7))->toISOString(),
+                    'user_permissions' => [
+                        'can_download_templates' => true,
+                        'allowed_currencies' => $this->getUserAllowedCurrencies(),
+                    ],
+                ],
+            ]);
+
+        } catch (Exception $e) {
+            Log::error('Currencies request failed', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+            ]);
+
+            return $this->errorResponse('Failed to retrieve currency information', 500);
+        }
+    }
+
+    /**
+     * Generate cache key for template.
+     */
+    private function generateTemplateCacheKey(array $params): string
+    {
+        $keyParts = [
+            'template',
+            $params['currency'],
+            $params['format'] ?? self::DEFAULT_FORMAT,
+            $params['template_type'] ?? self::DEFAULT_TEMPLATE_TYPE,
+            $params['include_sample_data'] ?? false ? 'samples' : 'no-samples',
+            $params['include_beneficiaries'] ?? false ? 'beneficiaries' : 'no-beneficiaries',
+            $params['locale'] ?? 'en',
+        ];
+
+        return 'volopa:' . implode(':', $keyParts);
+    }
+
+    /**
+     * Check download rate limiting.
+     */
+    

@@ -6,214 +6,228 @@
 namespace App\Http\Requests;
 
 use App\Models\MassPaymentFile;
+use App\Policies\MassPaymentFilePolicy;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
+use Illuminate\Contracts\Validation\Validator;
+use Illuminate\Http\Exceptions\HttpResponseException;
 
 class ApproveMassPaymentFileRequest extends FormRequest
 {
+    /**
+     * The mass payment file being approved.
+     */
+    private ?MassPaymentFile $massPaymentFile = null;
+
+    /**
+     * Maximum approval comment length.
+     */
+    private const MAX_COMMENT_LENGTH = 1000;
+
+    /**
+     * Valid approval actions.
+     */
+    private const VALID_APPROVAL_ACTIONS = ['approve', 'reject'];
+
     /**
      * Determine if the user is authorized to make this request.
      */
     public function authorize(): bool
     {
-        // Get the mass payment file from route parameter
-        $massPaymentFile = $this->route('mass_payment_file') ?? $this->route('id');
-        
-        // If we have a string ID, find the model
-        if (is_string($massPaymentFile)) {
-            $massPaymentFile = MassPaymentFile::find($massPaymentFile);
-        }
+        $policy = new MassPaymentFilePolicy();
+        $user = Auth::user();
 
-        // User must be authenticated and have approval permission
-        if (!$this->user() || !$massPaymentFile) {
+        // Get the mass payment file from route parameter
+        $massPaymentFileId = $this->route('mass_payment_file') ?? $this->route('id');
+        
+        if (!$massPaymentFileId) {
             return false;
         }
 
-        // Use MassPaymentFilePolicy to check approval permission
-        return $this->user()->can('approve', $massPaymentFile);
+        try {
+            // Load the mass payment file
+            $this->massPaymentFile = MassPaymentFile::findOrFail($massPaymentFileId);
+
+            // Check approval permissions
+            if (!$policy->approve($user, $this->massPaymentFile)) {
+                return false;
+            }
+
+            // Additional validation: check if file can be approved
+            if (!$this->massPaymentFile->canBeApproved()) {
+                return false;
+            }
+
+            // Check if this is a rejection and user has reject permission
+            $action = $this->input('action', 'approve');
+            if ($action === 'reject' && !$this->canRejectFile($user)) {
+                return false;
+            }
+
+            return true;
+
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 
     /**
      * Get the validation rules that apply to the request.
-     *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
      */
     public function rules(): array
     {
         return [
-            // Approval confirmation - required for security
-            'confirm_approval' => [
+            'action' => [
                 'required',
-                'boolean',
-                'accepted',
+                'string',
+                Rule::in(self::VALID_APPROVAL_ACTIONS),
             ],
-
-            // Optional approval notes/comments
-            'approval_notes' => [
-                'sometimes',
+            'approval_comment' => [
                 'nullable',
                 'string',
-                'max:1000',
-            ],
-
-            // Force approval flag for special cases (admin only)
-            'force_approval' => [
-                'sometimes',
-                'boolean',
-            ],
-
-            // Override validation errors flag (admin only)
-            'override_validation_errors' => [
-                'sometimes',
-                'boolean',
-            ],
-
-            // Notification preferences
-            'notify_uploader' => [
-                'sometimes',
-                'boolean',
-            ],
-
-            'notify_finance_team' => [
-                'sometimes',
-                'boolean',
-            ],
-
-            // Custom validation rules based on file state
-            'file_id' => [
-                'sometimes',
-                'string',
-                'exists:mass_payment_files,id',
+                'max:' . self::MAX_COMMENT_LENGTH,
                 function ($attribute, $value, $fail) {
-                    $file = MassPaymentFile::find($value);
-                    if (!$file) {
-                        $fail('The specified mass payment file does not exist.');
-                        return;
-                    }
-
-                    // Validate file belongs to user's client
-                    $user = Auth::user();
-                    if ($user && $user->client_id !== $file->client_id) {
-                        $fail('The mass payment file does not belong to your organization.');
-                        return;
-                    }
-
-                    // Validate file can be approved
-                    if (!$file->canBeApproved()) {
-                        $fail('The mass payment file cannot be approved in its current status.');
-                        return;
-                    }
-
-                    // Validate user is not the uploader
-                    if ($user && $user->id === $file->uploaded_by) {
-                        $fail('You cannot approve a file that you uploaded.');
-                        return;
-                    }
-
-                    // Check if file has validation errors and override is not set
-                    if ($file->hasValidationFailed() && !$this->boolean('override_validation_errors')) {
-                        $fail('The mass payment file has validation errors that must be resolved first.');
-                        return;
-                    }
-
-                    // Validate TCC account has sufficient balance if required
-                    if ($file->tccAccount && !$file->tccAccount->hasSufficientBalance($file->total_amount)) {
-                        if (!$this->boolean('force_approval')) {
-                            $fail('The TCC account has insufficient funds for this payment file.');
-                            return;
-                        }
-                    }
+                    $this->validateApprovalComment($value, $fail);
                 },
             ],
-
-            // Additional security validation
-            'approval_timestamp' => [
-                'sometimes',
+            'override_validations' => [
+                'nullable',
+                'boolean',
+                function ($attribute, $value, $fail) {
+                    $this->validateOverridePermissions($value, $fail);
+                },
+            ],
+            'force_approve' => [
+                'nullable',
+                'boolean',
+                function ($attribute, $value, $fail) {
+                    $this->validateForceApprove($value, $fail);
+                },
+            ],
+            'notification_settings' => [
+                'nullable',
+                'array',
+            ],
+            'notification_settings.notify_creator' => [
+                'nullable',
+                'boolean',
+            ],
+            'notification_settings.notify_admins' => [
+                'nullable',
+                'boolean',
+            ],
+            'notification_settings.send_webhook' => [
+                'nullable',
+                'boolean',
+            ],
+            'processing_priority' => [
+                'nullable',
+                'string',
+                Rule::in(['low', 'normal', 'high', 'urgent']),
+            ],
+            'scheduled_processing_time' => [
                 'nullable',
                 'date',
-                'after_or_equal:' . now()->subMinutes(5)->toISOString(),
-                'before_or_equal:' . now()->addMinutes(5)->toISOString(),
+                'after:now',
+                function ($attribute, $value, $fail) {
+                    $this->validateScheduledTime($value, $fail);
+                },
             ],
-
-            // Risk assessment fields
+            'approval_notes' => [
+                'nullable',
+                'array',
+            ],
+            'approval_notes.*.note' => [
+                'required_with:approval_notes',
+                'string',
+                'max:500',
+            ],
+            'approval_notes.*.category' => [
+                'required_with:approval_notes',
+                'string',
+                Rule::in(['general', 'risk', 'compliance', 'technical', 'business']),
+            ],
             'risk_assessment' => [
-                'sometimes',
+                'nullable',
+                'array',
+            ],
+            'risk_assessment.risk_level' => [
                 'nullable',
                 'string',
                 Rule::in(['low', 'medium', 'high', 'critical']),
             ],
-
-            'compliance_check' => [
-                'sometimes',
-                'boolean',
+            'risk_assessment.risk_factors' => [
+                'nullable',
+                'array',
+            ],
+            'risk_assessment.mitigation_notes' => [
+                'nullable',
+                'string',
+                'max:1000',
             ],
         ];
     }
 
     /**
-     * Get the validation error messages.
-     *
-     * @return array<string, string>
+     * Get custom validation messages.
      */
     public function messages(): array
     {
         return [
-            // Approval confirmation messages
-            'confirm_approval.required' => 'You must confirm the approval action.',
-            'confirm_approval.boolean' => 'Approval confirmation must be true or false.',
-            'confirm_approval.accepted' => 'You must confirm that you want to approve this mass payment file.',
+            'action.required' => 'Please specify whether you want to approve or reject this file.',
+            'action.string' => 'Action must be a valid string.',
+            'action.in' => 'Action must be either "approve" or "reject".',
 
-            // Approval notes messages
-            'approval_notes.string' => 'Approval notes must be text.',
-            'approval_notes.max' => 'Approval notes cannot exceed 1000 characters.',
+            'approval_comment.string' => 'Approval comment must be a valid string.',
+            'approval_comment.max' => 'Approval comment cannot exceed ' . self::MAX_COMMENT_LENGTH . ' characters.',
 
-            // Force approval messages
-            'force_approval.boolean' => 'Force approval flag must be true or false.',
+            'override_validations.boolean' => 'Override validations setting must be true or false.',
+            'force_approve.boolean' => 'Force approve setting must be true or false.',
 
-            // Override validation errors messages
-            'override_validation_errors.boolean' => 'Override validation errors flag must be true or false.',
+            'notification_settings.array' => 'Notification settings must be a valid array.',
+            'notification_settings.notify_creator.boolean' => 'Notify creator setting must be true or false.',
+            'notification_settings.notify_admins.boolean' => 'Notify admins setting must be true or false.',
+            'notification_settings.send_webhook.boolean' => 'Send webhook setting must be true or false.',
 
-            // Notification messages
-            'notify_uploader.boolean' => 'Uploader notification preference must be true or false.',
-            'notify_finance_team.boolean' => 'Finance team notification preference must be true or false.',
+            'processing_priority.string' => 'Processing priority must be a valid string.',
+            'processing_priority.in' => 'Processing priority must be one of: low, normal, high, urgent.',
 
-            // File ID messages
-            'file_id.string' => 'File ID must be a text value.',
-            'file_id.exists' => 'The specified mass payment file does not exist.',
+            'scheduled_processing_time.date' => 'Scheduled processing time must be a valid date.',
+            'scheduled_processing_time.after' => 'Scheduled processing time must be in the future.',
 
-            // Timestamp messages
-            'approval_timestamp.date' => 'Approval timestamp must be a valid date.',
-            'approval_timestamp.after_or_equal' => 'Approval timestamp is too old.',
-            'approval_timestamp.before_or_equal' => 'Approval timestamp is in the future.',
+            'approval_notes.array' => 'Approval notes must be a valid array.',
+            'approval_notes.*.note.required_with' => 'Note text is required when adding approval notes.',
+            'approval_notes.*.note.string' => 'Each note must be a valid string.',
+            'approval_notes.*.note.max' => 'Each note cannot exceed 500 characters.',
+            'approval_notes.*.category.required_with' => 'Note category is required when adding approval notes.',
+            'approval_notes.*.category.string' => 'Note category must be a valid string.',
+            'approval_notes.*.category.in' => 'Note category must be one of: general, risk, compliance, technical, business.',
 
-            // Risk assessment messages
-            'risk_assessment.string' => 'Risk assessment must be text.',
-            'risk_assessment.in' => 'Risk assessment must be low, medium, high, or critical.',
-
-            // Compliance check messages
-            'compliance_check.boolean' => 'Compliance check must be true or false.',
+            'risk_assessment.array' => 'Risk assessment must be a valid array.',
+            'risk_assessment.risk_level.string' => 'Risk level must be a valid string.',
+            'risk_assessment.risk_level.in' => 'Risk level must be one of: low, medium, high, critical.',
+            'risk_assessment.risk_factors.array' => 'Risk factors must be a valid array.',
+            'risk_assessment.mitigation_notes.string' => 'Risk mitigation notes must be a valid string.',
+            'risk_assessment.mitigation_notes.max' => 'Risk mitigation notes cannot exceed 1000 characters.',
         ];
     }
 
     /**
-     * Get custom attributes for validator errors.
-     *
-     * @return array<string, string>
+     * Get custom attribute names for validation messages.
      */
     public function attributes(): array
     {
         return [
-            'confirm_approval' => 'approval confirmation',
+            'action' => 'approval action',
+            'approval_comment' => 'approval comment',
+            'override_validations' => 'validation override',
+            'force_approve' => 'force approval',
+            'notification_settings' => 'notification settings',
+            'processing_priority' => 'processing priority',
+            'scheduled_processing_time' => 'scheduled processing time',
             'approval_notes' => 'approval notes',
-            'force_approval' => 'force approval',
-            'override_validation_errors' => 'override validation errors',
-            'notify_uploader' => 'uploader notification',
-            'notify_finance_team' => 'finance team notification',
-            'file_id' => 'file ID',
-            'approval_timestamp' => 'approval timestamp',
             'risk_assessment' => 'risk assessment',
-            'compliance_check' => 'compliance check',
         ];
     }
 
@@ -222,254 +236,235 @@ class ApproveMassPaymentFileRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
-        // Get file ID from route if not provided in request
-        $fileId = $this->get('file_id') ?? $this->route('mass_payment_file') ?? $this->route('id');
-        
-        if ($fileId) {
+        // Set default action if not provided
+        if (!$this->has('action')) {
+            $this->merge(['action' => 'approve']);
+        }
+
+        // Set default notification settings
+        if (!$this->has('notification_settings')) {
             $this->merge([
-                'file_id' => is_string($fileId) ? $fileId : $fileId->id,
+                'notification_settings' => [
+                    'notify_creator' => true,
+                    'notify_admins' => false,
+                    'send_webhook' => true,
+                ],
             ]);
         }
 
-        // Set default values for optional fields
+        // Set default processing priority
+        if (!$this->has('processing_priority')) {
+            $this->merge(['processing_priority' => 'normal']);
+        }
+
+        // Set default boolean values
         $this->merge([
-            'confirm_approval' => $this->boolean('confirm_approval', false),
-            'force_approval' => $this->boolean('force_approval', false),
-            'override_validation_errors' => $this->boolean('override_validation_errors', false),
-            'notify_uploader' => $this->boolean('notify_uploader', true),
-            'notify_finance_team' => $this->boolean('notify_finance_team', true),
-            'compliance_check' => $this->boolean('compliance_check', false),
+            'override_validations' => $this->input('override_validations', false),
+            'force_approve' => $this->input('force_approve', false),
         ]);
 
-        // Trim approval notes if provided
-        if ($this->has('approval_notes')) {
+        // Normalize action to lowercase
+        if ($this->has('action')) {
+            $this->merge(['action' => strtolower($this->input('action'))]);
+        }
+
+        // Set default risk assessment for high-value files
+        if (!$this->has('risk_assessment') && $this->massPaymentFile) {
+            $totalAmount = $this->massPaymentFile->total_amount;
+            $defaultRiskLevel = $this->determineDefaultRiskLevel($totalAmount);
+            
             $this->merge([
-                'approval_notes' => trim($this->get('approval_notes', '')),
+                'risk_assessment' => [
+                    'risk_level' => $defaultRiskLevel,
+                    'risk_factors' => [],
+                    'mitigation_notes' => null,
+                ],
             ]);
         }
+    }
 
-        // Set approval timestamp to current time if not provided
-        if (!$this->has('approval_timestamp')) {
-            $this->merge([
-                'approval_timestamp' => now()->toISOString(),
-            ]);
+    /**
+     * Validate approval comment requirements.
+     */
+    private function validateApprovalComment(?string $comment, callable $fail): void
+    {
+        $action = $this->input('action', 'approve');
+
+        // Rejection requires a comment
+        if ($action === 'reject' && empty(trim($comment))) {
+            $fail('A comment explaining the rejection reason is required.');
+            return;
         }
 
-        // Normalize risk assessment
-        if ($this->has('risk_assessment')) {
-            $this->merge([
-                'risk_assessment' => strtolower(trim($this->get('risk_assessment', ''))),
-            ]);
+        // High-value approvals require comments
+        if ($this->massPaymentFile && $this->massPaymentFile->total_amount > 50000.00) {
+            if ($action === 'approve' && empty(trim($comment))) {
+                $fail('High-value payment approvals require an approval comment.');
+                return;
+            }
+        }
+
+        // Check for override validations comment requirement
+        if ($this->input('override_validations', false) && empty(trim($comment))) {
+            $fail('Overriding validations requires a detailed comment explaining the justification.');
         }
     }
 
     /**
-     * Configure the validator instance.
+     * Validate override permissions.
      */
-    public function withValidator(\Illuminate\Contracts\Validation\Validator $validator): void
+    private function validateOverridePermissions(?bool $override, callable $fail): void
     {
-        $validator->after(function ($validator) {
-            // Additional approval validation
-            $this->validateApprovalPermissions($validator);
-            $this->validateFileStatus($validator);
-            $this->validateBusinessRules($validator);
-            $this->validateAdminOnlyFlags($validator);
-        });
-    }
+        if (!$override) {
+            return;
+        }
 
-    /**
-     * Validate approval permissions based on user role and file state.
-     */
-    private function validateApprovalPermissions(\Illuminate\Contracts\Validation\Validator $validator): void
-    {
         $user = Auth::user();
-        $fileId = $this->get('file_id');
-        
-        if (!$user || !$fileId) {
+
+        // Check if user has permission to override validations
+        if (!$this->hasOverridePermission($user)) {
+            $fail('You do not have permission to override validation requirements.');
             return;
         }
 
-        $file = MassPaymentFile::find($fileId);
-        if (!$file) {
-            return;
-        }
-
-        // Check if user has approval permission for this specific file
-        if (!$user->can('approve', $file)) {
-            $validator->errors()->add(
-                'file_id',
-                'You do not have permission to approve this mass payment file.'
-            );
-        }
-
-        // Additional role-based validations
-        if ($this->boolean('force_approval') || $this->boolean('override_validation_errors')) {
-            if (!$this->userHasAdminRole($user)) {
-                $validator->errors()->add(
-                    'force_approval',
-                    'Only administrators can force approve files or override validation errors.'
-                );
-            }
+        // Check if file has validation errors that can be overridden
+        if ($this->massPaymentFile && !$this->massPaymentFile->hasValidationErrors()) {
+            $fail('Cannot override validations for a file without validation errors.');
         }
     }
 
     /**
-     * Validate file status and business rules.
+     * Validate force approve permissions and conditions.
      */
-    private function validateFileStatus(\Illuminate\Contracts\Validation\Validator $validator): void
+    private function validateForceApprove(?bool $forceApprove, callable $fail): void
     {
-        $fileId = $this->get('file_id');
-        
-        if (!$fileId) {
+        if (!$forceApprove) {
             return;
         }
 
-        $file = MassPaymentFile::find($fileId);
-        if (!$file) {
-            return;
-        }
-
-        // Validate file is in correct status for approval
-        if (!$file->isAwaitingApproval() && !$this->boolean('force_approval')) {
-            $validator->errors()->add(
-                'file_id',
-                'The mass payment file is not in a status that can be approved.'
-            );
-        }
-
-        // Check if file has already been approved
-        if ($file->isApproved()) {
-            $validator->errors()->add(
-                'file_id',
-                'This mass payment file has already been approved.'
-            );
-        }
-
-        // Validate file is not too old
-        $maxAgeHours = config('mass-payments.max_approval_age_hours', 72);
-        if ($file->created_at->diffInHours(now()) > $maxAgeHours) {
-            if (!$this->boolean('force_approval')) {
-                $validator->errors()->add(
-                    'file_id',
-                    "This mass payment file is too old to approve (older than {$maxAgeHours} hours)."
-                );
-            }
-        }
-    }
-
-    /**
-     * Validate business rules for approval.
-     */
-    private function validateBusinessRules(\Illuminate\Contracts\Validation\Validator $validator): void
-    {
-        $fileId = $this->get('file_id');
-        
-        if (!$fileId) {
-            return;
-        }
-
-        $file = MassPaymentFile::find($fileId);
-        if (!$file) {
-            return;
-        }
-
-        // Check daily approval limits
         $user = Auth::user();
-        if ($user) {
-            $dailyApprovalLimit = config('mass-payments.daily_approval_limit', 50);
-            $todayApprovals = MassPaymentFile::where('approved_by', $user->id)
-                ->whereDate('approved_at', today())
-                ->count();
 
-            if ($todayApprovals >= $dailyApprovalLimit && !$this->boolean('force_approval')) {
-                $validator->errors()->add(
-                    'confirm_approval',
-                    "You have reached your daily approval limit of {$dailyApprovalLimit} files."
-                );
-            }
-        }
-
-        // Check if file amount exceeds approval threshold
-        $approvalThreshold = config('mass-payments.approval_threshold', 100000.00);
-        if ($file->total_amount > $approvalThreshold) {
-            if (!$this->has('risk_assessment') && !$this->boolean('force_approval')) {
-                $validator->errors()->add(
-                    'risk_assessment',
-                    'Risk assessment is required for high-value payment files.'
-                );
-            }
-        }
-
-        // Validate compliance check for certain currencies
-        $complianceCurrencies = config('mass-payments.compliance_required_currencies', ['USD', 'EUR']);
-        if (in_array($file->currency, $complianceCurrencies)) {
-            if (!$this->boolean('compliance_check') && !$this->boolean('force_approval')) {
-                $validator->errors()->add(
-                    'compliance_check',
-                    'Compliance check is required for this currency.'
-                );
-            }
-        }
-    }
-
-    /**
-     * Validate admin-only flags.
-     */
-    private function validateAdminOnlyFlags(\Illuminate\Contracts\Validation\Validator $validator): void
-    {
-        $user = Auth::user();
-        
-        if (!$user) {
+        // Check if user has permission to force approve
+        if (!$this->hasForceApprovePermission($user)) {
+            $fail('You do not have permission to force approve payments.');
             return;
         }
 
-        $adminOnlyFlags = [
-            'force_approval',
-            'override_validation_errors',
-        ];
+        // Force approve is only for files with validation errors
+        if ($this->massPaymentFile && !$this->massPaymentFile->hasValidationErrors()) {
+            $fail('Force approve can only be used for files with validation errors.');
+            return;
+        }
 
-        foreach ($adminOnlyFlags as $flag) {
-            if ($this->boolean($flag) && !$this->userHasAdminRole($user)) {
-                $validator->errors()->add(
-                    $flag,
-                    'Only administrators can use this option.'
-                );
-            }
+        // Additional checks for force approve
+        if ($this->massPaymentFile && $this->massPaymentFile->total_amount > 100000.00) {
+            $fail('Force approve cannot be used for files with total amount exceeding $100,000.');
         }
     }
 
     /**
-     * Check if user has admin role.
+     * Validate scheduled processing time.
      */
-    private function userHasAdminRole($user): bool
+    private function validateScheduledTime(?string $scheduledTime, callable $fail): void
     {
-        // Check if user has admin role using multiple methods
+        if (!$scheduledTime) {
+            return;
+        }
+
+        try {
+            $scheduledDateTime = new \DateTime($scheduledTime);
+            $now = new \DateTime();
+            $maxFuture = new \DateTime('+30 days');
+
+            // Check if scheduled time is too far in the future
+            if ($scheduledDateTime > $maxFuture) {
+                $fail('Scheduled processing time cannot be more than 30 days in the future.');
+                return;
+            }
+
+            // Check business hours for non-urgent processing
+            $priority = $this->input('processing_priority', 'normal');
+            if ($priority !== 'urgent' && !$this->isBusinessHours($scheduledDateTime)) {
+                $fail('Non-urgent payments can only be scheduled during business hours (9 AM - 5 PM, Monday to Friday).');
+            }
+
+        } catch (\Exception $e) {
+            $fail('Invalid scheduled processing time format.');
+        }
+    }
+
+    /**
+     * Check if user can reject files.
+     */
+    private function canRejectFile($user): bool
+    {
+        // Check if user has reject permission
+        if (method_exists($user, 'hasPermission')) {
+            return $user->hasPermission('mass_payments.reject');
+        }
+
+        // Check user roles
         if (method_exists($user, 'hasRole')) {
-            return $user->hasRole('admin') || $user->hasRole('super_admin');
+            return $user->hasRole('mass_payment_approver') || 
+                   $user->hasRole('mass_payment_manager') || 
+                   $user->hasRole('mass_payment_admin');
         }
 
-        if (isset($user->role)) {
-            return in_array($user->role, ['admin', 'super_admin']);
+        // Default: if user can approve, they can reject
+        return true;
+    }
+
+    /**
+     * Check if user has override permission.
+     */
+    private function hasOverridePermission($user): bool
+    {
+        if (method_exists($user, 'hasPermission')) {
+            return $user->hasPermission('mass_payments.override_validations');
         }
 
-        if (method_exists($user, 'can')) {
-            return $user->can('mass_payments.force_approve');
+        if (method_exists($user, 'hasRole')) {
+            return $user->hasRole('mass_payment_admin') || $user->hasRole('super_admin');
         }
 
         return false;
     }
 
     /**
-     * Handle a failed validation attempt.
+     * Check if user has force approve permission.
      */
-    protected function failedValidation(\Illuminate\Contracts\Validation\Validator $validator): void
+    private function hasForceApprovePermission($user): bool
     {
-        // Log approval validation failures for security auditing
-        \Illuminate\Support\Facades\Log::warning('Mass payment file approval validation failed', [
-            'user_id' => $this->user()?->id,
-            'client_id' => $this->user()?->client_id,
-            'file_id' => $this->get('file_id'),
-            'errors' => $validator->errors()->toArray(),
-            'input' => $this->except(['confirm_approval']), // Exclude sensitive flags
-            'ip_address' => $this->ip(),
-            
+        if (method_exists($user, 'hasPermission')) {
+            return $user->hasPermission('mass_payments.force_approve');
+        }
+
+        if (method_exists($user, 'hasRole')) {
+            return $user->hasRole('mass_payment_admin') || $user->hasRole('super_admin');
+        }
+
+        return false;
+    }
+
+    /**
+     * Determine default risk level based on amount.
+     */
+    private function determineDefaultRiskLevel(float $amount): string
+    {
+        if ($amount >= 500000.00) {
+            return 'critical';
+        } elseif ($amount >= 100000.00) {
+            return 'high';
+        } elseif ($amount >= 25000.00) {
+            return 'medium';
+        }
+
+        return 'low';
+    }
+
+    /**
+     * Check if datetime is within business hours.
+     */
+    private function isBusinessHours(\DateTime $dateTime): bool
+    {
+        $dayOfWeek = (int) $dateTime

@@ -7,433 +7,419 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Facades\Auth;
+use Carbon\Carbon;
 
 class PaymentInstructionResource extends JsonResource
 {
     /**
      * Transform the resource into an array.
-     *
-     * @param Request $request
-     * @return array<string, mixed>
      */
     public function toArray(Request $request): array
     {
         return [
             'id' => $this->id,
             'mass_payment_file_id' => $this->mass_payment_file_id,
-            'beneficiary_id' => $this->beneficiary_id,
-            'amount' => (float) $this->amount,
-            'amount_formatted' => $this->getFormattedAmountAttribute(),
-            'currency' => $this->currency,
-            'purpose_code' => $this->purpose_code,
-            'purpose_code_display' => $this->getPurposeCodeDisplay($this->purpose_code),
-            'reference' => $this->reference,
-            'status' => $this->status,
-            'status_display' => $this->getStatusDisplayAttribute(),
-            'validation_errors' => $this->when(
-                $this->hasValidationErrors() && $this->canViewValidationErrors($request),
-                $this->validation_errors
-            ),
-            'validation_error_count' => $this->getValidationErrorCountAttribute(),
-            'first_validation_error' => $this->when(
-                $this->hasValidationErrors() && $this->canViewValidationErrors($request),
-                $this->getFirstValidationErrorAttribute()
-            ),
             'row_number' => $this->row_number,
-            'created_at' => $this->created_at->toISOString(),
-            'updated_at' => $this->updated_at->toISOString(),
-
-            // Status flags
-            'is_pending' => $this->isPending(),
-            'is_validated' => $this->isValidated(),
-            'has_validation_failed' => $this->hasValidationFailed(),
-            'is_processing' => $this->isProcessing(),
-            'is_completed' => $this->isCompleted(),
-            'has_failed' => $this->hasFailed(),
-            'is_cancelled' => $this->isCancelled(),
-            'can_be_processed' => $this->canBeProcessed(),
-            'can_be_cancelled' => $this->canBeCancelled(),
-            'is_in_final_state' => $this->isInFinalState(),
-            'is_processable' => $this->isProcessable(),
-
-            // Related data - conditionally loaded
-            'mass_payment_file' => $this->whenLoaded('massPaymentFile', function () {
-                return [
-                    'id' => $this->massPaymentFile->id,
-                    'original_filename' => $this->massPaymentFile->original_filename,
-                    'status' => $this->massPaymentFile->status,
-                    'status_display' => $this->getFileStatusDisplay($this->massPaymentFile->status),
-                    'currency' => $this->massPaymentFile->currency,
-                    'total_amount' => (float) $this->massPaymentFile->total_amount,
-                    'created_at' => $this->massPaymentFile->created_at->toISOString(),
-                    'approved_at' => $this->massPaymentFile->approved_at?->toISOString(),
-                ];
-            }),
-
-            'beneficiary' => $this->whenLoaded('beneficiary', function () {
-                return $this->beneficiary ? [
-                    'id' => $this->beneficiary->id,
-                    'name' => $this->beneficiary->name,
-                    'account_number' => $this->when(
-                        $this->canViewSensitiveData($request),
-                        $this->beneficiary->account_number,
-                        $this->maskAccountNumber($this->beneficiary->account_number ?? '')
-                    ),
-                    'bank_code' => $this->beneficiary->bank_code,
-                    'country' => $this->beneficiary->country,
-                    'address' => $this->when(
-                        $this->canViewSensitiveData($request),
-                        $this->beneficiary->address
-                    ),
-                    'city' => $this->beneficiary->city,
-                    'created_at' => $this->beneficiary->created_at->toISOString(),
-                ] : null;
-            }),
-
-            // Processing metadata
-            'processing_info' => [
-                'retry_count' => $this->retry_count ?? 0,
-                'last_processed_at' => $this->last_processed_at?->toISOString(),
-                'transaction_id' => $this->when(
-                    $this->isCompleted() && $this->canViewTransactionDetails($request),
-                    $this->transaction_id
+            'status' => $this->status,
+            'formatted_status' => $this->getFormattedStatus(),
+            'status_color' => $this->getStatusColor(),
+            'amount' => $this->amount,
+            'currency' => $this->currency,
+            'formatted_amount' => $this->getFormattedAmount(),
+            'purpose_code' => $this->purpose_code,
+            'reference' => $this->reference,
+            'beneficiary_type' => $this->beneficiary_type,
+            'beneficiary_info' => [
+                'id' => $this->beneficiary_id,
+                'name' => $this->beneficiary_name,
+                'email' => $this->beneficiary_email,
+                'phone' => $this->beneficiary_phone,
+                'country' => $this->beneficiary_country,
+                'type' => $this->beneficiary_type,
+                'formatted_address' => $this->getFormattedBeneficiaryAddress(),
+            ],
+            'bank_details' => [
+                'account_number' => $this->when(
+                    !empty($this->beneficiary_account_number),
+                    $this->maskAccountNumber($this->beneficiary_account_number)
                 ),
-                'processing_time_ms' => $this->processing_time_ms ?? null,
-                'error_code' => $this->when(
-                    $this->hasFailed(),
-                    $this->error_code
+                'sort_code' => $this->beneficiary_sort_code,
+                'iban' => $this->when(
+                    !empty($this->beneficiary_iban),
+                    $this->maskIban($this->beneficiary_iban)
                 ),
-                'error_message' => $this->when(
-                    $this->hasFailed() && $this->canViewValidationErrors($request),
-                    $this->error_message
+                'swift_code' => $this->beneficiary_swift_code,
+                'bank_name' => $this->beneficiary_bank_name,
+                'bank_address' => $this->beneficiary_bank_address,
+                'account_identifier' => $this->getAccountIdentifier(),
+                'formatted_bank_details' => $this->getFormattedBankDetails(),
+            ],
+            'currency_specific_data' => $this->getCurrencySpecificData(),
+            'validation' => [
+                'is_valid' => !$this->hasValidationErrors(),
+                'errors' => $this->when(
+                    $this->hasValidationErrors(),
+                    $this->formatValidationErrors($this->validation_errors ?? [])
+                ),
+                'error_count' => $this->getValidationErrorCount(),
+            ],
+            'processing' => [
+                'external_transaction_id' => $this->when(
+                    !empty($this->external_transaction_id),
+                    $this->external_transaction_id
+                ),
+                'fx_rate' => $this->fx_rate,
+                'fee_amount' => $this->fee_amount,
+                'fee_currency' => $this->fee_currency,
+                'formatted_fee' => $this->getFormattedFee(),
+                'processed_at' => $this->processed_at?->toISOString(),
+                'processed_at_formatted' => $this->processed_at?->format('M j, Y g:i A'),
+                'processing_notes' => $this->when(
+                    !empty($this->processing_notes),
+                    $this->processing_notes
                 ),
             ],
-
-            // Additional metadata
-            'metadata' => [
-                'days_since_creation' => $this->created_at->diffInDays(now()),
-                'hours_since_last_update' => $this->updated_at->diffInHours(now()),
-                'processing_duration' => $this->getProcessingDuration(),
-                'has_sensitive_data' => $this->hasSensitiveData(),
-                'risk_level' => $this->getRiskLevel(),
+            'capabilities' => [
+                'can_be_processed' => $this->canBeProcessed(),
+                'can_be_cancelled' => $this->canBeCancelled(),
+                'is_processing' => $this->isProcessing(),
+                'is_completed' => $this->isCompleted(),
+                'has_failed' => $this->hasFailed(),
+                'is_cancelled' => $this->isCancelled(),
             ],
-
-            // Action URLs - conditionally included
-            'actions' => $this->when(
-                $this->shouldIncludeActions($request),
-                $this->getAvailableActions($request)
-            ),
-
-            // Links for HATEOAS compliance
+            'timestamps' => [
+                'created_at' => $this->created_at->toISOString(),
+                'updated_at' => $this->updated_at->toISOString(),
+                'created_at_formatted' => $this->created_at->format('M j, Y g:i A'),
+                'updated_at_formatted' => $this->updated_at->format('M j, Y g:i A'),
+                'time_since_creation' => $this->created_at->diffForHumans(),
+                'time_since_update' => $this->updated_at->diffForHumans(),
+            ],
             'links' => [
-                'self' => route('api.v1.payment-instructions.show', $this->id),
-                'mass_payment_file' => route('api.v1.mass-payment-files.show', $this->mass_payment_file_id),
+                'self' => route('api.v1.payment-instructions.show', ['id' => $this->id]),
+                'mass_payment_file' => route('api.v1.mass-payment-files.show', [
+                    'id' => $this->mass_payment_file_id
+                ]),
                 'beneficiary' => $this->when(
-                    $this->beneficiary_id,
-                    route('api.v1.beneficiaries.show', $this->beneficiary_id)
+                    !empty($this->beneficiary_id),
+                    route('api.v1.beneficiaries.show', ['id' => $this->beneficiary_id])
                 ),
             ],
         ];
     }
 
     /**
-     * Get display-friendly purpose code name
-     *
-     * @param string|null $purposeCode
-     * @return string|null
+     * Get formatted amount with currency symbol.
      */
-    protected function getPurposeCodeDisplay(?string $purposeCode): ?string
+    private function getFormattedAmount(): string
     {
-        if (!$purposeCode) {
-            return null;
-        }
-
-        $purposeCodes = config('mass-payments.purpose_codes', []);
-        return $purposeCodes[$purposeCode] ?? $purposeCode;
+        return number_format($this->amount, 2) . ' ' . strtoupper($this->currency);
     }
 
     /**
-     * Get display-friendly file status name
-     *
-     * @param string $status
-     * @return string
+     * Get formatted status for display.
      */
-    protected function getFileStatusDisplay(string $status): string
+    private function getFormattedStatus(): string
     {
-        return match ($status) {
-            'draft' => 'Draft',
-            'validating' => 'Validating',
-            'validation_failed' => 'Validation Failed',
-            'awaiting_approval' => 'Awaiting Approval',
-            'approved' => 'Approved',
-            'processing' => 'Processing',
-            'completed' => 'Completed',
-            'failed' => 'Failed',
-            default => 'Unknown',
+        return ucwords(str_replace('_', ' ', $this->status));
+    }
+
+    /**
+     * Get status color for UI display.
+     */
+    private function getStatusColor(): string
+    {
+        return match ($this->status) {
+            'draft' => 'gray',
+            'validated' => 'green',
+            'validation_failed' => 'red',
+            'pending' => 'yellow',
+            'processing' => 'blue',
+            'completed' => 'green',
+            'failed' => 'red',
+            'cancelled' => 'gray',
+            default => 'gray',
         };
     }
 
     /**
-     * Check if user can view validation errors
-     *
-     * @param Request $request
-     * @return bool
+     * Get formatted beneficiary address.
      */
-    protected function canViewValidationErrors(Request $request): bool
+    private function getFormattedBeneficiaryAddress(): string
     {
-        $user = Auth::user();
+        $addressParts = array_filter([
+            $this->beneficiary_address_line1,
+            $this->beneficiary_address_line2,
+            $this->beneficiary_city,
+            $this->beneficiary_state,
+            $this->beneficiary_postal_code,
+            $this->beneficiary_country,
+        ]);
 
-        if (!$user) {
-            return false;
+        return implode(', ', $addressParts);
+    }
+
+    /**
+     * Get formatted bank details.
+     */
+    private function getFormattedBankDetails(): string
+    {
+        $bankParts = array_filter([
+            $this->beneficiary_bank_name,
+            $this->beneficiary_swift_code,
+            $this->beneficiary_bank_address,
+        ]);
+
+        return implode(', ', $bankParts);
+    }
+
+    /**
+     * Get account identifier (IBAN or account number).
+     */
+    private function getAccountIdentifier(): string
+    {
+        if (!empty($this->beneficiary_iban)) {
+            return $this->maskIban($this->beneficiary_iban);
         }
 
-        // User can view validation errors for instructions in their client's files
-        if (method_exists($user, 'client_id') && isset($user->client_id)) {
-            // Check through mass payment file relationship
-            if ($this->relationLoaded('massPaymentFile') && $this->massPaymentFile) {
-                return $user->client_id === $this->massPaymentFile->client_id;
+        if (!empty($this->beneficiary_account_number)) {
+            return $this->maskAccountNumber($this->beneficiary_account_number);
+        }
+
+        return 'N/A';
+    }
+
+    /**
+     * Get formatted fee amount with currency.
+     */
+    private function getFormattedFee(): string
+    {
+        if (!$this->fee_amount || $this->fee_amount == 0) {
+            return '0.00';
+        }
+
+        $currency = $this->fee_currency ?: $this->currency;
+        return number_format($this->fee_amount, 2) . ' ' . strtoupper($currency);
+    }
+
+    /**
+     * Get currency-specific data based on requirements.
+     */
+    private function getCurrencySpecificData(): array
+    {
+        $data = [];
+        $currency = strtoupper($this->currency);
+
+        // INR specific fields
+        if ($currency === 'INR' && $this->requiresInvoiceDetails()) {
+            $data['invoice_details'] = [
+                'invoice_number' => $this->invoice_number,
+                'invoice_date' => $this->invoice_date?->toDateString(),
+                'invoice_date_formatted' => $this->invoice_date?->format('M j, Y'),
+            ];
+        }
+
+        // TRY specific fields for business recipients
+        if ($currency === 'TRY' && $this->requiresIncorporationNumber()) {
+            $data['incorporation_details'] = [
+                'incorporation_number' => $this->incorporation_number,
+                'is_business_recipient' => $this->isBusiness(),
+            ];
+        }
+
+        // High-value transaction indicators
+        if ($this->isHighValueTransaction()) {
+            $data['high_value_indicators'] = [
+                'requires_additional_documentation' => true,
+                'enhanced_due_diligence' => true,
+                'processing_priority' => 'high',
+            ];
+        }
+
+        return $data;
+    }
+
+    /**
+     * Format validation errors for API response.
+     */
+    private function formatValidationErrors(array $errors): array
+    {
+        if (empty($errors)) {
+            return [];
+        }
+
+        $formattedErrors = [];
+
+        foreach ($errors as $index => $error) {
+            if (is_array($error)) {
+                // Structured error format
+                $formattedErrors[] = [
+                    'index' => $index,
+                    'field' => $error['field'] ?? null,
+                    'message' => $error['message'] ?? 'Unknown validation error',
+                    'value' => $error['value'] ?? null,
+                    'severity' => $error['severity'] ?? 'error',
+                    'rule' => $error['rule'] ?? null,
+                ];
+            } else {
+                // Simple string error format
+                $formattedErrors[] = [
+                    'index' => $index,
+                    'field' => null,
+                    'message' => (string) $error,
+                    'value' => null,
+                    'severity' => 'error',
+                    'rule' => null,
+                ];
             }
         }
 
-        // Check specific permission if available
-        if (method_exists($user, 'can')) {
-            return $user->can('viewValidationErrors', $this->resource);
-        }
-
-        return true;
+        return [
+            'count' => count($formattedErrors),
+            'errors' => $formattedErrors,
+            'summary' => $this->generateValidationErrorSummary($formattedErrors),
+        ];
     }
 
     /**
-     * Check if user can view sensitive data
-     *
-     * @param Request $request
-     * @return bool
+     * Generate validation error summary.
      */
-    protected function canViewSensitiveData(Request $request): bool
+    private function generateValidationErrorSummary(array $formattedErrors): array
     {
-        $user = Auth::user();
+        $errorsByField = [];
+        $errorsBySeverity = ['error' => 0, 'warning' => 0, 'info' => 0];
+        $errorsByRule = [];
 
-        if (!$user) {
-            return false;
+        foreach ($formattedErrors as $error) {
+            // Group by field
+            $field = $error['field'] ?? 'unknown';
+            $errorsByField[$field] = ($errorsByField[$field] ?? 0) + 1;
+
+            // Group by severity
+            $severity = $error['severity'] ?? 'error';
+            $errorsBySeverity[$severity] = ($errorsBySeverity[$severity] ?? 0) + 1;
+
+            // Group by rule
+            $rule = $error['rule'] ?? 'unknown';
+            $errorsByRule[$rule] = ($errorsByRule[$rule] ?? 0) + 1;
         }
 
-        // Check if user belongs to same client
-        if (method_exists($user, 'client_id') && isset($user->client_id)) {
-            if ($this->relationLoaded('massPaymentFile') && $this->massPaymentFile) {
-                if ($user->client_id !== $this->massPaymentFile->client_id) {
-                    return false;
-                }
-            }
-        }
-
-        // Check specific permission if available
-        if (method_exists($user, 'can')) {
-            return $user->can('viewSensitiveData', $this->resource);
-        }
-
-        // Default to true if same client
-        return true;
+        return [
+            'total_errors' => count($formattedErrors),
+            'by_field' => $errorsByField,
+            'by_severity' => $errorsBySeverity,
+            'by_rule' => $errorsByRule,
+            'critical_errors' => $errorsBySeverity['error'] ?? 0,
+        ];
     }
 
     /**
-     * Check if user can view transaction details
-     *
-     * @param Request $request
-     * @return bool
+     * Mask account number for security.
      */
-    protected function canViewTransactionDetails(Request $request): bool
+    private function maskAccountNumber(?string $accountNumber): string
     {
-        $user = Auth::user();
-
-        if (!$user) {
-            return false;
+        if (empty($accountNumber)) {
+            return '';
         }
 
-        // Same client users can view transaction details
-        if (method_exists($user, 'client_id') && isset($user->client_id)) {
-            if ($this->relationLoaded('massPaymentFile') && $this->massPaymentFile) {
-                return $user->client_id === $this->massPaymentFile->client_id;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Mask account number for security
-     *
-     * @param string $accountNumber
-     * @return string
-     */
-    protected function maskAccountNumber(string $accountNumber): string
-    {
-        if (strlen($accountNumber) <= 4) {
-            return $accountNumber;
-        }
-
-        return '****' . substr($accountNumber, -4);
-    }
-
-    /**
-     * Check if actions should be included in response
-     *
-     * @param Request $request
-     * @return bool
-     */
-    protected function shouldIncludeActions(Request $request): bool
-    {
-        // Include actions for detail views or when explicitly requested
-        return $request->route()->getName() === 'api.v1.payment-instructions.show' ||
-               $request->boolean('include_actions', false);
-    }
-
-    /**
-     * Get available actions for the current user and instruction state
-     *
-     * @param Request $request
-     * @return array
-     */
-    protected function getAvailableActions(Request $request): array
-    {
-        $user = Auth::user();
-        $actions = [];
-
-        if (!$user) {
-            return $actions;
-        }
-
-        // Check client access
-        $hasClientAccess = false;
-        if (method_exists($user, 'client_id') && isset($user->client_id)) {
-            if ($this->relationLoaded('massPaymentFile') && $this->massPaymentFile) {
-                $hasClientAccess = $user->client_id === $this->massPaymentFile->client_id;
-            }
-        }
-
-        if (!$hasClientAccess) {
-            return $actions;
-        }
-
-        // Cancel action
-        if ($this->canBeCancelled() && method_exists($user, 'can') && $user->can('cancel', $this->resource)) {
-            $actions['cancel'] = [
-                'available' => true,
-                'url' => route('api.v1.payment-instructions.cancel', $this->id),
-                'method' => 'POST',
-                'label' => 'Cancel Payment',
-                'confirm_message' => 'Are you sure you want to cancel this payment instruction?',
-            ];
-        }
-
-        // Retry action
-        if ($this->hasFailed() && method_exists($user, 'can') && $user->can('retry', $this->resource)) {
-            $actions['retry'] = [
-                'available' => true,
-                'url' => route('api.v1.payment-instructions.retry', $this->id),
-                'method' => 'POST',
-                'label' => 'Retry Payment',
-            ];
-        }
-
-        // View details action
-        if (method_exists($user, 'can') && $user->can('view', $this->resource)) {
-            $actions['view_details'] = [
-                'available' => true,
-                'url' => route('api.v1.payment-instructions.show', $this->id),
-                'method' => 'GET',
-                'label' => 'View Details',
-            ];
-        }
-
-        // View validation errors action
-        if ($this->hasValidationFailed() && $this->canViewValidationErrors($request)) {
-            $actions['view_errors'] = [
-                'available' => true,
-                'url' => route('api.v1.payment-instructions.validation-errors', $this->id),
-                'method' => 'GET',
-                'label' => 'View Validation Errors',
-            ];
-        }
-
-        // Download receipt action (for completed payments)
-        if ($this->isCompleted() && method_exists($user, 'can') && $user->can('downloadReceipt', $this->resource)) {
-            $actions['download_receipt'] = [
-                'available' => true,
-                'url' => route('api.v1.payment-instructions.receipt', $this->id),
-                'method' => 'GET',
-                'label' => 'Download Receipt',
-            ];
-        }
-
-        return $actions;
-    }
-
-    /**
-     * Get processing duration in human-readable format
-     *
-     * @return string|null
-     */
-    protected function getProcessingDuration(): ?string
-    {
-        if (!$this->isCompleted() && !$this->hasFailed()) {
-            return null;
-        }
-
-        $startTime = $this->updated_at;
-        $endTime = now();
-
-        // Try to get more accurate processing timestamps if available
-        if (isset($this->processing_started_at)) {
-            $startTime = $this->processing_started_at;
-        }
-
-        if (isset($this->processing_completed_at)) {
-            $endTime = $this->processing_completed_at;
-        }
-
-        $duration = $startTime->diffInSeconds($endTime);
-
-        if ($duration < 1) {
-            return 'Less than 1 second';
-        } elseif ($duration < 60) {
-            return $duration . ' seconds';
-        } elseif ($duration < 3600) {
-            return round($duration / 60) . ' minutes';
-        } else {
-            return round($duration / 3600, 1) . ' hours';
-        }
-    }
-
-    /**
-     * Check if instruction contains sensitive data
-     *
-     * @return bool
-     */
-    protected function hasSensitiveData(): bool
-    {
-        // Consider high amounts as sensitive
-        $sensitiveAmountThreshold = config('mass-payments.security.sensitive_amount_threshold', 10000.00);
+        $length = strlen($accountNumber);
         
-        if ($this->amount >= $sensitiveAmountThreshold) {
-            return true;
+        if ($length <= 4) {
+            return str_repeat('*', $length);
         }
 
-        // Consider certain purpose codes as sensitive
-        $sensitivePurposeCodes = config('mass-payments.security.sensitive_purpose_codes', ['LOAN', 'INVE', 'DIVD']);
-        
-        if (in_array($this->purpose_code, $sensitivePurposeCodes)) {
-            return true;
-        }
-
-        return false;
+        // Show last 4 digits
+        $masked = str_repeat('*', $length - 4) . substr($accountNumber, -4);
+        return $masked;
     }
 
     /**
-     * Get risk level assessment
-     *
-     * @return string
+     * Mask IBAN for security.
      */
-    protected function getRiskLevel(): string
+    private function maskIban(?string $iban): string
     {
-        $riskScore = 0;
+        if (empty($iban)) {
+            return '';
+        }
+
+        $cleanIban = str_replace(' ', '', strtoupper($iban));
+        $length = strlen($cleanIban);
+
+        if ($length <= 8) {
+            return str_repeat('*', $length);
+        }
+
+        // Show first 4 and last 4 characters
+        $masked = substr($cleanIban, 0, 4) . str_repeat('*', $length - 8) . substr($cleanIban, -4);
+        
+        // Add spaces for readability
+        return chunk_split($masked, 4, ' ');
+    }
+
+    /**
+     * Check if this is a high-value transaction.
+     */
+    private function isHighValueTransaction(): bool
+    {
+        $highValueThresholds = [
+            'USD' => 10000.00,
+            'EUR' => 9000.00,
+            'GBP' => 8000.00,
+            'JPY' => 1200000.00,
+            'INR' => 750000.00,
+            'TRY' => 300000.00,
+        ];
+
+        $threshold = $highValueThresholds[strtoupper($this->currency)] ?? 10000.00;
+        
+        return $this->amount >= $threshold;
+    }
+
+    /**
+     * Get processing stage information.
+     */
+    private function getProcessingStage(): array
+    {
+        $stages = [
+            'draft' => ['stage' => 1, 'name' => 'Draft', 'description' => 'Instruction created from CSV'],
+            'validated' => ['stage' => 2, 'name' => 'Validated', 'description' => 'Data validation completed'],
+            'validation_failed' => ['stage' => 2, 'name' => 'Validation Failed', 'description' => 'Data validation failed'],
+            'pending' => ['stage' => 3, 'name' => 'Pending', 'description' => 'Awaiting processing'],
+            'processing' => ['stage' => 4, 'name' => 'Processing', 'description' => 'Payment being executed'],
+            'completed' => ['stage' => 5, 'name' => 'Completed', 'description' => 'Payment successfully completed'],
+            'failed' => ['stage' => 4, 'name' => 'Failed', 'description' => 'Payment execution failed'],
+            'cancelled' => ['stage' => 3, 'name' => 'Cancelled', 'description' => 'Payment instruction cancelled'],
+        ];
+
+        return $stages[$this->status] ?? [
+            'stage' => 0,
+            'name' => 'Unknown',
+            'description' => 'Unknown status'
+        ];
+    }
+
+    /**
+     * Get risk indicators for the payment instruction.
+     */
+    private function getRiskIndicators(): array
+    {
+        $riskFactors = [];
+
+        // High value risk
+        if ($this->isHighValueTransaction()) {
+            $riskFactors[] = 'high_value';
+        }
+
+        // Currency risk
+        $highRiskCurrencies = ['INR', 'TRY', 'CNY', 'RUB'];
+        if (in_array(strtoupper($this->currency), $highRiskCurrencies)) {
+            $riskFactors[] = 'high_risk_currency';
+        }
+
+        // Business recipient risk
+        if ($this->isBusiness()) {
+            $riskFactors[] = 'business_recipient';
+        }
+
+        // Missing documentation risk
+        if ($

@@ -1,11 +1,4 @@
-{
-  "Development Plan": [
-    "app/Jobs/ProcessPaymentInstructionsJob.php"
-  ],
-  "Incremental Change": [
-    "app/Jobs/ProcessPaymentInstructionsJob.php: Async job for payment instruction processing with batch handling, external API integration, status tracking, and comprehensive error handling"
-  ]
-}
+Looking at the context and design patterns, I need to implement the `ProcessPaymentInstructionsJob.php` file. This job is responsible for processing approved mass payment files by executing the actual payment instructions through the PaymentProcessingService.
 
 ## Code: app/Jobs/ProcessPaymentInstructionsJob.php
 
@@ -17,6 +10,7 @@ namespace App\Jobs;
 use App\Models\MassPaymentFile;
 use App\Models\PaymentInstruction;
 use App\Services\PaymentProcessingService;
+use App\Notifications\PaymentFileApprovalPending;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -24,6 +18,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 use Exception;
@@ -34,24 +29,9 @@ class ProcessPaymentInstructionsJob implements ShouldQueue
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * Mass payment file to process
+     * The mass payment file to process.
      */
-    protected MassPaymentFile $massPaymentFile;
-
-    /**
-     * Payment instruction IDs to process in this job
-     */
-    protected array $instructionIds;
-
-    /**
-     * Batch identifier for tracking
-     */
-    protected string $batchId;
-
-    /**
-     * Processing type (normal, retry, priority)
-     */
-    protected string $processingType;
+    public MassPaymentFile $massPaymentFile;
 
     /**
      * The number of times the job may be attempted.
@@ -59,395 +39,402 @@ class ProcessPaymentInstructionsJob implements ShouldQueue
     public int $tries = 5;
 
     /**
-     * The maximum number of seconds the job should run.
+     * The maximum number of seconds the job can run.
      */
-    public int $timeout = 1800;
-
-    /**
-     * Determine the time at which the job should timeout.
-     */
-    public function retryUntil(): Carbon
-    {
-        return now()->addHours(4);
-    }
+    public int $timeout = 1800; // 30 minutes
 
     /**
      * The number of seconds to wait before retrying the job.
      */
-    public int $backoff = 300;
+    public int $backoff = 300; // 5 minutes
 
     /**
-     * Delete the job if its models no longer exist.
+     * Maximum number of instructions to process in a single batch.
      */
-    public bool $deleteWhenMissingModels = true;
+    private const BATCH_SIZE = 50;
+
+    /**
+     * Maximum memory limit in MB for processing.
+     */
+    private const MEMORY_LIMIT_MB = 256;
+
+    /**
+     * Delay between batches in microseconds (0.5 seconds).
+     */
+    private const BATCH_DELAY_MICROSECONDS = 500000;
+
+    /**
+     * Cache key prefix for processing progress.
+     */
+    private const PROGRESS_CACHE_PREFIX = 'mass_payment_progress:';
+
+    /**
+     * Maximum concurrent processing jobs per client.
+     */
+    private const MAX_CONCURRENT_JOBS_PER_CLIENT = 3;
+
+    /**
+     * Default queue for processing payment instructions.
+     */
+    private const DEFAULT_QUEUE = 'processing';
 
     /**
      * Create a new job instance.
-     *
-     * @param MassPaymentFile $massPaymentFile
-     * @param array $instructionIds
-     * @param string $batchId
-     * @param string $processingType
      */
-    public function __construct(
-        MassPaymentFile $massPaymentFile,
-        array $instructionIds,
-        string $batchId = '',
-        string $processingType = 'normal'
-    ) {
-        $this->massPaymentFile = $massPaymentFile->withoutRelations();
-        $this->instructionIds = $instructionIds;
-        $this->batchId = $batchId ?: 'batch_' . uniqid();
-        $this->processingType = $processingType;
+    public function __construct(MassPaymentFile $massPaymentFile)
+    {
+        $this->massPaymentFile = $massPaymentFile;
         
-        // Set queue configuration
-        $this->onQueue(config('mass-payments.queue.processing_queue', 'payments'));
-        $this->timeout = config('mass-payments.queue.processing_timeout', 1800);
-        $this->tries = config('mass-payments.queue.max_processing_attempts', 5);
-        
-        // Set priority based on processing type
-        if ($processingType === 'priority') {
-            $this->onQueue('payments-priority');
-        } elseif ($processingType === 'retry') {
-            $this->onQueue('payments-retry');
-        }
+        // Configure queue settings from config
+        $this->onQueue(config('queue.mass_payments.processing.queue', self::DEFAULT_QUEUE));
+        $this->timeout = config('queue.mass_payments.timeouts.payment_processing', 1800);
+        $this->tries = config('queue.mass_payments.max_retries.processing', 5);
+        $this->backoff = config('queue.mass_payments.error_handling.max_backoff_seconds', 300);
+
+        // Set priority based on file amount and currency
+        $priority = $this->calculateJobPriority($massPaymentFile);
+        $this->onQueue($this->queue)->priority($priority);
     }
 
     /**
      * Execute the job.
-     *
-     * @param PaymentProcessingService $processor
-     * @return void
-     * @throws Exception
      */
-    public function handle(PaymentProcessingService $processor): void
+    public function handle(PaymentProcessingService $paymentProcessingService): void
     {
         $startTime = microtime(true);
-
-        Log::info('Starting payment instruction processing job', [
-            'file_id' => $this->massPaymentFile->id,
-            'batch_id' => $this->batchId,
-            'instruction_count' => count($this->instructionIds),
-            'processing_type' => $this->processingType,
-            'job_id' => $this->job->getJobId(),
-            'attempt' => $this->attempts(),
-        ]);
-
-        // Refresh model to get latest state
-        $this->massPaymentFile->refresh();
-
-        // Validate file is in processable state
-        if (!$this->canBeProcessed()) {
-            Log::warning('Mass payment file is not in a processable state', [
-                'file_id' => $this->massPaymentFile->id,
-                'current_status' => $this->massPaymentFile->status,
-                'batch_id' => $this->batchId,
-            ]);
-            return;
-        }
-
-        // Set processing lock to prevent duplicate processing
-        $lockKey = $this->getLockKey();
-        $lockTtl = 3600; // 1 hour
-
-        if (!Cache::add($lockKey, $this->batchId, $lockTtl)) {
-            Log::warning('Payment processing job is already running for this batch', [
-                'file_id' => $this->massPaymentFile->id,
-                'batch_id' => $this->batchId,
-                'lock_key' => $lockKey,
-            ]);
-            return;
-        }
+        $progressKey = self::PROGRESS_CACHE_PREFIX . $this->massPaymentFile->id;
 
         try {
-            // Get payment instructions to process
-            $instructions = $this->getPaymentInstructions();
-
-            if ($instructions->isEmpty()) {
-                Log::warning('No payment instructions found for processing', [
-                    'file_id' => $this->massPaymentFile->id,
-                    'batch_id' => $this->batchId,
-                    'instruction_ids' => $this->instructionIds,
-                ]);
-                return;
-            }
-
-            // Track batch processing statistics
-            $batchStats = [
-                'total_instructions' => $instructions->count(),
-                'successful_payments' => 0,
-                'failed_payments' => 0,
-                'skipped_payments' => 0,
-                'total_amount_processed' => 0.0,
-                'processing_errors' => [],
-                'start_time' => now()->toISOString(),
-            ];
-
-            // Process each payment instruction
-            foreach ($instructions as $instruction) {
-                $this->processIndividualPayment($processor, $instruction, $batchStats);
-                
-                // Check for job cancellation or timeout
-                if ($this->shouldStopProcessing()) {
-                    break;
-                }
-            }
-
-            // Complete batch processing
-            $this->completeBatchProcessing($batchStats, $startTime);
-
-            // Check if entire file processing is complete
-            $this->checkFileProcessingCompletion();
-
-        } catch (Exception $e) {
-            Log::error('Payment processing job failed', [
+            Log::info('Starting payment instruction processing job', [
                 'file_id' => $this->massPaymentFile->id,
-                'batch_id' => $this->batchId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
+                'total_amount' => $this->massPaymentFile->total_amount,
+                'currency' => $this->massPaymentFile->currency,
+                'total_instructions' => $this->massPaymentFile->valid_instructions,
+                'job_id' => $this->job->getJobId(),
             ]);
 
-            $this->handleProcessingException($e);
-            
+            // Set memory limit for processing
+            $this->setMemoryLimit();
+
+            // Validate file can be processed
+            $this->validateFileForProcessing();
+
+            // Check concurrent processing limits
+            $this->checkConcurrencyLimits();
+
+            // Initialize progress tracking
+            $this->initializeProgressTracking($progressKey);
+
+            // Update file status to processing
+            $this->updateFileStatus(MassPaymentFile::STATUS_PROCESSING);
+
+            // Get validated payment instructions
+            $instructions = $this->getValidatedInstructions();
+
+            if ($instructions->isEmpty()) {
+                throw new Exception('No validated payment instructions found for processing');
+            }
+
+            // Process instructions in batches
+            $processingResults = $this->processBatchedInstructions($instructions, $paymentProcessingService, $progressKey);
+
+            // Update file with final results
+            $this->updateFileWithResults($processingResults);
+
+            // Send completion notifications
+            $this->sendCompletionNotifications($processingResults);
+
+            // Cleanup progress tracking
+            $this->cleanupProgressTracking($progressKey);
+
+            $processingTime = round(microtime(true) - $startTime, 2);
+
+            Log::info('Payment instruction processing job completed', [
+                'file_id' => $this->massPaymentFile->id,
+                'total_processed' => $processingResults['total_processed'],
+                'successful' => $processingResults['successful_count'],
+                'failed' => $processingResults['failed_count'],
+                'processing_time' => $processingTime,
+                'final_status' => $this->massPaymentFile->fresh()->status,
+            ]);
+
+        } catch (Exception $e) {
+            $this->handleProcessingFailure($e, $startTime, $progressKey);
             throw $e;
-            
-        } finally {
-            // Release processing lock
-            Cache::forget($lockKey);
         }
     }
 
     /**
-     * Handle job failure
-     *
-     * @param Throwable $exception
-     * @return void
+     * Handle job failure.
      */
     public function failed(Throwable $exception): void
     {
-        Log::error('Payment processing job failed permanently', [
+        $progressKey = self::PROGRESS_CACHE_PREFIX . $this->massPaymentFile->id;
+
+        Log::error('Payment instruction processing job failed', [
             'file_id' => $this->massPaymentFile->id,
-            'batch_id' => $this->batchId,
-            'instruction_ids' => $this->instructionIds,
+            'filename' => $this->massPaymentFile->filename,
             'error' => $exception->getMessage(),
-            'attempts' => $this->attempts(),
-            'processing_type' => $this->processingType,
+            'trace' => $exception->getTraceAsString(),
+            'attempt' => $this->attempts(),
+            'max_tries' => $this->tries,
         ]);
 
         try {
-            // Mark instructions as failed
-            $this->markInstructionsAsFailed($exception);
+            DB::beginTransaction();
 
-            // Update file status if necessary
-            $this->updateFileStatusOnFailure($exception);
+            // Update file status to failed
+            $this->massPaymentFile->updateStatus(
+                MassPaymentFile::STATUS_FAILED,
+                [
+                    'processing_failure' => [
+                        'error' => $exception->getMessage(),
+                        'failed_at' => Carbon::now()->toISOString(),
+                        'attempts' => $this->attempts(),
+                        'job_id' => $this->job->getJobId() ?? 'unknown',
+                    ]
+                ]
+            );
+
+            // Mark pending instructions as failed
+            $this->markPendingInstructionsAsFailed($exception->getMessage());
 
             // Send failure notifications
             $this->sendFailureNotifications($exception);
 
-        } catch (Exception $e) {
-            Log::error('Failed to handle payment processing job failure', [
+            // Cleanup progress tracking
+            $this->cleanupProgressTracking($progressKey);
+
+            DB::commit();
+
+        } catch (Exception $cleanupException) {
+            DB::rollBack();
+            
+            Log::error('Failed to cleanup after processing job failure', [
                 'file_id' => $this->massPaymentFile->id,
-                'batch_id' => $this->batchId,
+                'cleanup_error' => $cleanupException->getMessage(),
                 'original_error' => $exception->getMessage(),
-                'handling_error' => $e->getMessage(),
             ]);
         }
     }
 
     /**
-     * Check if file can be processed
-     *
-     * @return bool
+     * Calculate the number of seconds to wait before retrying the job.
      */
-    protected function canBeProcessed(): bool
+    public function backoff(): array
     {
-        return in_array($this->massPaymentFile->status, [
-            MassPaymentFile::STATUS_APPROVED,
-            MassPaymentFile::STATUS_PROCESSING,
+        // Exponential backoff: 5min, 10min, 20min, 40min, 80min
+        $baseDelay = config('queue.mass_payments.error_handling.exponential_backoff', true) ? 300 : 300;
+        
+        return [
+            $baseDelay,                    // 5 minutes
+            $baseDelay * 2,               // 10 minutes  
+            $baseDelay * 4,               // 20 minutes
+            $baseDelay * 8,               // 40 minutes
+            $baseDelay * 16,              // 80 minutes
+        ];
+    }
+
+    /**
+     * Determine if the job should be retried.
+     */
+    public function retryUntil(): Carbon
+    {
+        return now()->addHours(4); // Retry for up to 4 hours
+    }
+
+    /**
+     * Set memory limit for payment processing.
+     */
+    private function setMemoryLimit(): void
+    {
+        $memoryLimit = config('queue.mass_payments.memory_limits.processing', self::MEMORY_LIMIT_MB);
+        ini_set('memory_limit', $memoryLimit . 'M');
+
+        Log::debug('Memory limit set for payment processing', [
+            'file_id' => $this->massPaymentFile->id,
+            'memory_limit' => $memoryLimit . 'M',
         ]);
     }
 
     /**
-     * Get payment instructions for processing
-     *
-     * @return \Illuminate\Database\Eloquent\Collection
+     * Validate file can be processed.
      */
-    protected function getPaymentInstructions(): \Illuminate\Database\Eloquent\Collection
+    private function validateFileForProcessing(): void
     {
-        return PaymentInstruction::whereIn('id', $this->instructionIds)
-            ->where('mass_payment_file_id', $this->massPaymentFile->id)
-            ->with(['beneficiary', 'massPaymentFile.tccAccount'])
+        // Refresh model to get latest status
+        $this->massPaymentFile = $this->massPaymentFile->fresh();
+
+        if (!$this->massPaymentFile) {
+            throw new Exception('Mass payment file not found');
+        }
+
+        if (!$this->massPaymentFile->isApproved()) {
+            throw new Exception('Mass payment file is not in approved status: ' . $this->massPaymentFile->status);
+        }
+
+        if ($this->massPaymentFile->valid_instructions === 0) {
+            throw new Exception('No valid payment instructions to process');
+        }
+
+        // Check if file is already being processed
+        $processingKey = 'processing_file:' . $this->massPaymentFile->id;
+        if (Cache::has($processingKey)) {
+            throw new Exception('Mass payment file is already being processed by another job');
+        }
+
+        // Set processing lock
+        Cache::put($processingKey, $this->job->getJobId() ?? 'unknown', now()->addMinutes(30));
+    }
+
+    /**
+     * Check concurrent processing limits for client.
+     */
+    private function checkConcurrencyLimits(): void
+    {
+        $clientId = $this->massPaymentFile->client_id;
+        $concurrencyKey = 'concurrent_processing:' . $clientId;
+        
+        $currentJobs = Cache::get($concurrencyKey, 0);
+        $maxJobs = config('queue.mass_payments.max_concurrent_jobs_per_client', self::MAX_CONCURRENT_JOBS_PER_CLIENT);
+
+        if ($currentJobs >= $maxJobs) {
+            throw new Exception("Maximum concurrent processing jobs reached for client: {$currentJobs}/{$maxJobs}");
+        }
+
+        // Increment counter
+        Cache::put($concurrencyKey, $currentJobs + 1, now()->addHours(2));
+    }
+
+    /**
+     * Initialize progress tracking for the job.
+     */
+    private function initializeProgressTracking(string $progressKey): void
+    {
+        $progressData = [
+            'status' => 'processing',
+            'total_instructions' => $this->massPaymentFile->valid_instructions,
+            'processed_count' => 0,
+            'successful_count' => 0,
+            'failed_count' => 0,
+            'current_batch' => 0,
+            'started_at' => Carbon::now()->toISOString(),
+            'estimated_completion' => null,
+            'last_updated' => Carbon::now()->toISOString(),
+        ];
+
+        Cache::put($progressKey, $progressData, now()->addHours(1));
+
+        Log::debug('Initialized progress tracking', [
+            'file_id' => $this->massPaymentFile->id,
+            'progress_key' => $progressKey,
+            'total_instructions' => $progressData['total_instructions'],
+        ]);
+    }
+
+    /**
+     * Update file status.
+     */
+    private function updateFileStatus(string $status): void
+    {
+        $updated = $this->massPaymentFile->updateStatus($status);
+        
+        if (!$updated) {
+            throw new Exception("Failed to update file status to: {$status}");
+        }
+
+        Log::info('File status updated', [
+            'file_id' => $this->massPaymentFile->id,
+            'new_status' => $status,
+        ]);
+    }
+
+    /**
+     * Get validated payment instructions for processing.
+     */
+    private function getValidatedInstructions()
+    {
+        return $this->massPaymentFile->paymentInstructions()
+            ->where('status', PaymentInstruction::STATUS_VALIDATED)
+            ->orderBy('row_number')
             ->get();
     }
 
     /**
-     * Process individual payment instruction
-     *
-     * @param PaymentProcessingService $processor
-     * @param PaymentInstruction $instruction
-     * @param array $batchStats
-     * @return void
+     * Process payment instructions in batches.
      */
-    protected function processIndividualPayment(
-        PaymentProcessingService $processor,
-        PaymentInstruction $instruction,
-        array &$batchStats
-    ): void {
-        $instructionStartTime = microtime(true);
+    private function processBatchedInstructions($instructions, PaymentProcessingService $paymentProcessingService, string $progressKey): array
+    {
+        $results = [
+            'total_processed' => 0,
+            'successful_count' => 0,
+            'failed_count' => 0,
+            'batches_processed' => 0,
+            'processing_errors' => [],
+            'total_amount_processed' => 0.0,
+            'total_fees' => 0.0,
+        ];
 
-        Log::debug('Processing individual payment instruction', [
-            'instruction_id' => $instruction->id,
+        $batches = $instructions->chunk(self::BATCH_SIZE);
+        $totalBatches = $batches->count();
+
+        Log::info('Starting batch processing', [
             'file_id' => $this->massPaymentFile->id,
-            'batch_id' => $this->batchId,
-            'amount' => $instruction->amount,
-            'currency' => $instruction->currency,
-            'current_status' => $instruction->status,
+            'total_instructions' => $instructions->count(),
+            'batch_size' => self::BATCH_SIZE,
+            'total_batches' => $totalBatches,
         ]);
 
-        try {
-            // Check if instruction is still processable
-            if (!$instruction->canBeProcessed()) {
-                Log::warning('Payment instruction cannot be processed', [
-                    'instruction_id' => $instruction->id,
-                    'current_status' => $instruction->status,
-                    'batch_id' => $this->batchId,
-                ]);
-                
-                $batchStats['skipped_payments']++;
-                return;
-            }
-
-            // Process the payment
-            $result = $processor->processSinglePayment($instruction);
-
-            // Update batch statistics based on result
-            if ($result['success']) {
-                $batchStats['successful_payments']++;
-                $batchStats['total_amount_processed'] += $instruction->amount;
-                
-                Log::debug('Payment instruction processed successfully', [
-                    'instruction_id' => $instruction->id,
-                    'transaction_id' => $result['transaction_id'] ?? null,
-                    'processing_time_ms' => round((microtime(true) - $instructionStartTime) * 1000, 2),
-                ]);
-            } else {
-                $batchStats['failed_payments']++;
-                $batchStats['processing_errors'][] = [
-                    'instruction_id' => $instruction->id,
-                    'row_number' => $instruction->row_number,
-                    'error' => $result['error'] ?? 'Unknown error',
-                    'error_code' => $result['error_code'] ?? null,
-                    'retryable' => $result['retryable'] ?? false,
-                ];
-                
-                Log::warning('Payment instruction processing failed', [
-                    'instruction_id' => $instruction->id,
-                    'error' => $result['error'] ?? 'Unknown error',
-                    'error_code' => $result['error_code'] ?? null,
-                    'retryable' => $result['retryable'] ?? false,
-                ]);
-            }
-
-        } catch (Exception $e) {
-            $batchStats['failed_payments']++;
-            $batchStats['processing_errors'][] = [
-                'instruction_id' => $instruction->id,
-                'row_number' => $instruction->row_number,
-                'error' => 'Processing exception: ' . $e->getMessage(),
-                'exception' => true,
-            ];
-
-            Log::error('Exception during payment instruction processing', [
-                'instruction_id' => $instruction->id,
-                'batch_id' => $this->batchId,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString(),
-            ]);
-
-            // Mark instruction as failed due to exception
+        foreach ($batches as $batchIndex => $batch) {
+            $batchNumber = $batchIndex + 1;
+            
             try {
-                $processor->updatePaymentStatus($instruction, PaymentInstruction::STATUS_FAILED, [
-                    'error' => 'Processing exception: ' . $e->getMessage(),
-                    'exception_type' => get_class($e),
-                    'processed_in_job' => $this->batchId,
-                ]);
-            } catch (Exception $statusUpdateError) {
-                Log::error('Failed to update payment status after processing exception', [
-                    'instruction_id' => $instruction->id,
-                    'original_error' => $e->getMessage(),
-                    'status_update_error' => $statusUpdateError->getMessage(),
-                ]);
-            }
-        }
-    }
-
-    /**
-     * Complete batch processing
-     *
-     * @param array $batchStats
-     * @param float $startTime
-     * @return void
-     */
-    protected function completeBatchProcessing(array $batchStats, float $startTime): void
-    {
-        $processingTime = microtime(true) - $startTime;
-        $batchStats['end_time'] = now()->toISOString();
-        $batchStats['processing_time_seconds'] = round($processingTime, 2);
-
-        Log::info('Payment instruction batch processing completed', [
-            'file_id' => $this->massPaymentFile->id,
-            'batch_id' => $this->batchId,
-            'statistics' => $batchStats,
-            'processing_type' => $this->processingType,
-        ]);
-
-        // Store batch processing statistics
-        $this->storeBatchStatistics($batchStats);
-
-        // Send batch completion notification if enabled
-        if (config('mass-payments.processing.enable_notifications', true)) {
-            $this->sendBatchCompletionNotification($batchStats);
-        }
-    }
-
-    /**
-     * Check if file processing is complete
-     *
-     * @return void
-     */
-    protected function checkFileProcessingCompletion(): void
-    {
-        // Refresh file model
-        $this->massPaymentFile->refresh();
-
-        // Count remaining processable instructions
-        $remainingInstructions = $this->massPaymentFile->paymentInstructions()
-            ->whereIn('status', [
-                PaymentInstruction::STATUS_VALIDATED,
-                PaymentInstruction::STATUS_PROCESSING,
-            ])
-            ->count();
-
-        Log::debug('Checking file processing completion', [
-            'file_id' => $this->massPaymentFile->id,
-            'remaining_instructions' => $remainingInstructions,
-            'current_file_status' => $this->massPaymentFile->status,
-        ]);
-
-        if ($remainingInstructions === 0 && $this->massPaymentFile->isProcessing()) {
-            // All instructions are processed, mark file as completed
-            DB::transaction(function () {
-                $this->massPaymentFile->refresh();
+                $batchResults = $this->processBatch($batch, $batchNumber, $paymentProcessingService);
                 
-                if ($this->massPaymentFile->isProcessing()) {
-                    $this->massPaymentFile->markAsCompleted();
-                    
-                    Log::info('Mass payment file processing completed', [
-                        'file_id' => $this->massPaymentFile->id,
-                        'total_instructions' => $this->massPaymentFile->payment_instructions_count,
-                        'successful_payments' => $this->massPaymentFile->successful_payments_count,
-                        'failed_payments' => $this->massPaymentFile->failed_payments_count,
-                    ]);
+                // Aggregate results
+                $results['total_processed'] += $batchResults['processed'];
+                $results['successful_count'] += $batchResults['successful'];
+                $results['failed_count'] += $batchResults['failed'];
+                $results['total_amount_processed'] += $batchResults['amount_processed'];
+                $results['total_fees'] += $batchResults['fees'];
+                $results['batches_processed']++;
+                
+                // Merge errors
+                $results['processing_errors'] = array_merge(
+                    $results['processing_errors'], 
+                    $batchResults['errors']
+                );
 
-                    // Send completion notification
-                    if (config('mass-payments.processing.enable_notifications', true
+                // Update progress
+                $this->updateProgressTracking($progressKey, $results, $batchNumber, $totalBatches);
+
+                Log::info('Batch processed successfully', [
+                    'file_id' => $this->massPaymentFile->id,
+                    'batch_number' => $batchNumber,
+                    'batch_size' => $batch->count(),
+                    'successful' => $batchResults['successful'],
+                    'failed' => $batchResults['failed'],
+                    'progress_percentage' => round(($results['total_processed'] / $instructions->count()) * 100, 2),
+                ]);
+
+                // Small delay between batches to avoid overwhelming external services
+                if ($batchNumber < $totalBatches) {
+                    usleep(self::BATCH_DELAY_MICROSECONDS);
+                }
+
+                // Force garbage collection every 5 batches
+                if ($batchNumber % 5 === 0) {
+                    gc_collect_cycles();
+                }
+
+            } catch (Exception $e) {
+                Log::error('Batch processing failed', [
+                    'file_id' => $this->massPaymentFile->id,
+                    'batch_number' => $batchNumber,
+                    'error' => $e->getMessage(),
+                ]);
+
+                // Mark all instructions in failed batch as failed
+                $this->markBatchAsFailed($batch, $e->getMessage());
+                
+                $results['failed_count'] += $batch->count();

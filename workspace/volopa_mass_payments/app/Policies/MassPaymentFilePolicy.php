@@ -12,399 +12,344 @@ class MassPaymentFilePolicy
 
     /**
      * Determine whether the user can view any mass payment files.
-     *
-     * @param User $user
-     * @return bool
      */
     public function viewAny(User $user): bool
     {
-        // Users can view mass payment files if they belong to the same client
-        return $user->client_id !== null;
+        return $this->hasClientAccess($user);
     }
 
     /**
      * Determine whether the user can view the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
      */
     public function view(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can only view files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id;
+        return $this->checkClientAccess($user, $massPaymentFile);
     }
 
     /**
      * Determine whether the user can create mass payment files.
-     *
-     * @param User $user
-     * @return bool
      */
     public function create(User $user): bool
     {
-        // Users can create mass payment files if they belong to a client and have upload permission
-        return $user->client_id !== null 
-            && $this->hasPermission($user, 'mass_payments.upload');
+        return $this->hasClientAccess($user) && $this->hasPermission($user, 'mass_payments.create');
     }
 
     /**
      * Determine whether the user can update the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
      */
     public function update(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can only update files belonging to their client
-        // Files can only be updated in draft or validation_failed status
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.edit')
-            && in_array($massPaymentFile->status, [
-                MassPaymentFile::STATUS_DRAFT,
-                MassPaymentFile::STATUS_VALIDATION_FAILED,
-            ]);
-    }
+        // Only allow updates in draft status
+        if (!$massPaymentFile->isDraft()) {
+            return false;
+        }
 
-    /**
-     * Determine whether the user can delete the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
-     */
-    public function delete(User $user, MassPaymentFile $massPaymentFile): bool
-    {
-        // Users can only delete files belonging to their client
-        // Files can only be deleted if they are in deletable status
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.delete')
-            && $massPaymentFile->canBeDeleted();
-    }
-
-    /**
-     * Determine whether the user can restore the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
-     */
-    public function restore(User $user, MassPaymentFile $massPaymentFile): bool
-    {
-        // Users can only restore files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.restore');
-    }
-
-    /**
-     * Determine whether the user can permanently delete the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
-     */
-    public function forceDelete(User $user, MassPaymentFile $massPaymentFile): bool
-    {
-        // Only system administrators can permanently delete files
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.force_delete')
-            && $this->hasRole($user, 'admin');
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.update');
     }
 
     /**
      * Determine whether the user can approve the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
      */
     public function approve(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can only approve files belonging to their client
-        // Users cannot approve their own uploads
-        // Files must be in awaiting_approval status
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.approve')
-            && $user->id !== $massPaymentFile->uploaded_by
-            && $massPaymentFile->canBeApproved();
+        // Cannot approve own uploads (segregation of duties)
+        if ($this->isOwnUpload($user, $massPaymentFile)) {
+            return false;
+        }
+
+        // Can only approve files awaiting approval
+        if (!$massPaymentFile->canBeApproved()) {
+            return false;
+        }
+
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.approve');
     }
 
     /**
-     * Determine whether the user can reprocess the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
+     * Determine whether the user can delete the mass payment file.
      */
-    public function reprocess(User $user, MassPaymentFile $massPaymentFile): bool
+    public function delete(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can reprocess failed files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.reprocess')
-            && $massPaymentFile->hasFailed();
+        // Can only delete files in certain statuses
+        if (!$massPaymentFile->canBeDeleted()) {
+            return false;
+        }
+
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.delete');
     }
 
     /**
-     * Determine whether the user can download the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
+     * Determine whether the user can restore the mass payment file.
      */
-    public function download(User $user, MassPaymentFile $massPaymentFile): bool
+    public function restore(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can download files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.download');
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.restore');
     }
 
     /**
-     * Determine whether the user can view validation errors.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
+     * Determine whether the user can permanently delete the mass payment file.
      */
-    public function viewValidationErrors(User $user, MassPaymentFile $massPaymentFile): bool
+    public function forceDelete(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can view validation errors for files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.view_errors')
-            && $massPaymentFile->hasValidationFailed();
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.force_delete');
     }
 
     /**
-     * Determine whether the user can view payment instructions.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
+     * Determine whether the user can download template files.
      */
-    public function viewPaymentInstructions(User $user, MassPaymentFile $massPaymentFile): bool
+    public function downloadTemplate(User $user): bool
     {
-        // Users can view payment instructions for files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.view_instructions');
+        return $this->hasClientAccess($user) && $this->hasPermission($user, 'mass_payments.download_template');
     }
 
     /**
-     * Determine whether the user can cancel the mass payment file.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
+     * Determine whether the user can view payment instructions for the file.
      */
-    public function cancel(User $user, MassPaymentFile $massPaymentFile): bool
+    public function viewInstructions(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can cancel files belonging to their client
-        // Files can only be cancelled in specific statuses
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.cancel')
-            && in_array($massPaymentFile->status, [
-                MassPaymentFile::STATUS_DRAFT,
-                MassPaymentFile::STATUS_AWAITING_APPROVAL,
-                MassPaymentFile::STATUS_APPROVED,
-            ]);
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.view_instructions');
     }
 
     /**
-     * Determine whether the user can view audit trail.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
-     */
-    public function viewAuditTrail(User $user, MassPaymentFile $massPaymentFile): bool
-    {
-        // Users can view audit trail for files belonging to their client
-        // Only users with audit permission can view audit trail
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.audit');
-    }
-
-    /**
-     * Determine whether the user can export file data.
-     *
-     * @param User $user
-     * @param MassPaymentFile $massPaymentFile
-     * @return bool
+     * Determine whether the user can export data from the mass payment file.
      */
     public function export(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Users can export files belonging to their client
-        return $user->client_id === $massPaymentFile->client_id
-            && $this->hasPermission($user, 'mass_payments.export');
+        return $this->checkClientAccess($user, $massPaymentFile) && 
+               $this->hasPermission($user, 'mass_payments.export');
+    }
+
+    /**
+     * Check if the user has client access (has a client_id).
+     */
+    private function hasClientAccess(User $user): bool
+    {
+        return !empty($user->client_id) && is_string($user->client_id);
+    }
+
+    /**
+     * Check if the user belongs to the same client as the mass payment file.
+     */
+    private function checkClientAccess(User $user, MassPaymentFile $massPaymentFile): bool
+    {
+        if (!$this->hasClientAccess($user)) {
+            return false;
+        }
+
+        return $user->client_id === $massPaymentFile->client_id;
     }
 
     /**
      * Check if the user has a specific permission.
-     *
-     * @param User $user
-     * @param string $permission
-     * @return bool
      */
     private function hasPermission(User $user, string $permission): bool
     {
-        // Check if user has the specific permission
-        // This assumes User model has permissions relationship or method
+        // Check if user has the required permission
         if (method_exists($user, 'hasPermission')) {
             return $user->hasPermission($permission);
         }
 
-        // Fallback to checking user roles if permissions method doesn't exist
-        if (method_exists($user, 'can')) {
-            return $user->can($permission);
+        // Check if user has permissions array
+        if (property_exists($user, 'permissions') && is_array($user->permissions)) {
+            return in_array($permission, $user->permissions);
         }
 
-        // Default fallback - check user role-based permissions
-        return $this->checkRoleBasedPermissions($user, $permission);
+        // Check user roles for permission
+        if (method_exists($user, 'hasRole')) {
+            $adminRoles = ['admin', 'super_admin', 'mass_payment_admin'];
+            foreach ($adminRoles as $role) {
+                if ($user->hasRole($role)) {
+                    return true;
+                }
+            }
+
+            // Check specific roles for specific permissions
+            return match ($permission) {
+                'mass_payments.create', 'mass_payments.update', 'mass_payments.delete' => 
+                    $user->hasRole('mass_payment_creator') || $user->hasRole('mass_payment_manager'),
+                'mass_payments.approve' => 
+                    $user->hasRole('mass_payment_approver') || $user->hasRole('mass_payment_manager'),
+                'mass_payments.view_instructions', 'mass_payments.export' => 
+                    $user->hasRole('mass_payment_viewer') || $user->hasRole('mass_payment_creator') || 
+                    $user->hasRole('mass_payment_approver') || $user->hasRole('mass_payment_manager'),
+                'mass_payments.download_template' => 
+                    $user->hasRole('mass_payment_creator') || $user->hasRole('mass_payment_manager'),
+                'mass_payments.restore', 'mass_payments.force_delete' => 
+                    $user->hasRole('mass_payment_admin'),
+                default => false,
+            };
+        }
+
+        // Default fallback - check if user is active
+        return $this->isActiveUser($user);
     }
 
     /**
-     * Check if the user has a specific role.
-     *
-     * @param User $user
-     * @param string $role
-     * @return bool
+     * Check if the mass payment file was uploaded by the current user.
      */
-    private function hasRole(User $user, string $role): bool
+    private function isOwnUpload(User $user, MassPaymentFile $massPaymentFile): bool
     {
-        // Check if user has the specific role
-        if (method_exists($user, 'hasRole')) {
-            return $user->hasRole($role);
+        // Check if the file has created_by field
+        if (property_exists($massPaymentFile, 'created_by') && !empty($massPaymentFile->created_by)) {
+            return $user->id === $massPaymentFile->created_by;
         }
 
-        // Fallback to checking role attribute
-        if (isset($user->role)) {
-            return $user->role === $role;
+        // Fallback: check created_at timestamp with small time window (assuming recent upload)
+        if (property_exists($user, 'last_activity_at')) {
+            $timeDiff = abs($user->last_activity_at->timestamp - $massPaymentFile->created_at->timestamp);
+            return $timeDiff < 300; // 5 minutes window
         }
 
-        // Default fallback
+        // Conservative approach: assume it's not own upload if we can't determine
         return false;
     }
 
     /**
-     * Check role-based permissions as fallback.
-     *
-     * @param User $user
-     * @param string $permission
-     * @return bool
+     * Check if the user is active and can perform actions.
      */
-    private function checkRoleBasedPermissions(User $user, string $permission): bool
+    private function isActiveUser(User $user): bool
     {
-        // Get user role
-        $userRole = $user->role ?? 'user';
+        // Check user status
+        if (property_exists($user, 'status')) {
+            return $user->status === 'active';
+        }
 
-        // Define role-based permissions mapping
-        $rolePermissions = [
-            'admin' => [
-                'mass_payments.upload',
-                'mass_payments.edit',
-                'mass_payments.delete',
-                'mass_payments.approve',
-                'mass_payments.reprocess',
-                'mass_payments.download',
-                'mass_payments.view_errors',
-                'mass_payments.view_instructions',
-                'mass_payments.cancel',
-                'mass_payments.audit',
-                'mass_payments.export',
-                'mass_payments.restore',
-                'mass_payments.force_delete',
-            ],
-            'manager' => [
-                'mass_payments.upload',
-                'mass_payments.edit',
-                'mass_payments.delete',
-                'mass_payments.approve',
-                'mass_payments.download',
-                'mass_payments.view_errors',
-                'mass_payments.view_instructions',
-                'mass_payments.cancel',
-                'mass_payments.export',
-            ],
-            'operator' => [
-                'mass_payments.upload',
-                'mass_payments.edit',
-                'mass_payments.download',
-                'mass_payments.view_errors',
-                'mass_payments.view_instructions',
-                'mass_payments.export',
-            ],
-            'viewer' => [
-                'mass_payments.download',
-                'mass_payments.view_errors',
-                'mass_payments.view_instructions',
-            ],
-        ];
+        // Check if user is enabled
+        if (property_exists($user, 'is_active')) {
+            return $user->is_active === true;
+        }
 
-        // Check if role has permission
-        return isset($rolePermissions[$userRole]) 
-            && in_array($permission, $rolePermissions[$userRole]);
+        // Check email verification
+        if (property_exists($user, 'email_verified_at')) {
+            return !is_null($user->email_verified_at);
+        }
+
+        // Default to true if no status fields exist
+        return true;
     }
 
     /**
-     * Determine if user can perform bulk operations.
-     *
-     * @param User $user
-     * @return bool
+     * Determine if the user can view files by status.
      */
-    public function bulkOperations(User $user): bool
+    public function viewByStatus(User $user, string $status): bool
     {
-        return $user->client_id !== null
-            && $this->hasPermission($user, 'mass_payments.bulk_operations');
+        if (!$this->hasClientAccess($user)) {
+            return false;
+        }
+
+        // Restrict certain statuses based on permissions
+        $restrictedStatuses = ['processing', 'completed'];
+        
+        if (in_array($status, $restrictedStatuses)) {
+            return $this->hasPermission($user, 'mass_payments.view_processed');
+        }
+
+        return $this->hasPermission($user, 'mass_payments.view');
     }
 
     /**
-     * Determine if user can view system statistics.
-     *
-     * @param User $user
-     * @return bool
+     * Determine if the user can access TCC account for mass payments.
      */
-    public function viewStatistics(User $user): bool
+    public function accessTccAccount(User $user, string $tccAccountId): bool
     {
-        return $user->client_id !== null
-            && $this->hasPermission($user, 'mass_payments.statistics');
+        if (!$this->hasClientAccess($user)) {
+            return false;
+        }
+
+        // Check if user has access to specific TCC account
+        if (method_exists($user, 'hasAccessToTccAccount')) {
+            return $user->hasAccessToTccAccount($tccAccountId);
+        }
+
+        // Check user's accessible TCC accounts
+        if (property_exists($user, 'accessible_tcc_accounts') && is_array($user->accessible_tcc_accounts)) {
+            return in_array($tccAccountId, $user->accessible_tcc_accounts);
+        }
+
+        // Default: allow access if user has mass payment permissions
+        return $this->hasPermission($user, 'mass_payments.create');
     }
 
     /**
-     * Determine if user can configure system settings.
-     *
-     * @param User $user
-     * @return bool
+     * Determine if the user can process files with specific currency.
      */
-    public function configureSettings(User $user): bool
+    public function processCurrency(User $user, string $currency): bool
     {
-        return $this->hasPermission($user, 'mass_payments.configure')
-            && $this->hasRole($user, 'admin');
+        if (!$this->hasClientAccess($user)) {
+            return false;
+        }
+
+        // Check user's allowed currencies
+        if (property_exists($user, 'allowed_currencies') && is_array($user->allowed_currencies)) {
+            return in_array(strtoupper($currency), $user->allowed_currencies);
+        }
+
+        // Check currency restrictions by role
+        if (method_exists($user, 'hasRole')) {
+            $restrictedCurrencies = ['EUR', 'USD', 'GBP']; // High-value currencies
+            
+            if (in_array(strtoupper($currency), $restrictedCurrencies)) {
+                return $user->hasRole('senior_approver') || $user->hasRole('mass_payment_admin');
+            }
+        }
+
+        // Default: allow all currencies for users with create permission
+        return $this->hasPermission($user, 'mass_payments.create');
     }
 
     /**
-     * Before hook - runs before all policy methods.
-     *
-     * @param User $user
-     * @param string $ability
-     * @return bool|null
+     * Determine if the user can handle files with specific amount threshold.
+     */
+    public function processAmount(User $user, float $totalAmount): bool
+    {
+        if (!$this->hasClientAccess($user)) {
+            return false;
+        }
+
+        // Check user's transaction limits
+        if (property_exists($user, 'daily_limit') && $user->daily_limit > 0) {
+            if ($totalAmount > $user->daily_limit) {
+                return false;
+            }
+        }
+
+        // High-value transaction approval requirements
+        $highValueThreshold = 100000.00; // $100,000
+        
+        if ($totalAmount > $highValueThreshold) {
+            return $this->hasPermission($user, 'mass_payments.high_value') || 
+                   $this->hasPermission($user, 'mass_payments.unlimited');
+        }
+
+        return $this->hasPermission($user, 'mass_payments.create');
+    }
+
+    /**
+     * Before hook for all policy methods.
      */
     public function before(User $user, string $ability): ?bool
     {
-        // Super admin users can do everything
-        if ($this->hasRole($user, 'super_admin')) {
+        // Super admin can do everything
+        if (method_exists($user, 'hasRole') && $user->hasRole('super_admin')) {
             return true;
         }
 
-        // Users without client_id cannot access mass payment features
-        if ($user->client_id === null && $ability !== 'viewAny') {
+        // System user can do everything
+        if (property_exists($user, 'is_system') && $user->is_system === true) {
+            return true;
+        }
+
+        // If user doesn't have client access, deny all actions
+        if (!$this->hasClientAccess($user)) {
             return false;
         }
 
-        // Inactive users cannot perform any actions
-        if (isset($user->is_active) && !$user->is_active) {
-            return false;
-        }
-
-        // Continue with regular policy checks
-        return null;
+        return null; // Continue to specific policy method
     }
 }

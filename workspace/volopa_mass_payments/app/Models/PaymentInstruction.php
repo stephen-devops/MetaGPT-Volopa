@@ -1,3 +1,6 @@
+## Code: app/Models/PaymentInstruction.php
+
+```php
 <?php
 
 namespace App\Models;
@@ -8,6 +11,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Builder;
+use Carbon\Carbon;
 
 class PaymentInstruction extends Model
 {
@@ -24,14 +28,14 @@ class PaymentInstruction extends Model
     protected $primaryKey = 'id';
 
     /**
-     * The "type" of the primary key ID.
-     */
-    protected $keyType = 'string';
-
-    /**
-     * Indicates if the IDs are auto-incrementing.
+     * Indicates if the model's ID is auto-incrementing.
      */
     public $incrementing = false;
+
+    /**
+     * The data type of the auto-incrementing ID.
+     */
+    protected $keyType = 'string';
 
     /**
      * The attributes that are mass assignable.
@@ -46,6 +50,75 @@ class PaymentInstruction extends Model
         'status',
         'validation_errors',
         'row_number',
+        'beneficiary_name',
+        'beneficiary_account_number',
+        'beneficiary_sort_code',
+        'beneficiary_iban',
+        'beneficiary_swift_code',
+        'beneficiary_bank_name',
+        'beneficiary_bank_address',
+        'beneficiary_address_line1',
+        'beneficiary_address_line2',
+        'beneficiary_city',
+        'beneficiary_state',
+        'beneficiary_postal_code',
+        'beneficiary_country',
+        'beneficiary_email',
+        'beneficiary_phone',
+        'invoice_number',
+        'invoice_date',
+        'incorporation_number',
+        'beneficiary_type',
+        'external_transaction_id',
+        'fx_rate',
+        'fee_amount',
+        'fee_currency',
+        'processed_at',
+        'processing_notes',
+    ];
+
+    /**
+     * The attributes that should be cast.
+     */
+    protected $casts = [
+        'id' => 'string',
+        'mass_payment_file_id' => 'string',
+        'beneficiary_id' => 'string',
+        'amount' => 'decimal:2',
+        'currency' => 'string',
+        'purpose_code' => 'string',
+        'reference' => 'string',
+        'status' => 'string',
+        'validation_errors' => 'array',
+        'row_number' => 'integer',
+        'beneficiary_name' => 'string',
+        'beneficiary_account_number' => 'string',
+        'beneficiary_sort_code' => 'string',
+        'beneficiary_iban' => 'string',
+        'beneficiary_swift_code' => 'string',
+        'beneficiary_bank_name' => 'string',
+        'beneficiary_bank_address' => 'string',
+        'beneficiary_address_line1' => 'string',
+        'beneficiary_address_line2' => 'string',
+        'beneficiary_city' => 'string',
+        'beneficiary_state' => 'string',
+        'beneficiary_postal_code' => 'string',
+        'beneficiary_country' => 'string',
+        'beneficiary_email' => 'string',
+        'beneficiary_phone' => 'string',
+        'invoice_number' => 'string',
+        'invoice_date' => 'date',
+        'incorporation_number' => 'string',
+        'beneficiary_type' => 'string',
+        'external_transaction_id' => 'string',
+        'fx_rate' => 'decimal:6',
+        'fee_amount' => 'decimal:2',
+        'fee_currency' => 'string',
+        'processed_at' => 'datetime',
+        'processing_notes' => 'string',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
+        'deleted_at' => 'datetime',
     ];
 
     /**
@@ -59,52 +132,69 @@ class PaymentInstruction extends Model
     ];
 
     /**
-     * The attributes that should be cast.
-     */
-    protected $casts = [
-        'id' => 'string',
-        'mass_payment_file_id' => 'string',
-        'beneficiary_id' => 'integer',
-        'amount' => 'decimal:2',
-        'row_number' => 'integer',
-        'validation_errors' => 'array',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
-        'deleted_at' => 'datetime',
-    ];
-
-    /**
      * The attributes that should be hidden for serialization.
      */
     protected $hidden = [
         'deleted_at',
+        'external_transaction_id',
+        'processing_notes',
     ];
 
     /**
-     * Status enum constants
+     * Status constants
      */
-    public const STATUS_PENDING = 'pending';
+    public const STATUS_DRAFT = 'draft';
     public const STATUS_VALIDATED = 'validated';
     public const STATUS_VALIDATION_FAILED = 'validation_failed';
+    public const STATUS_PENDING = 'pending';
     public const STATUS_PROCESSING = 'processing';
     public const STATUS_COMPLETED = 'completed';
     public const STATUS_FAILED = 'failed';
     public const STATUS_CANCELLED = 'cancelled';
 
     /**
-     * Get all available status values
+     * Valid status values
      */
-    public static function getStatuses(): array
+    public const VALID_STATUSES = [
+        self::STATUS_DRAFT,
+        self::STATUS_VALIDATED,
+        self::STATUS_VALIDATION_FAILED,
+        self::STATUS_PENDING,
+        self::STATUS_PROCESSING,
+        self::STATUS_COMPLETED,
+        self::STATUS_FAILED,
+        self::STATUS_CANCELLED,
+    ];
+
+    /**
+     * Beneficiary type constants
+     */
+    public const BENEFICIARY_TYPE_INDIVIDUAL = 'individual';
+    public const BENEFICIARY_TYPE_BUSINESS = 'business';
+
+    /**
+     * Valid beneficiary types
+     */
+    public const VALID_BENEFICIARY_TYPES = [
+        self::BENEFICIARY_TYPE_INDIVIDUAL,
+        self::BENEFICIARY_TYPE_BUSINESS,
+    ];
+
+    /**
+     * Boot the model.
+     */
+    protected static function boot(): void
     {
-        return [
-            self::STATUS_PENDING,
-            self::STATUS_VALIDATED,
-            self::STATUS_VALIDATION_FAILED,
-            self::STATUS_PROCESSING,
-            self::STATUS_COMPLETED,
-            self::STATUS_FAILED,
-            self::STATUS_CANCELLED,
-        ];
+        parent::boot();
+
+        // Apply client scoping through mass payment file relationship
+        static::addGlobalScope('client', function (Builder $query) {
+            if (auth()->check() && auth()->user()->client_id) {
+                $query->whereHas('massPaymentFile', function (Builder $subQuery) {
+                    $subQuery->where('client_id', auth()->user()->client_id);
+                });
+            }
+        });
     }
 
     /**
@@ -112,27 +202,27 @@ class PaymentInstruction extends Model
      */
     public function massPaymentFile(): BelongsTo
     {
-        return $this->belongsTo(MassPaymentFile::class, 'mass_payment_file_id');
+        return $this->belongsTo(MassPaymentFile::class, 'mass_payment_file_id', 'id');
     }
 
     /**
-     * Get the beneficiary associated with the payment instruction.
+     * Get the beneficiary for the payment instruction.
      */
     public function beneficiary(): BelongsTo
     {
-        return $this->belongsTo(Beneficiary::class, 'beneficiary_id');
+        return $this->belongsTo(Beneficiary::class, 'beneficiary_id', 'id');
     }
 
     /**
-     * Scope to filter by mass payment file ID.
+     * Scope a query to filter by mass payment file ID.
      */
-    public function scopeForFile(Builder $query, string $fileId): Builder
+    public function scopeForMassPaymentFile(Builder $query, string $massPaymentFileId): Builder
     {
-        return $query->where('mass_payment_file_id', $fileId);
+        return $query->where('mass_payment_file_id', $massPaymentFileId);
     }
 
     /**
-     * Scope to filter by status.
+     * Scope a query to filter by status.
      */
     public function scopeByStatus(Builder $query, string $status): Builder
     {
@@ -140,31 +230,23 @@ class PaymentInstruction extends Model
     }
 
     /**
-     * Scope to filter by currency.
+     * Scope a query to filter by currency.
      */
     public function scopeByCurrency(Builder $query, string $currency): Builder
     {
-        return $query->where('currency', $currency);
+        return $query->where('currency', strtoupper($currency));
     }
 
     /**
-     * Scope to filter by beneficiary ID.
+     * Scope a query to filter by beneficiary type.
      */
-    public function scopeForBeneficiary(Builder $query, int $beneficiaryId): Builder
+    public function scopeByBeneficiaryType(Builder $query, string $beneficiaryType): Builder
     {
-        return $query->where('beneficiary_id', $beneficiaryId);
+        return $query->where('beneficiary_type', $beneficiaryType);
     }
 
     /**
-     * Scope to get pending instructions.
-     */
-    public function scopePending(Builder $query): Builder
-    {
-        return $query->where('status', self::STATUS_PENDING);
-    }
-
-    /**
-     * Scope to get validated instructions.
+     * Scope a query to get validated instructions.
      */
     public function scopeValidated(Builder $query): Builder
     {
@@ -172,7 +254,7 @@ class PaymentInstruction extends Model
     }
 
     /**
-     * Scope to get failed validation instructions.
+     * Scope a query to get failed validation instructions.
      */
     public function scopeValidationFailed(Builder $query): Builder
     {
@@ -180,23 +262,39 @@ class PaymentInstruction extends Model
     }
 
     /**
-     * Scope to get processing instructions.
+     * Scope a query to get pending instructions.
      */
-    public function scopeProcessing(Builder $query): Builder
+    public function scopePending(Builder $query): Builder
     {
-        return $query->where('status', self::STATUS_PROCESSING);
+        return $query->where('status', self::STATUS_PENDING);
     }
 
     /**
-     * Scope to get completed instructions.
+     * Scope a query to get processing instructions.
+     */
+    public function scopeProcessing(Builder $query): Builder
+    {
+        return $query->whereIn('status', [self::STATUS_PROCESSING, self::STATUS_PENDING]);
+    }
+
+    /**
+     * Scope a query to get completed instructions.
      */
     public function scopeCompleted(Builder $query): Builder
+    {
+        return $query->whereIn('status', [self::STATUS_COMPLETED, self::STATUS_FAILED, self::STATUS_CANCELLED]);
+    }
+
+    /**
+     * Scope a query to get successful instructions.
+     */
+    public function scopeSuccessful(Builder $query): Builder
     {
         return $query->where('status', self::STATUS_COMPLETED);
     }
 
     /**
-     * Scope to get failed instructions.
+     * Scope a query to get failed instructions.
      */
     public function scopeFailed(Builder $query): Builder
     {
@@ -204,45 +302,19 @@ class PaymentInstruction extends Model
     }
 
     /**
-     * Scope to get cancelled instructions.
+     * Scope a query to order by row number.
      */
-    public function scopeCancelled(Builder $query): Builder
+    public function scopeOrderByRow(Builder $query, string $direction = 'asc'): Builder
     {
-        return $query->where('status', self::STATUS_CANCELLED);
+        return $query->orderBy('row_number', $direction);
     }
 
     /**
-     * Scope to get instructions with validation errors.
+     * Check if the instruction is in draft status.
      */
-    public function scopeWithValidationErrors(Builder $query): Builder
+    public function isDraft(): bool
     {
-        return $query->whereNotNull('validation_errors');
-    }
-
-    /**
-     * Scope to order by row number.
-     */
-    public function scopeOrderByRowNumber(Builder $query): Builder
-    {
-        return $query->orderBy('row_number');
-    }
-
-    /**
-     * Scope for client scoping through mass payment file relationship.
-     */
-    public function scopeForClient(Builder $query, int $clientId): Builder
-    {
-        return $query->whereHas('massPaymentFile', function ($q) use ($clientId) {
-            $q->where('client_id', $clientId);
-        });
-    }
-
-    /**
-     * Check if the instruction is in pending status.
-     */
-    public function isPending(): bool
-    {
-        return $this->status === self::STATUS_PENDING;
+        return $this->status === self::STATUS_DRAFT;
     }
 
     /**
@@ -262,7 +334,15 @@ class PaymentInstruction extends Model
     }
 
     /**
-     * Check if the instruction is currently processing.
+     * Check if the instruction is pending.
+     */
+    public function isPending(): bool
+    {
+        return $this->status === self::STATUS_PENDING;
+    }
+
+    /**
+     * Check if the instruction is processing.
      */
     public function isProcessing(): bool
     {
@@ -307,9 +387,9 @@ class PaymentInstruction extends Model
     public function canBeCancelled(): bool
     {
         return in_array($this->status, [
-            self::STATUS_PENDING,
+            self::STATUS_DRAFT,
             self::STATUS_VALIDATED,
-            self::STATUS_VALIDATION_FAILED,
+            self::STATUS_PENDING,
         ]);
     }
 
@@ -322,164 +402,147 @@ class PaymentInstruction extends Model
     }
 
     /**
-     * Mark the instruction as validated.
+     * Check if the beneficiary is a business.
      */
-    public function markAsValidated(): void
+    public function isBusiness(): bool
     {
-        $this->update([
-            'status' => self::STATUS_VALIDATED,
-            'validation_errors' => null,
-        ]);
+        return $this->beneficiary_type === self::BENEFICIARY_TYPE_BUSINESS;
     }
 
     /**
-     * Mark the instruction as validation failed with errors.
+     * Check if the beneficiary is an individual.
      */
-    public function markAsValidationFailed(array $errors = []): void
+    public function isIndividual(): bool
     {
-        $this->update([
-            'status' => self::STATUS_VALIDATION_FAILED,
-            'validation_errors' => $errors,
-        ]);
+        return $this->beneficiary_type === self::BENEFICIARY_TYPE_INDIVIDUAL;
     }
 
     /**
-     * Mark the instruction as processing.
+     * Check if currency-specific fields are required.
      */
-    public function markAsProcessing(): void
+    public function requiresInvoiceDetails(): bool
     {
-        $this->update(['status' => self::STATUS_PROCESSING]);
+        return strtoupper($this->currency) === 'INR';
     }
 
     /**
-     * Mark the instruction as completed.
+     * Check if incorporation number is required.
      */
-    public function markAsCompleted(): void
+    public function requiresIncorporationNumber(): bool
     {
-        $this->update(['status' => self::STATUS_COMPLETED]);
+        return strtoupper($this->currency) === 'TRY' && $this->isBusiness();
     }
 
     /**
-     * Mark the instruction as failed with optional errors.
+     * Get the validation error count.
      */
-    public function markAsFailed(array $errors = []): void
-    {
-        $this->update([
-            'status' => self::STATUS_FAILED,
-            'validation_errors' => $errors,
-        ]);
-    }
-
-    /**
-     * Mark the instruction as cancelled.
-     */
-    public function markAsCancelled(): void
-    {
-        $this->update(['status' => self::STATUS_CANCELLED]);
-    }
-
-    /**
-     * Get formatted amount with currency.
-     */
-    public function getFormattedAmountAttribute(): string
-    {
-        return number_format($this->amount, 2) . ' ' . $this->currency;
-    }
-
-    /**
-     * Get validation error count.
-     */
-    public function getValidationErrorCountAttribute(): int
+    public function getValidationErrorCount(): int
     {
         return is_array($this->validation_errors) ? count($this->validation_errors) : 0;
     }
 
     /**
-     * Get the first validation error message.
+     * Get the formatted amount with currency.
      */
-    public function getFirstValidationErrorAttribute(): ?string
+    public function getFormattedAmount(): string
     {
-        if (is_array($this->validation_errors) && !empty($this->validation_errors)) {
-            return $this->validation_errors[0] ?? null;
+        return number_format($this->amount, 2) . ' ' . strtoupper($this->currency);
+    }
+
+    /**
+     * Get the formatted beneficiary address.
+     */
+    public function getFormattedBeneficiaryAddress(): string
+    {
+        $addressParts = array_filter([
+            $this->beneficiary_address_line1,
+            $this->beneficiary_address_line2,
+            $this->beneficiary_city,
+            $this->beneficiary_state,
+            $this->beneficiary_postal_code,
+            $this->beneficiary_country,
+        ]);
+
+        return implode(', ', $addressParts);
+    }
+
+    /**
+     * Get the formatted bank details.
+     */
+    public function getFormattedBankDetails(): string
+    {
+        $bankParts = array_filter([
+            $this->beneficiary_bank_name,
+            $this->beneficiary_swift_code,
+            $this->beneficiary_bank_address,
+        ]);
+
+        return implode(', ', $bankParts);
+    }
+
+    /**
+     * Get the account identifier (IBAN or account number).
+     */
+    public function getAccountIdentifier(): string
+    {
+        return $this->beneficiary_iban ?: ($this->beneficiary_account_number ?: 'N/A');
+    }
+
+    /**
+     * Update the instruction status.
+     */
+    public function updateStatus(string $status, ?array $validationErrors = null): bool
+    {
+        if (!in_array($status, self::VALID_STATUSES)) {
+            return false;
         }
+
+        $this->status = $status;
         
-        return null;
+        if ($validationErrors !== null) {
+            $this->validation_errors = $validationErrors;
+        }
+
+        return $this->save();
     }
 
     /**
-     * Get display-friendly status name.
+     * Mark the instruction as validated.
      */
-    public function getStatusDisplayAttribute(): string
+    public function markAsValidated(): bool
     {
-        return match ($this->status) {
-            self::STATUS_PENDING => 'Pending',
-            self::STATUS_VALIDATED => 'Validated',
-            self::STATUS_VALIDATION_FAILED => 'Validation Failed',
-            self::STATUS_PROCESSING => 'Processing',
-            self::STATUS_COMPLETED => 'Completed',
-            self::STATUS_FAILED => 'Failed',
-            self::STATUS_CANCELLED => 'Cancelled',
-            default => 'Unknown',
-        };
+        $this->status = self::STATUS_VALIDATED;
+        $this->validation_errors = null;
+
+        return $this->save();
     }
 
     /**
-     * Check if instruction is in final state.
+     * Mark the instruction as validation failed.
      */
-    public function isInFinalState(): bool
+    public function markAsValidationFailed(array $errors): bool
     {
-        return in_array($this->status, [
-            self::STATUS_COMPLETED,
-            self::STATUS_FAILED,
-            self::STATUS_CANCELLED,
-        ]);
+        $this->status = self::STATUS_VALIDATION_FAILED;
+        $this->validation_errors = $errors;
+
+        return $this->save();
     }
 
     /**
-     * Check if instruction is processable (not in final state or validation failed).
+     * Mark the instruction as processing.
      */
-    public function isProcessable(): bool
+    public function markAsProcessing(string $externalTransactionId = null): bool
     {
-        return !$this->isInFinalState() && !$this->hasValidationFailed();
+        $this->status = self::STATUS_PROCESSING;
+        
+        if ($externalTransactionId) {
+            $this->external_transaction_id = $externalTransactionId;
+        }
+
+        return $this->save();
     }
 
     /**
-     * Scope to get instructions in final states.
+     * Mark the instruction as completed.
      */
-    public function scopeInFinalState(Builder $query): Builder
-    {
-        return $query->whereIn('status', [
-            self::STATUS_COMPLETED,
-            self::STATUS_FAILED,
-            self::STATUS_CANCELLED,
-        ]);
-    }
-
-    /**
-     * Scope to get processable instructions.
-     */
-    public function scopeProcessable(Builder $query): Builder
-    {
-        return $query->whereNotIn('status', [
-            self::STATUS_COMPLETED,
-            self::STATUS_FAILED,
-            self::STATUS_CANCELLED,
-            self::STATUS_VALIDATION_FAILED,
-        ]);
-    }
-
-    /**
-     * Boot the model and apply global scopes.
-     */
-    protected static function booted(): void
-    {
-        // Apply client scoping globally for multi-tenant architecture
-        static::addGlobalScope('client', function (Builder $builder) {
-            if (auth()->check() && auth()->user()->client_id) {
-                $builder->whereHas('massPaymentFile', function ($q) {
-                    $q->where('client_id', auth()->user()->client_id);
-                });
-            }
-        });
-    }
-}
+    public
