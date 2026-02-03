@@ -1,0 +1,135 @@
+# Environment Artifacts for Volopa Platform
+# Separated from environment_context.yaml for clarity
+# Context: Existing abstract models and platform artifacts that pre-exist any project
+
+metadata:
+  platform_name: "Volopa"
+  version: "1.0"
+  description: "Existing platform artifacts - abstract models, services, and infrastructure components"
+  generated_date: "2026-01-29"
+
+standard_volopa_models:
+  description: "Existing Volopa platform models available for integration"
+  category: "Platform Standard Models"
+
+  models:
+    - name: "Account"
+      origin: EXISTING
+      description: "User account model"
+      type: "Eloquent Model"
+
+    - name: "Client"
+      origin: EXISTING
+      description: "Client/organization model"
+      type: "Eloquent Model"
+
+    - name: "ClientFeatures"
+      origin: EXISTING
+      description: "Client feature flags"
+      type: "Eloquent Model"
+
+    - name: "Profile"
+      origin: EXISTING
+      description: "User profile model"
+      type: "Eloquent Model"
+
+    - name: "TccAccount"
+      origin: EXISTING
+      description: "TCC account model"
+      type: "Eloquent Model"
+
+    - name: "TccBeneficiary"
+      origin: EXISTING
+      description: "Beneficiary/recipient model"
+      type: "Eloquent Model"
+
+    - name: "TccContact"
+      origin: EXISTING
+      description: "Contact model"
+      type: "Eloquent Model"
+
+    - name: "TccPaymentPurposeCode"
+      origin: EXISTING
+      description: "Payment purpose codes lookup"
+      type: "Eloquent Model"
+
+    - name: "User"
+      origin: EXISTING
+      description: "User authentication model"
+      type: "Eloquent Model"
+
+standard_volopa_middleware:
+  description: "Existing Volopa middleware components"
+  category: "Platform Middleware"
+
+  components:
+    - name: "Oauth2UserClient"
+      origin: EXISTING
+      description: "OAuth2 token-based authentication middleware"
+      type: "Middleware"
+
+standard_volopa_infrastructure:
+  description: "Existing Volopa infrastructure components"
+  category: "Platform Infrastructure"
+
+  components:
+    - name: "Queue"
+      origin: EXISTING
+      description: "Laravel queue system for async job processing"
+      type: "Infrastructure"
+
+    - name: "Storage"
+      origin: EXISTING
+      description: "File storage system"
+      type: "Infrastructure"
+
+# Flow Components - Entities participating in system flows (grouped by origin)
+flow_components:
+  description: "Entities participating in system flows with origin classification"
+  dimension: "Flow"
+
+  msc_upload_csv:
+    source_slide: 12
+    name: "Upload CSV Sequence"
+    components:
+      - name: "Oauth2UserClient (MW)"
+        origin: EXISTING
+        dimension: "Flow"
+        type: "Middleware"
+        description: "Authentication gateway - validates OAuth2 tokens before allowing requests to proceed"
+
+      - name: "Storage(mass_file_uploads)"
+        origin: EXISTING
+        dimension: "Flow"
+        type: "File Storage"
+        description: "Persistent file storage for uploaded CSV files"
+
+      - name: "PaymentFileUpload (DB)"
+        origin: NEW
+        dimension: "Flow"
+        type: "Database"
+        location: "app/Models/PaymentFileUpload.php"
+        description: "Database table tracking uploaded payment files and their processing status"
+
+      - name: "Queue(file-processing)"
+        origin: EXISTING
+        dimension: "Flow"
+        type: "Queue"
+        description: "Async job queue for processing uploaded CSV files"
+
+  msc_get_status:
+    slide_source: 13
+    name: "Get Uploaded CSV Status Sequence"
+    components:
+      - name: "Oauth2UserClient (MW)"
+        origin: EXISTING
+        dimension: "Flow"
+        type: "Middleware"
+        description: "Authentication gateway - validates OAuth2 tokens before allowing requests to proceed"
+
+      - name: "PaymentFileUpload (DB)"
+        origin: NEW
+        dimension: "Flow"
+        type: "Database"
+        location: "app/Models/PaymentFileUpload.php"
+        description: "Database table storing upload records"
