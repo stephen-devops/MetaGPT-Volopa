@@ -1,0 +1,615 @@
+# Project Context for Mass Payments System
+# Generated from Mass Payment POC v2.pptx annotations
+# Context: Project - feature-specific intent, rules, flows, and interfaces
+
+metadata:
+  project_name: "Mass Payments"
+  version: "POC v2"
+  source: "Mass Payment - POC v1.pptx"
+  generated_date: "2026-01-23"
+
+intent:
+  description: "Why the system exists and what success means"
+  source_slide: 2
+  objectives:
+    - "Give clients the ability to process large payment runs through the Volopa business platform"
+    - "Support payments files of 5,000 to 15,000 payments"
+  location: "Payments >> Batch Payments >> File Uploads"
+  tasks:
+    - "File Upload"
+  impacted_sections:
+    - "Admin.volopaUI – New journey to download templates and upload payments files"
+
+requirements:
+  description: "Externally observable behavior - what users can do"
+
+  features:
+    - id: "REQ-001"
+      name: "Download CSV with Latest List of Recipients"
+      source_slide: 3
+      description: "Provide a button for clients to download the latest CSV file containing recipient details"
+      details:
+        - "Can download a list of recipients per currency (1 currency at a time)"
+        - "CSV includes: Recipient ID, name, bank country, account currency, email addresses"
+
+    - id: "REQ-002"
+      name: "CSV Template"
+      source_slide: 3
+      description: "Generate a CSV template pre-filled with the client's recipient details"
+      columns:
+        - "Recipient ID"
+        - "Client Recipient ID"
+        - "Recipient Name"
+        - "Recipient Bank Country"
+        - "Recipient Account Currency (1 currency)"
+        - "Available Settlement Methods (Values: Priority; Regular; Priority and Regular)"
+        - "Recipient Email Address"
+        - "CC Email Address"
+        - "Payment Amount (blank for client input)"
+        - "Settlement Method (dropdown: Priority, Regular)"
+        - "Payment Reason"
+        - "Payments Reference"
+        - "Purpose of Payment Code (dropdown, dependent on Bank Country and Account Currency)"
+        - "Invoice Number (required if Account Currency is INR)"
+        - "Invoice Date (required if Account Currency is INR)"
+        - "Incorporation_number (added for business Recipients with TRY)"
+      constraints:
+        - "CSV should allow up to 10,000 rows (i.e. payments) per file"
+
+    - id: "REQ-003"
+      name: "Drag and Drop Box for Upload"
+      source_slide: 3
+      description: "Implement a drag-and-drop box or upload button for the client to upload the completed payments file"
+      functionality:
+        - "Allow clients to upload the filled CSV file for processing"
+
+    - id: "REQ-004"
+      name: "File Validation"
+      source_slide: 3
+      description: "Validate the uploaded file for formatting errors and value errors"
+      checks:
+        - "Correct file format (CSV)"
+        - "Presence of required fields/columns/file structure"
+        - "Does not exceed the maximum number of payments – 10,000"
+        - "Valid data entries (proper email format, valid country & currency codes, Purpose codes, payment types)"
+
+  user_journeys:
+    - id: "UJ-001"
+      name: "File Upload Journey"
+      source_slides: [5, 6, 7, 8]
+      steps:
+        - step: 1
+          action: "Download file template"
+          ui_element: "Download payments file button"
+        - step: 2
+          action: "Fill in the template with the payments information"
+          note: "Refer to user guide for template completion"
+        - step: 3
+          action: "Upload completed payments file for processing"
+          ui_element: "Drop files to attach or Browse"
+        - step: 4
+          action: "Review your file"
+          ui_elements:
+            - "File Format validation"
+            - "File Structure validation"
+            - "File Summary display"
+      summary_display:
+        - "Total Number of payments"
+        - "Breakdown by currency"
+        - "Errored payments count"
+        - "Link to view error rows"
+      actions:
+        - "Cancel"
+        - "Proceed"
+
+  technical_requirements:
+    source_slide: 9
+    description: "Create a new service based on 'laravel-microservice-template' repository"
+    capabilities:
+      - "Allow the client to download a template CSV generated based on database entries"
+      - "Allow client to upload a completed CSV file for processing"
+      - "Verify the uploaded file is a CSV"
+      - "Validate the uploaded file for formatting and value errors"
+      - "Validate if file respects the maximum row limit and column validation rules"
+      - "Process the validated file and create payment instructions"
+      - "Allow client to get the files list with their status"
+
+constraints:
+  description: "Hard rules that restrict solution space"
+  # Note: Project-specific constraints extracted from requirements
+  file_constraints:
+    - "Maximum 10,000 rows per CSV file"
+    - "File size limit: 10MB"
+    - "File format: CSV only"
+  validation_constraints:
+    - "Invoice Number required if Account Currency is INR"
+    - "Invoice Date required if Account Currency is INR"
+    - "Incorporation_number required for business Recipients with TRY"
+    - "Purpose of Payment Code dependent on Bank Country and Account Currency"
+  unresolved:
+    - id: "CON-UNRESOLVED-001"
+      area: "Approval workflow"
+      question: "What are the complete approval rules by currency?"
+      source_slide: 11
+    - id: "CON-UNRESOLVED-002"
+      area: "Error handling"
+      question: "What happens after validation errors are shown? Is there a retry mechanism?"
+      source_slide: 11
+    - id: "CON-UNRESOLVED-003"
+      area: "Concurrency"
+      question: "How is 'first approver claims' implemented technically?"
+      source_slide: 11
+
+flows:
+  description: "Dynamic behavior and sequencing"
+
+  upload_flow:
+    source_slide: 11
+    name: "System Flow for UPLOAD"
+    steps:
+      - id: "FLOW-001"
+        name: "Upload Payment File"
+        description: "The user initiates the process by uploading a bulk payment file through the platform"
+      - id: "FLOW-002"
+        name: "Validate File"
+        description: "The system (FPS service) automatically validates the file content and format"
+      - id: "FLOW-003"
+        name: "Validation Outcome - Failure"
+        description: "Validation errors are shown. User must fix and re-upload the file"
+      - id: "FLOW-004"
+        name: "Validation Outcome - Success"
+        description: "Proceed to approval decision based on currency rules"
+      - id: "FLOW-005"
+        name: "Approval Requirement Check"
+        condition: "If approval is NOT required"
+        outcome: "Upload is completed immediately"
+      - id: "FLOW-006"
+        name: "Approval Requirement Check"
+        condition: "If approval IS required"
+        outcome: "Bell icon notification is dispatched to all approvers"
+      - id: "FLOW-007"
+        name: "Approver Interaction - First Approver"
+        trigger: "First approver to click notification"
+        outcome: "Redirected to Payment Confirmation Page to create the payment"
+      - id: "FLOW-008"
+        name: "Approver Interaction - Subsequent Approvers"
+        trigger: "Other approvers clicking later"
+        outcome: "Redirected to Draft Payments Page (payment already picked)"
+
+    flowchart_elements:
+      - "Upload Payment File"
+      - "Validate Payment File FPS"
+      - "Failure"
+      - "Success"
+      - "Show Validation Errors"
+      - "Currency requires approval?"
+      - "Yes"
+      - "No"
+      - "Bell icon notification to all approvers"
+      - "First approver to click?"
+      - "Upload Complete Notification"
+      - "Redirect to Draft Payments Page"
+      - "Create New Payment (Pending Funds)"
+
+    flowchart_sequence:
+      - path: "validation_failure"
+        sequence:
+          - "Upload Payment File"
+          - "Validate Payment File FPS"
+          - "Failure"
+          - "Show Validation Errors"
+          - "Upload Payment File"
+
+      - path: "validation_success_no_approval"
+        sequence:
+          - "Upload Payment File"
+          - "Validate Payment File FPS"
+          - "Success"
+          - "Currency requires approval?"
+          - "No"
+          - "Upload Complete Notification"
+          - "Create New Payment (Pending Funds)"
+
+      - path: "validation_success_approval_first_approver"
+        sequence:
+          - "Upload Payment File"
+          - "Validate Payment File FPS"
+          - "Success"
+          - "Currency requires approval?"
+          - "Yes"
+          - "Bell icon notification to all approvers"
+          - "First approver to click?"
+          - "Yes"
+          - "Create New Payment (Pending Funds)"
+
+      - path: "validation_success_approval_subsequent_approver"
+        sequence:
+          - "Upload Payment File"
+          - "Validate Payment File FPS"
+          - "Success"
+          - "Currency requires approval?"
+          - "Yes"
+          - "Bell icon notification to all approvers"
+          - "First approver to click?"
+          - "No"
+          - "Redirect to Draft Payments Page"
+
+  msc_upload_csv:
+    source_slide: 12
+    name: "Upload CSV Sequence"
+    diagram_type: "Message Sequence Chart"
+
+    entities:
+      - name: "Client"
+        context: "Project"
+        origin: EXTERNAL
+        dimension: "Flow"
+        role: "Initiates upload request"
+
+      - name: "Oauth2UserClient (MW)"
+        context: "Environment"
+        origin: EXISTING
+        dimension: "Flow"
+        role: "Authentication middleware - validates OAuth2 tokens"
+        reference: "environment_artifacts.yaml#standard_volopa_middleware"
+
+      - name: "UploadController"
+        context: "Project"
+        origin: NEW
+        dimension: "Flow"
+        location: "app/Http/Controllers/UploadController.php"
+        role: "Handles upload API endpoint"
+
+      - name: "Validator"
+        context: "Project"
+        origin: NEW
+        dimension: "Flow"
+        location: "app/Services/PaymentCSVValidator.php"
+        role: "Validates CSV file format and content"
+
+      - name: "Storage(mass_file_uploads)"
+        context: "Environment"
+        origin: EXISTING
+        dimension: "Flow"
+        role: "Persistent file storage for uploaded CSVs"
+        reference: "environment_artifacts.yaml#standard_volopa_infrastructure"
+
+      - name: "PaymentFileUpload (DB)"
+        context: "Project"
+        origin: NEW
+        dimension: "Flow"
+        location: "app/Models/PaymentFileUpload.php"
+        role: "Database table tracking upload records"
+
+      - name: "Queue(file-processing)"
+        context: "Environment"
+        origin: EXISTING
+        dimension: "Flow"
+        role: "Async job queue for CSV processing"
+        reference: "environment_artifacts.yaml#standard_volopa_infrastructure"
+
+    message_sequence:
+      - seq: 1
+        from: "Client"
+        to: "Oauth2UserClient (MW)"
+        message: "POST /v1/uploads/payment/csv (file, user_id, client_id)"
+
+      - seq: 2
+        from: "Oauth2UserClient (MW)"
+        to: "UploadController"
+        message: "allow"
+
+      - seq: 3
+        from: "UploadController"
+        to: "Validator"
+        message: "forward request"
+
+      - seq: 4
+        from: "Validator"
+        to: "Validator"
+        message: "validate(file: csv / <=10MB)"
+
+      - seq: 5
+        from: "Validator"
+        to: "UploadController"
+        message: "ok/fails"
+
+      - seq: 6
+        from: "UploadController"
+        to: "Client"
+        message: "alt [validation fails]: 422 ERROR_VALIDATION_FAILED"
+        condition: "validation fails"
+
+      - seq: 7
+        from: "UploadController"
+        to: "Storage(mass_file_uploads)"
+        message: "alt [ok]: ensure dir 'success' InputFileAs(fileName)"
+        condition: "validation ok"
+
+      - seq: 8
+        from: "Storage(mass_file_uploads)"
+        to: "UploadController"
+        message: "filePath"
+
+      - seq: 9
+        from: "UploadController"
+        to: "PaymentFileUpload (DB)"
+        message: "create PaymentFileUpload{status=UPLOADED}"
+
+      - seq: 10
+        from: "PaymentFileUpload (DB)"
+        to: "UploadController"
+        message: "record(id)"
+
+      - seq: 11
+        from: "UploadController"
+        to: "Queue(file-processing)"
+        message: "dispatch ProcessCSV(record) on 'file-processing'"
+
+      - seq: 12
+        from: "UploadController"
+        to: "Client"
+        message: "201 {file_id, file_name, status}"
+
+  msc_get_status:
+    source_slide: 13
+    name: "Get Uploaded CSV Status Sequence"
+    diagram_type: "Message Sequence Chart"
+
+    entities:
+      - name: "Client"
+        context: "Project"
+        origin: EXTERNAL
+        dimension: "Flow"
+        role: "Requests upload status"
+
+      - name: "Oauth2UserClient (MW)"
+        context: "Environment"
+        origin: EXISTING
+        dimension: "Flow"
+        role: "Authentication middleware - validates OAuth2 tokens"
+        reference: "environment_artifacts.yaml#standard_volopa_middleware"
+
+      - name: "UploadController"
+        context: "Project"
+        origin: NEW
+        dimension: "Flow"
+        location: "app/Http/Controllers/UploadController.php"
+        role: "Handles status API endpoint"
+
+      - name: "PaymentFileUpload (DB)"
+        context: "Project"
+        origin: NEW
+        dimension: "Flow"
+        location: "app/Models/PaymentFileUpload.php"
+        role: "Database table storing upload records"
+
+    message_sequence:
+      - seq: 1
+        from: "Client"
+        to: "Oauth2UserClient (MW)"
+        message: "GET /status/{id}"
+
+      - seq: 2
+        from: "Oauth2UserClient (MW)"
+        to: "UploadController"
+        message: "forward"
+
+      - seq: 3
+        from: "UploadController"
+        to: "PaymentFileUpload (DB)"
+        message: "find(id)"
+
+      - seq: 4
+        from: "PaymentFileUpload (DB)"
+        to: "UploadController"
+        message: "alt [not found]: 404"
+        condition: "record not found"
+
+      - seq: 5
+        from: "PaymentFileUpload (DB)"
+        to: "UploadController"
+        message: "alt [found]: record"
+        condition: "record found"
+
+      - seq: 6
+        from: "UploadController"
+        to: "Client"
+        message: "200 {file_id, file_name, status, uploaded_at, completed_at}"
+
+interfaces:
+  description: "Structural contracts and schemas"
+  source_slide: 10
+
+  fps_specific_models:
+    description: "New models for FPS (File Processing Service)"
+    category: "FPS Specific Models"
+    models:
+      - name: "PaymentFileUpload"
+        origin: NEW
+        location: "app/Models/PaymentFileUpload.php"
+        migration: "database/migrations/xxxx_create_payment_file_uploads_table.php"
+        description: "Tracks uploaded payment files"
+        fields:
+          - "user_id"
+          - "client_id"
+          - "file_name"
+          - "file_path"
+          - "currency"
+          - "funding_currency"
+          - "summary"
+          - "total_records"
+          - "valid_records"
+          - "failed_records"
+          - "status"
+          - "uploaded_at"
+          - "completed_at"
+
+      - name: "PaymentUploadError"
+        origin: NEW
+        location: "app/Models/PaymentUploadError.php"
+        migration: "database/migrations/xxxx_create_payment_upload_errors_table.php"
+        description: "Tracks validation errors per row"
+        fields:
+          - "payment_file_upload_id"
+          - "row_number"
+          - "header_name"
+          - "provided_value"
+          - "error_detail"
+
+      - name: "PaymentUploadInstruction"
+        origin: NEW
+        location: "app/Models/PaymentUploadInstruction.php"
+        migration: "database/migrations/xxxx_create_payment_upload_instructions_table.php"
+        description: "Individual payment instructions from CSV"
+        fields:
+          - "payment_file_upload_id"
+          - "beneficiary_id"
+          - "client_payee_id"
+          - "cc_email_address"
+          - "payment_amount"
+          - "settlement_method"
+          - "payment_reason"
+          - "payments_reference"
+          - "purpose_of_payment_code"
+          - "invoice_number"
+          - "invoice_date"
+
+  api_routes:
+    file: "routes/api.php"
+    file_origin: EXISTING
+    endpoints:
+      - method: "POST"
+        path: "/v1/uploads/payment/csv"
+        origin: NEW
+        controller: "UploadController@uploadPaymentCSV"
+        response_success: "201 {file_id, file_name, status}"
+        response_error: "422 ERROR_VALIDATION_FAILED"
+      - method: "GET"
+        path: "/v1/uploads/payment/status/{id}"
+        origin: NEW
+        controller: "UploadController@checkUploadStatus"
+        response_success: "200 {file_id, file_name, status, uploaded_at, completed_at}"
+        response_not_found: "404"
+
+  controllers:
+    - name: "UploadController"
+      origin: NEW
+      location: "app/Http/Controllers/UploadController.php"
+      methods:
+        - "uploadPaymentCSV"
+        - "checkUploadStatus"
+    - name: "FileController"
+      origin: NEW
+      location: "app/Http/Controllers/FileController.php"
+      methods:
+        - "downloadFileTemplate"
+        - "getAllBeneficiariesByFileId"
+        - "approveFile"
+        - "getFileSummary"
+        - "getFileErrorsList"
+        - "updateFileStatus"
+        - "getDraftFilesForClient"
+        - "getAllUploadedFilesForClient"
+        - "deletedFile"
+
+  services:
+    - name: "PaymentCSVValidator"
+      origin: NEW
+      location: "app/Services/PaymentCSVValidator.php"
+      methods:
+        - signature: "__construct(PaymentFileUpload $paymentFileUpload)"
+        - signature: "initializeValidators(): array"
+        - signature: "validateRow(array $data, int $rowNumber): array"
+        - signature: "logValidationError(int $rowNumber, string $headerName, $providedValue, string $errorDetail)"
+
+  jobs:
+    - name: "ProcessCSV"
+      origin: NEW
+      location: "app/Jobs/ProcessCSV.php"
+      methods:
+        - signature: "__construct(PaymentFileUpload $paymentFileUpload)"
+
+  exports:
+    - name: "BeneficiariesTemplateExport"
+      origin: NEW
+      location: "app/Exports/BeneficiariesTemplateExport.php"
+      methods:
+        - signature: "__construct(array $headers, array $data)"
+
+  request_flow:
+    description: "The client request will start from the top routes and from there, matching the path will be consumed by the specific method in the Controller. Each Controller will use either dedicated services, dispatch a job or directly the model to respond to the request."
+
+  components_to_build:
+    description: "New project-specific components to be implemented"
+    note: "All components listed here have origin: NEW and require collision-check against repo"
+    models:
+      - name: "PaymentFileUpload"
+        origin: NEW
+        location: "app/Models/PaymentFileUpload.php"
+      - name: "PaymentUploadError"
+        origin: NEW
+        location: "app/Models/PaymentUploadError.php"
+      - name: "PaymentUploadInstruction"
+        origin: NEW
+        location: "app/Models/PaymentUploadInstruction.php"
+    controllers:
+      - name: "UploadController"
+        origin: NEW
+        location: "app/Http/Controllers/UploadController.php"
+      - name: "FileController"
+        origin: NEW
+        location: "app/Http/Controllers/FileController.php"
+    services:
+      - name: "PaymentCSVValidator"
+        origin: NEW
+        location: "app/Services/PaymentCSVValidator.php"
+    jobs:
+      - name: "ProcessCSV"
+        origin: NEW
+        location: "app/Jobs/ProcessCSV.php"
+    exports:
+      - name: "BeneficiariesTemplateExport"
+        origin: NEW
+        location: "app/Exports/BeneficiariesTemplateExport.php"
+    routes:
+      - path: "/v1/uploads/payment/csv"
+        origin: NEW
+        file: "routes/api.php"
+      - path: "/v1/uploads/payment/status/{id}"
+        origin: NEW
+        file: "routes/api.php"
+
+decisions:
+  description: "Architectural commitments and tradeoffs"
+  # Note: Decisions inferred from technical specifications
+
+  architectural_decisions:
+    - id: "DEC-001"
+      decision: "Use Laravel microservice template"
+      rationale: "Standardized service structure"
+      source_slide: 9
+
+    - id: "DEC-002"
+      decision: "Asynchronous CSV processing via queue"
+      rationale: "Avoid blocking API process for large files"
+      implementation: "dispatch ProcessCSV(record) on 'file-processing'"
+      source_slide: 12
+
+    - id: "DEC-003"
+      decision: "File storage in dedicated directory"
+      rationale: "Organized file management"
+      implementation: "Storage(mass_file_uploads)"
+      source_slide: 12
+
+    - id: "DEC-004"
+      decision: "Status tracking via database"
+      rationale: "Persistent status for async operations"
+      implementation: "PaymentFileUpload{status=UPLOADED}"
+      source_slide: 12
+
+  unresolved:
+    - id: "DEC-UNRESOLVED-001"
+      area: "Notification system"
+      question: "How is the bell icon notification implemented?"
+      source_slide: 11

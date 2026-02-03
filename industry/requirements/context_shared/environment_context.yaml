@@ -1,0 +1,160 @@
+# Environment Context for Volopa Platform
+# Generated from Mass Payment POC v2.pptx annotations and dos_and_donts.pdf
+# Context: Environment - stable, cross-project rules, standards, and platform constraints
+
+metadata:
+  platform_name: "Volopa"
+  version: "1.0"
+  sources:
+    - "Mass Payment - POC v1.pptx"
+    - "dos_and_donts.pdf"
+  generated_date: "2026-01-23"
+
+intent:
+  description: "Platform-level purpose and standards"
+  # Environment intent is typically implicit in platform design
+  platform_purpose: "Business payment processing platform"
+
+  mental_model:
+    description: "Laravel API structure mental model"
+    flow: "Client → route (versioned, throttled, auth) → controller → Form Request (validation + policy) → domain logic (services/models/transactions) → API Resource (shape output) → JSON with correct status codes and error format"
+
+requirements:
+  description: "Platform-level behavioral requirements"
+  # Environment requirements are typically expressed as constraints and interfaces
+
+constraints:
+  description: "Hard rules that restrict solution space - platform-level standards"
+
+  source: "dos_and_donts.pdf"
+
+  referenced_files:
+    - file: "routes/api.php"
+      origin: EXISTING
+      description: "API route definitions file"
+
+  dos:
+    routing:
+      - "Add routes to routes/api.php, usually under /v1 and auth middleware"
+      - "Keep names consistent (api.v1.posts.favorite.store, etc.)"
+
+    data_shape:
+      - "New tables? Write migrations and factories"
+      - "Add relationships on models"
+      - "Indexes/uniques/foreign keys"
+
+    validation_authorization:
+      - "Validate request content"
+      - "Use Policies (or Gates) for permissions"
+
+    controller_logic:
+      - "Keep controllers thin; push logic into model/service"
+      - "Use transactions when touching multiple tables"
+      - "Return proper status codes (201, 204, 400, 401, 403, 404, 422)"
+
+    resources:
+      - "Create an API Resource to shape responses and hide internal fields"
+      - "Add pagination using Resource::collection($query->paginate())"
+
+    testing:
+      - "Assert JSON shape, status codes, DB state, and policy enforcement"
+
+    authentication:
+      - "Volopa uses custom authorization processes via middlewares for OAuth2 type access tokens or WSSE credentials"
+
+  donts:
+    code_integrity:
+      - "Don't use a class or a method that doesn't exist in the current repository or was not defined in the added code"
+      - "Don't add methods that already exist in the current repository"
+
+    api_patterns:
+      - "Don't return raw Eloquent models"
+      - "Don't use session/redirect patterns in APIs"
+      - "Don't return 200 for errors"
+      - "Don't respond with inconsistent shapes/casing"
+
+    security:
+      - "Don't expose stack traces or sensitive error details"
+      - "Don't disable mass-assignment protection or trust client-owned fields"
+      - "Don't build query filters directly from user input"
+      - "Don't leak environment or config"
+
+    performance:
+      - "Don't create N+1 queries (especially in Resources)"
+      - "Don't return unbounded lists"
+      - "Don't ignore caching"
+      - "Don't let file uploads bloat the API process"
+
+    data_integrity:
+      - "Don't forget transactions for multi-write operations"
+      - "Don't hardcode timestamps/timezones"
+
+    observability:
+      - "Don't forget observability"
+
+  status_codes:
+    success:
+      - code: 200
+        meaning: "OK - successful retrieval"
+      - code: 201
+        meaning: "Created - successful creation"
+      - code: 204
+        meaning: "No Content - successful deletion"
+    client_error:
+      - code: 400
+        meaning: "Bad Request"
+      - code: 401
+        meaning: "Unauthorized"
+      - code: 403
+        meaning: "Forbidden"
+      - code: 404
+        meaning: "Not Found"
+      - code: 422
+        meaning: "Unprocessable Entity - validation failed"
+
+  unresolved:
+    - id: "ENV-CON-UNRESOLVED-001"
+      question: "Exact approval rules by currency"
+    - id: "ENV-CON-UNRESOLVED-002"
+      question: "First approver claim mechanism"
+    - id: "ENV-CON-UNRESOLVED-003"
+      question: "Error recovery and retry logic"
+    - id: "ENV-CON-UNRESOLVED-004"
+      question: "Complete list of validation rules"
+
+decisions:
+  description: "Platform-level architectural decisions"
+
+  platform_decisions:
+    - id: "ENV-DEC-001"
+      decision: "Laravel framework"
+      rationale: "Standard PHP framework for Volopa services"
+      symbol: "Laravel"
+      origin: EXISTING
+
+    - id: "ENV-DEC-002"
+      decision: "OAuth2/WSSE authentication"
+      rationale: "Secure API access with token-based auth"
+      symbol: "Oauth2UserClient"
+      origin: EXISTING
+      reference: "environment_artifacts.yaml#standard_volopa_middleware"
+
+    - id: "ENV-DEC-003"
+      decision: "Queue-based async processing"
+      rationale: "Handle long-running tasks without blocking API"
+      symbol: "Queue"
+      origin: EXISTING
+      reference: "environment_artifacts.yaml#standard_volopa_infrastructure"
+
+    - id: "ENV-DEC-004"
+      decision: "API Resources for response shaping"
+      rationale: "Consistent response format, hide internal fields"
+
+    - id: "ENV-DEC-005"
+      decision: "Form Request validation"
+      rationale: "Centralized validation with policy enforcement"
+
+  unresolved:
+    - id: "ENV-DEC-UNRESOLVED-001"
+      question: "Notification system implementation details"
+
