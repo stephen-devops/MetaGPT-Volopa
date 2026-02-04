@@ -171,6 +171,7 @@ industry/*.md
 industry/volopa_system_*
 industry/*.json
 spareFiles/*
+context_workflow/*
 tmp
 metagpt/roles/idea_agent.py
 .aider*

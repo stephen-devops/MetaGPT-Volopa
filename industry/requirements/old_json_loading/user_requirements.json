@@ -1,0 +1,1005 @@
+{
+  "project_metadata": {
+    "project_name": "Volopa Mass Payments API",
+    "version": "1.0.0",
+    "created_date": "2025-12-04",
+    "last_modified": "2025-12-09",
+    "description": "Laravel API system for uploading CSV files with up to 10,000 payment instructions",
+    "source_document": "Mass Payments PPTX",
+    "framework": "Laravel 10+",
+    "php_version": "8.2+",
+    "api_prefix": "/api/v1",
+    "max_file_capacity": 10000
+  },
+
+  "agent_assignments": {
+    "LaravelProductManager": {
+      "consumes": ["all_functional_requirements"],
+      "output": "docs/prd/volopa_mass_payments.md",
+      "responsibilities": [
+        "Transform ALL FR into Product Requirements Document (PRD)",
+        "Define business requirements, user stories, acceptance criteria",
+        "Specify API endpoints and validation rules at business level",
+        "Prioritize requirements (P0, P1, P2)"
+      ],
+      "constraints_source": "business_level_laravel_awareness"
+    },
+    "LaravelArchitect": {
+      "consumes": ["all_functional_requirements", "prd", "dos_donts_architectural"],
+      "output": "docs/system_design/volopa_mass_payments.md",
+      "responsibilities": [
+        "Design system architecture, data models, API structure",
+        "Design database schema with relationships",
+        "Design service layer and validation architecture",
+        "Specify transaction boundaries, N+1 prevention, pagination, caching"
+      ],
+      "constraints_source": "dos_and_donts.pdf (architectural patterns)"
+    },
+    "LaravelProjectManager": {
+      "consumes": ["all_functional_requirements", "prd", "system_design"],
+      "output": "docs/task/volopa_mass_payments.json",
+      "responsibilities": [
+        "Create task breakdown for implementation",
+        "Map 42 sub-requirements to ~50 implementation tasks",
+        "Define task dependencies and execution order"
+      ],
+      "constraints_source": "task_breakdown_methodology"
+    },
+    "LaravelEngineer": {
+      "consumes": ["all_tasks", "system_design", "prd", "dos_donts_full"],
+      "output": "app/ directory (~40 Laravel files)",
+      "responsibilities": [
+        "Implement all tasks from ProjectManager",
+        "Write Laravel code following DOS/DONTS patterns",
+        "Generate controllers, models, services, migrations, tests"
+      ],
+      "constraints_source": "dos_and_donts.pdf (full)"
+    }
+  },
+
+  "functional_requirements": {
+    "FR-1": {
+      "category": "Template Management",
+      "primary_owner": "LaravelEngineer",
+      "dependencies": ["Architect (API design)", "PM (business requirements)"],
+      "sub_requirements": {
+        "FR-1.1": {
+          "title": "Download Recipient CSV Template",
+          "requirement": "User can download a CSV file containing their current list of recipients",
+          "criteria": [
+            "Download filtered by single currency selection",
+            "Template pre-populated with existing recipient data from database",
+            "Includes all required column headers"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define business requirement for template download",
+            "Architect": "Design GET /api/v1/recipients/template endpoint",
+            "ProjectManager": "Create task: Implement recipient template download endpoint",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/RecipientTemplateController.php",
+              "app/Services/TemplateGeneratorService.php",
+              "app/Http/Resources/RecipientTemplateResource.php"
+            ]
+          }
+        },
+        "FR-1.2": {
+          "title": "CSV Template Structure",
+          "requirement": "System generates CSV template with predefined columns and structure",
+          "columns_required": [
+            "Recipient ID",
+            "Client Recipient ID",
+            "Recipient Name",
+            "Recipient Bank Country",
+            "Recipient Account Currency (single currency)",
+            "Available Settlement Methods (Priority; Regular; Priority and Regular)",
+            "Recipient Email Address",
+            "CC Email Address",
+            "Payment Amount (blank for user input)",
+            "Settlement Method (dropdown values: Priority, Regular)",
+            "Payment Reason",
+            "Payments Reference",
+            "Purpose of Payment Code (dropdown, dependent on Bank Country and Account Currency)",
+            "Invoice Number (required if Account Currency is INR)",
+            "Invoice Date (required if Account Currency is INR)",
+            "Incorporation_number (required for business Recipients with TRY)"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Document CSV column specifications in PRD",
+            "Architect": "Design template structure and data mapping",
+            "ProjectManager": "Create task: Define CSV template columns and validation rules",
+            "Engineer": [
+              "app/Services/TemplateGeneratorService.php (column definitions)",
+              "config/mass_payments.php (template configuration)"
+            ]
+          }
+        },
+        "FR-1.3": {
+          "title": "Template Row Capacity",
+          "requirement": "CSV template supports up to 10,000 payment rows per file",
+          "criteria": ["System enforces maximum row limit during validation"],
+          "agent_tasks": {
+            "ProductManager": "Define 10,000 row limit requirement",
+            "Architect": "Design validation constraints",
+            "ProjectManager": "Create task: Add row limit validation to upload",
+            "Engineer": ["app/Http/Requests/UploadMassPaymentFileRequest.php (max rows validation)"]
+          }
+        }
+      }
+    },
+
+    "FR-2": {
+      "category": "File Upload",
+      "primary_owner": "LaravelEngineer",
+      "dependencies": ["Architect (API design)", "PM (UI/UX requirements)"],
+      "sub_requirements": {
+        "FR-2.1": {
+          "title": "Upload Interface",
+          "requirement": "User can upload completed payment CSV files",
+          "criteria": [
+            "Drag-and-drop box functionality (frontend - out of scope for API)",
+            "Alternative upload button (frontend - out of scope for API)",
+            "Accepts .csv file format only"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define upload interface requirements (drag-drop, button)",
+            "Architect": "Design POST /api/v1/mass-payments/upload endpoint",
+            "ProjectManager": "Create task: Implement file upload endpoint with CSV validation",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@store",
+              "app/Http/Requests/UploadMassPaymentFileRequest.php",
+              "app/Services/FileUploadService.php"
+            ]
+          }
+        },
+        "FR-2.2": {
+          "title": "Upload Location",
+          "requirement": "File upload feature accessible from designated navigation path",
+          "location": "Payments >> Batch Payments >> File Uploads (API route: /api/v1/mass-payments)",
+          "agent_tasks": {
+            "ProductManager": "Document navigation path in PRD",
+            "Architect": "Design route structure (routes/api.php)",
+            "ProjectManager": "Create task: Add API routes for mass payments",
+            "Engineer": ["routes/api.php (versioned routes under /api/v1/mass-payments)"]
+          }
+        }
+      }
+    },
+
+    "FR-3": {
+      "category": "File Validation",
+      "primary_owner": "LaravelEngineer (Services)",
+      "dependencies": ["Architect (validation architecture)", "PM (validation rules)"],
+      "sub_requirements": {
+        "FR-3.1": {
+          "title": "Format Validation",
+          "requirement": "System validates uploaded file format",
+          "checks": [
+            "File is CSV format",
+            "File structure matches template",
+            "Required columns are present",
+            "Column headers match expected names"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define CSV format requirements",
+            "Architect": "Design validation service architecture",
+            "ProjectManager": "Create task: Implement CSV format validation",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@validateFormat",
+              "app/Http/Requests/UploadMassPaymentFileRequest.php (file type validation)"
+            ]
+          }
+        },
+        "FR-3.2": {
+          "title": "Size Validation",
+          "requirement": "System enforces maximum file size",
+          "criteria": ["File does not exceed 10,000 payment rows"],
+          "agent_tasks": {
+            "ProductManager": "Define 10,000 row limit",
+            "Architect": "Design validation constraints",
+            "ProjectManager": "Create task: Implement row count validation",
+            "Engineer": ["app/Services/CsvValidationService.php@validateSize"]
+          }
+        },
+        "FR-3.3": {
+          "title": "Data Validation",
+          "requirement": "System validates each row's data integrity",
+          "checks": [
+            "Valid email format for recipient and CC addresses",
+            "Valid country codes (ISO standard)",
+            "Valid currency codes (ISO standard)",
+            "Valid Purpose of Payment codes (context-dependent on country/currency)",
+            "Settlement method matches recipient's available methods",
+            "Payment amount is numeric and positive",
+            "Recipient ID exists in system database"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define data integrity rules",
+            "Architect": "Design validation rules per field type",
+            "ProjectManager": "Create task: Implement row-level data validation",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@validateData",
+              "app/Rules/ValidCurrencyCode.php",
+              "app/Rules/ValidCountryCode.php",
+              "app/Rules/ValidPurposeCode.php"
+            ]
+          }
+        },
+        "FR-3.4": {
+          "title": "Conditional Field Validation",
+          "requirement": "System enforces currency-specific mandatory fields",
+          "rules": [
+            "INR payments: Invoice Number AND Invoice Date are mandatory",
+            "TRY business recipients: Incorporation Number is mandatory"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define currency-specific validation rules",
+            "Architect": "Design conditional validation logic",
+            "ProjectManager": "Create task: Implement currency-specific validation",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@validateConditionalFields",
+              "app/Rules/InrInvoiceRequired.php",
+              "app/Rules/TryIncorporationRequired.php"
+            ]
+          }
+        },
+        "FR-3.5": {
+          "title": "Validation Error Reporting",
+          "requirement": "System provides detailed validation error feedback",
+          "criteria": [
+            "Row number where error occurred",
+            "Column/field name with error",
+            "Provided value that failed validation",
+            "Error description/message",
+            "Downloadable error report"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define error message format requirements",
+            "Architect": "Design error response structure",
+            "ProjectManager": "Create task: Implement validation error collection and reporting",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@collectErrors",
+              "app/Http/Resources/ValidationErrorResource.php"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-4": {
+      "category": "File Review & Summary",
+      "primary_owner": "LaravelEngineer (Controllers + Resources)",
+      "dependencies": ["Architect (API response design)", "PM (summary requirements)"],
+      "sub_requirements": {
+        "FR-4.1": {
+          "title": "Upload Summary Display",
+          "requirement": "System displays summary of uploaded file after validation",
+          "information_shown": [
+            "Total number of payments in file",
+            "Breakdown by currency",
+            "Count of valid payments",
+            "Count of errored payments",
+            "Error details with row references"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define summary information requirements",
+            "Architect": "Design API response structure",
+            "ProjectManager": "Create task: Create file summary API endpoint",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@show",
+              "app/Http/Resources/MassPaymentFileSummaryResource.php"
+            ]
+          }
+        },
+        "FR-4.2": {
+          "title": "Error Navigation",
+          "requirement": "User can view detailed list of validation errors",
+          "criteria": [
+            "Clickable link to error details (API returns errors endpoint)",
+            "Shows specific rows with errors",
+            "Displays which fields failed validation"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define error detail access requirements",
+            "Architect": "Design GET /api/v1/mass-payments/{id}/errors endpoint",
+            "ProjectManager": "Create task: Implement file errors list endpoint",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@errors",
+              "app/Http/Resources/FileErrorResource.php"
+            ]
+          }
+        },
+        "FR-4.3": {
+          "title": "File Summary Review",
+          "requirement": "User can review file summary before proceeding",
+          "actions_available": [
+            "Cancel upload",
+            "Proceed with valid payments (if errors exist but some records are valid)",
+            "View error list"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define review actions (cancel, proceed)",
+            "Architect": "Design state transition logic",
+            "ProjectManager": "Create task: Implement file action endpoints (cancel, proceed)",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@cancel",
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@proceed"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-5": {
+      "category": "File Status Management",
+      "primary_owner": "LaravelEngineer (Models + Controllers)",
+      "dependencies": ["Architect (status state machine design)", "PM (status requirements)"],
+      "sub_requirements": {
+        "FR-5.1": {
+          "title": "Upload Status Tracking",
+          "requirement": "User can check status of uploaded files",
+          "statuses": [
+            "Uploading",
+            "Validating",
+            "Validation Failed",
+            "Validation Successful",
+            "Pending Approval",
+            "Approved",
+            "Completed",
+            "Deleted"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define status states and transitions",
+            "Architect": "Design status enum and state machine",
+            "ProjectManager": "Create tasks: (1) Create MassPaymentFile model with status enum, (2) Implement status transition logic",
+            "Engineer": [
+              "app/Models/MassPaymentFile.php",
+              "app/Enums/MassPaymentFileStatus.php (8 states)",
+              "database/migrations/xxxx_create_mass_payment_files_table.php"
+            ]
+          }
+        },
+        "FR-5.2": {
+          "title": "File Status Query",
+          "requirement": "User can retrieve current status of any uploaded file",
+          "criteria": ["Real-time or near-real-time status updates"],
+          "agent_tasks": {
+            "ProductManager": "Define real-time status update requirement",
+            "Architect": "Design GET /api/v1/mass-payments/{id}/status endpoint",
+            "ProjectManager": "Create task: Implement status query endpoint",
+            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@status"]
+          }
+        },
+        "FR-5.3": {
+          "title": "File History",
+          "requirement": "User can view all uploaded files for their client account",
+          "criteria": [
+            "List shows file name, upload date, status, record counts",
+            "Filterable and sortable",
+            "Paginated for large lists"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define file listing requirements (pagination, filtering)",
+            "Architect": "Design GET /api/v1/mass-payments endpoint with query params",
+            "ProjectManager": "Create task: Implement paginated file list endpoint",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@index",
+              "app/Http/Resources/MassPaymentFileResource.php"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-6": {
+      "category": "Approval Workflow",
+      "primary_owner": "LaravelEngineer (Services + Policies)",
+      "dependencies": ["Architect (workflow design)", "PM (approval logic)"],
+      "sub_requirements": {
+        "FR-6.1": {
+          "title": "Approval Requirement Check",
+          "requirement": "System determines if approval is required based on currency rules",
+          "workflow": [
+            "If approval NOT required → Upload completed immediately",
+            "If approval IS required → Trigger approval workflow"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define currency-based approval rules",
+            "Architect": "Design approval workflow logic",
+            "ProjectManager": "Create task: Implement approval requirement check service",
+            "Engineer": [
+              "app/Services/ApprovalWorkflowService.php@checkApprovalRequired",
+              "app/Models/CurrencyApprovalRule.php"
+            ]
+          }
+        },
+        "FR-6.2": {
+          "title": "Approver Notification",
+          "requirement": "System notifies all designated approvers when file requires approval",
+          "criteria": [
+            "Bell icon notification in UI (notification sent to frontend via API)",
+            "Notification dispatched to all approvers simultaneously"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define notification requirements",
+            "Architect": "Design notification dispatch architecture",
+            "ProjectManager": "Create task: Implement approver notification system",
+            "Engineer": [
+              "app/Notifications/MassPaymentApprovalRequired.php",
+              "app/Services/ApprovalWorkflowService.php@notifyApprovers"
+            ]
+          }
+        },
+        "FR-6.3": {
+          "title": "First Approver Action",
+          "requirement": "First approver to respond gets redirected to Payment Confirmation Page",
+          "criteria": [
+            "Locks file for approval by first responder",
+            "Prevents duplicate approvals",
+            "Creates payment from file"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define first-approver-wins logic",
+            "Architect": "Design file locking mechanism",
+            "ProjectManager": "Create task: Implement approval locking and redirect logic",
+            "Engineer": [
+              "app/Services/ApprovalWorkflowService.php@lockForApproval",
+              "app/Http/Controllers/Api/V1/ApprovalController.php@approve"
+            ]
+          }
+        },
+        "FR-6.4": {
+          "title": "Subsequent Approver Handling",
+          "requirement": "Approvers clicking after first approver see different view",
+          "criteria": [
+            "Redirected to Draft Payments Page (API returns different response)",
+            "Informed that payment was already picked/approved"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define subsequent approver experience",
+            "Architect": "Design approval status check logic",
+            "ProjectManager": "Create task: Implement subsequent approver handling",
+            "Engineer": [
+              "app/Services/ApprovalWorkflowService.php@checkApprovalStatus",
+              "app/Http/Controllers/Api/V1/ApprovalController.php@checkStatus"
+            ]
+          }
+        },
+        "FR-6.5": {
+          "title": "Approve File Action",
+          "requirement": "Authorized approver can approve validated payment file",
+          "criteria": [
+            "Only users with approval permissions can approve",
+            "File must be in 'Pending Approval' status",
+            "Approval moves file to next processing stage"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define approval action requirements",
+            "Architect": "Design POST /api/v1/mass-payments/{id}/approve endpoint",
+            "ProjectManager": "Create task: Implement file approval endpoint with policy",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/ApprovalController.php@approve",
+              "app/Policies/MassPaymentFilePolicy.php@approve",
+              "app/Http/Requests/ApproveMassPaymentFileRequest.php"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-7": {
+      "category": "Payment Instructions Creation",
+      "primary_owner": "LaravelEngineer (Services + Models)",
+      "dependencies": ["Architect (data model design)", "PM (payment creation logic)"],
+      "sub_requirements": {
+        "FR-7.1": {
+          "title": "Generate Payment Instructions",
+          "requirement": "System converts validated CSV rows into payment instruction records",
+          "criteria": [
+            "Each valid row becomes a payment instruction",
+            "Links to existing beneficiary records",
+            "Stores all payment metadata (amount, reference, reason, purpose code)",
+            "Maintains relationship to source upload file"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define payment instruction creation requirements",
+            "Architect": "Design PaymentInstruction model and relationships",
+            "ProjectManager": "Create tasks: (1) Create PaymentInstruction model, (2) Implement CSV to payment instruction conversion service",
+            "Engineer": [
+              "app/Models/PaymentInstruction.php",
+              "app/Services/PaymentInstructionService.php@createFromCsv",
+              "database/migrations/xxxx_create_payment_instructions_table.php"
+            ]
+          }
+        },
+        "FR-7.2": {
+          "title": "Beneficiary Linking",
+          "requirement": "System links payment instructions to existing beneficiary records",
+          "criteria": [
+            "Uses Recipient ID to match beneficiaries",
+            "Validates beneficiary still exists and is active",
+            "Stores client-specific payee ID if provided"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define beneficiary linking requirements",
+            "Architect": "Design relationship structure",
+            "ProjectManager": "Create task: Implement beneficiary linking logic",
+            "Engineer": [
+              "app/Services/PaymentInstructionService.php@linkBeneficiary",
+              "app/Models/PaymentInstruction.php (belongsTo relationship to TccBeneficiary)"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-8": {
+      "category": "Data Retrieval & Queries",
+      "primary_owner": "LaravelEngineer (Controllers + Repositories)",
+      "dependencies": ["Architect (API endpoint design)", "PM (query requirements)"],
+      "sub_requirements": {
+        "FR-8.1": {
+          "title": "Get Beneficiaries by Currency",
+          "requirement": "User can retrieve list of recipients filtered by currency",
+          "criteria": [
+            "Single currency filter",
+            "Returns active beneficiaries only",
+            "Includes all required beneficiary details for template"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define beneficiary filtering requirements",
+            "Architect": "Design GET /api/v1/beneficiaries?currency={code} endpoint",
+            "ProjectManager": "Create task: Implement beneficiary query endpoint",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/BeneficiaryController.php@index",
+              "app/Http/Resources/BeneficiaryResource.php"
+            ]
+          }
+        },
+        "FR-8.2": {
+          "title": "Get Beneficiaries by File",
+          "requirement": "User can retrieve all beneficiaries associated with specific upload file",
+          "criteria": ["Returns beneficiaries linked to payment instructions in that file"],
+          "agent_tasks": {
+            "ProductManager": "Define file-specific beneficiary query",
+            "Architect": "Design GET /api/v1/mass-payments/{id}/beneficiaries endpoint",
+            "ProjectManager": "Create task: Implement file beneficiaries endpoint",
+            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@beneficiaries"]
+          }
+        },
+        "FR-8.3": {
+          "title": "Get Draft Files",
+          "requirement": "User can view all files pending approval for their client",
+          "criteria": [
+            "Shows files in 'Pending Approval' status",
+            "Displays file summary information",
+            "Sortable by upload date"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define draft file listing requirements",
+            "Architect": "Design GET /api/v1/mass-payments?status=pending_approval endpoint",
+            "ProjectManager": "Create task: Add draft file filtering to index endpoint",
+            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@index (status filter)"]
+          }
+        },
+        "FR-8.4": {
+          "title": "Get File Errors List",
+          "requirement": "User can retrieve detailed error list for failed validation",
+          "criteria": [
+            "Shows row-by-row errors",
+            "Includes field names and error descriptions",
+            "Exportable format (CSV/JSON)"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define error export requirements",
+            "Architect": "Design GET /api/v1/mass-payments/{id}/errors endpoint",
+            "ProjectManager": "Create task: Implement file errors export endpoint",
+            "Engineer": ["app/Http/Controllers/Api/V1/MassPaymentController.php@errors"]
+          }
+        }
+      }
+    },
+
+    "FR-9": {
+      "category": "File Management Actions",
+      "primary_owner": "LaravelEngineer (Controllers + Services)",
+      "dependencies": ["Architect (state management)", "PM (action permissions)"],
+      "sub_requirements": {
+        "FR-9.1": {
+          "title": "Delete File",
+          "requirement": "User can delete uploaded payment files",
+          "criteria": [
+            "Can delete files in draft or error status",
+            "Cannot delete files already approved/in progress",
+            "Soft delete or hard delete based on business rules",
+            "Audit trail maintained"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define delete permissions and constraints",
+            "Architect": "Design DELETE /api/v1/mass-payments/{id} endpoint",
+            "ProjectManager": "Create task: Implement file deletion with policy",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/MassPaymentController.php@destroy",
+              "app/Policies/MassPaymentFilePolicy.php@delete"
+            ]
+          }
+        },
+        "FR-9.2": {
+          "title": "Update File Status",
+          "requirement": "System can update file status based on processing stages",
+          "criteria": [
+            "Status transitions follow defined workflow",
+            "Status changes are logged with timestamps",
+            "Users can query current status"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define status transition rules",
+            "Architect": "Design status transition service",
+            "ProjectManager": "Create task: Implement status transition service with logging",
+            "Engineer": [
+              "app/Services/FileStatusService.php@updateStatus",
+              "app/Models/MassPaymentFileStatusHistory.php",
+              "database/migrations/xxxx_create_mass_payment_file_status_histories_table.php"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-10": {
+      "category": "Multi-Currency Support",
+      "primary_owner": "LaravelEngineer (Validation + Models)",
+      "dependencies": ["Architect (multi-currency design)", "PM (currency requirements)"],
+      "sub_requirements": {
+        "FR-10.1": {
+          "title": "Single Currency Per File",
+          "requirement": "Each upload file contains payments for only one currency",
+          "criteria": [
+            "Template downloaded for specific currency",
+            "Validation enforces single currency per file",
+            "File summary shows currency breakdown"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define single currency constraint",
+            "Architect": "Design currency validation and storage",
+            "ProjectManager": "Create task: Implement single currency validation",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@validateSingleCurrency",
+              "app/Models/MassPaymentFile.php (currency field)"
+            ]
+          }
+        },
+        "FR-10.2": {
+          "title": "Currency-Specific Validation",
+          "requirement": "System applies different validation rules based on payment currency",
+          "examples": [
+            "INR requires invoice details",
+            "TRY business payments require incorporation number",
+            "Purpose codes vary by currency and country combination"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define currency-specific rules",
+            "Architect": "Design validation rule architecture",
+            "ProjectManager": "Create task: Implement currency-specific validation rules",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@applyCurrencyRules",
+              "app/Rules/InrInvoiceRequired.php",
+              "app/Rules/TryIncorporationRequired.php",
+              "app/Rules/ValidPurposeCode.php (currency + country dependent)"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-11": {
+      "category": "User Guidance",
+      "primary_owner": "LaravelProductManager (Documentation)",
+      "dependencies": ["Engineer (optional API endpoints for guidance data)"],
+      "sub_requirements": {
+        "FR-11.1": {
+          "title": "User Guide Access",
+          "requirement": "System provides access to user guide for completing payment file template",
+          "criteria": [
+            "Clickable link in upload journey (frontend links to guide)",
+            "Guide explains each field requirement",
+            "Includes examples and validation rules"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Create user guide content in PRD",
+            "Architect": "Design guidance data structure (optional API endpoint)",
+            "ProjectManager": "Create task: Add user guide content/endpoint",
+            "Engineer": [
+              "app/Http/Controllers/Api/V1/UserGuideController.php@show (optional)",
+              "resources/docs/mass_payment_guide.md"
+            ]
+          }
+        },
+        "FR-11.2": {
+          "title": "Template Instructions",
+          "requirement": "Upload interface provides step-by-step guidance",
+          "steps": [
+            "Download file template (GET /api/v1/recipients/template?currency=EUR)",
+            "Fill in template with payment information (with link to user guide)",
+            "Upload completed file (POST /api/v1/mass-payments)",
+            "Review file summary (GET /api/v1/mass-payments/{id})"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define upload journey steps in PRD",
+            "Architect": "Design step-by-step API flow",
+            "ProjectManager": "Create task: Document API usage flow",
+            "Engineer": [
+              "API documentation (OpenAPI/Swagger spec)",
+              "README with API usage examples"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-12": {
+      "category": "Error Handling",
+      "primary_owner": "LaravelEngineer (Services + Resources)",
+      "dependencies": ["Architect (error response design)", "PM (error UX requirements)"],
+      "sub_requirements": {
+        "FR-12.1": {
+          "title": "Validation Failure Workflow",
+          "requirement": "When validation fails, user must fix errors and re-upload",
+          "criteria": [
+            "Clear error messages displayed",
+            "User cannot proceed with invalid file",
+            "File remains in 'Validation Failed' status until corrected"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define error handling workflow",
+            "Architect": "Design error response structure (422 status)",
+            "ProjectManager": "Create task: Implement validation error response handling",
+            "Engineer": [
+              "app/Http/Resources/ValidationErrorResource.php",
+              "app/Services/CsvValidationService.php (error collection)"
+            ]
+          }
+        },
+        "FR-12.2": {
+          "title": "Partial Success Handling",
+          "requirement": "System handles files with mix of valid and invalid rows",
+          "criteria": [
+            "Shows count of valid vs. errored payments",
+            "Allows user to proceed with valid payments only",
+            "Provides error details for failed rows"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define partial success behavior",
+            "Architect": "Design partial success response structure",
+            "ProjectManager": "Create task: Implement partial success handling",
+            "Engineer": [
+              "app/Services/CsvValidationService.php@handlePartialSuccess",
+              "app/Http/Resources/PartialSuccessResource.php"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-13": {
+      "category": "Asynchronous Processing",
+      "primary_owner": "LaravelEngineer (Jobs + Queues)",
+      "dependencies": ["Architect (async architecture)", "PM (processing requirements)"],
+      "sub_requirements": {
+        "FR-13.1": {
+          "title": "Background Job Processing",
+          "requirement": "CSV validation runs as background job",
+          "criteria": [
+            "User receives immediate upload confirmation",
+            "Validation runs asynchronously",
+            "User can check status via polling or notifications"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define async processing requirements",
+            "Architect": "Design job queue architecture",
+            "ProjectManager": "Create tasks: (1) Create validation job for async processing, (2) Configure queue worker for file processing",
+            "Engineer": [
+              "app/Jobs/ValidateMassPaymentFileJob.php",
+              "app/Services/CsvValidationService.php (called by job)",
+              "config/queue.php (queue configuration)"
+            ]
+          }
+        },
+        "FR-13.2": {
+          "title": "Progress Tracking",
+          "requirement": "User can monitor progress of file processing",
+          "criteria": [
+            "Status updates available in real-time or near-real-time",
+            "Shows current processing stage",
+            "Estimated completion time (optional)"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define progress tracking requirements",
+            "Architect": "Design progress update mechanism",
+            "ProjectManager": "Create task: Implement job progress tracking",
+            "Engineer": [
+              "app/Jobs/ValidateMassPaymentFileJob.php (progress updates)",
+              "app/Models/MassPaymentFile.php (progress field)",
+              "app/Http/Resources/FileProgressResource.php"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-14": {
+      "category": "Integration Requirements",
+      "primary_owner": "LaravelArchitect (Integration Design)",
+      "dependencies": ["Engineer (Implementation)"],
+      "sub_requirements": {
+        "FR-14.1": {
+          "title": "Admin Platform Integration",
+          "requirement": "Mass Payment feature integrates with admin.volopa platform",
+          "criteria": [
+            "Accessible from main navigation (frontend concern)",
+            "Consistent UI/UX with platform (frontend concern)",
+            "Single sign-on authentication (API enforces via middleware)"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define integration requirements in PRD",
+            "Architect": "Design authentication and navigation integration",
+            "ProjectManager": "Create task: Configure API authentication middleware",
+            "Engineer": [
+              "routes/api.php (auth middleware configuration)",
+              "app/Http/Middleware/VolopaAuthenticate.php (if custom auth)"
+            ]
+          }
+        },
+        "FR-14.2": {
+          "title": "Existing Data Integration",
+          "requirement": "System integrates with existing Volopa data models",
+          "models": [
+            "TccBeneficiary (recipients)",
+            "TccAccount (client accounts)",
+            "TccPaymentPurposeCode (purpose codes)",
+            "ClientFeatures (feature flags)",
+            "User (authentication)"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Document existing data models in PRD",
+            "Architect": "Design relationships to existing models",
+            "ProjectManager": "Create tasks for each model integration",
+            "Engineer": [
+              "app/Models/PaymentInstruction.php (relationships to existing models)",
+              "app/Models/MassPaymentFile.php (relationships to TccAccount)"
+            ]
+          }
+        }
+      }
+    },
+
+    "FR-15": {
+      "category": "Security & Access Control",
+      "primary_owner": "LaravelEngineer (Policies + Middleware)",
+      "dependencies": ["Architect (security design)", "PM (access control requirements)"],
+      "sub_requirements": {
+        "FR-15.1": {
+          "title": "Client Data Isolation",
+          "requirement": "Users can only access their own client's data",
+          "criteria": [
+            "All queries filtered by client_id",
+            "No cross-client data visibility",
+            "Enforced at API level"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define data isolation requirements",
+            "Architect": "Design client_id filtering architecture",
+            "ProjectManager": "Create task: Implement global client_id scope",
+            "Engineer": [
+              "app/Models/MassPaymentFile.php (global scope for client_id)",
+              "app/Http/Middleware/EnforceClientIsolation.php"
+            ]
+          }
+        },
+        "FR-15.2": {
+          "title": "Role-Based Actions",
+          "requirement": "Different user roles have different permissions",
+          "roles": [
+            "Uploader: Can download templates, upload files, view status",
+            "Approver: Can approve files, view pending approvals",
+            "Admin: Full access to all client files (if applicable)"
+          ],
+          "agent_tasks": {
+            "ProductManager": "Define user roles and permissions",
+            "Architect": "Design RBAC architecture",
+            "ProjectManager": "Create tasks: (1) Implement role-based policies, (2) Add role checks to all endpoints",
+            "Engineer": [
+              "app/Policies/MassPaymentFilePolicy.php",
+              "app/Http/Middleware/CheckRole.php",
+              "app/Models/User.php (role methods)"
+            ]
+          }
+        }
+      }
+    }
+  },
+
+  "summary_statistics": {
+    "total_functional_requirements": 15,
+    "total_sub_requirements": 42,
+    "estimated_tasks": 50,
+    "estimated_files": 40,
+    "key_user_journeys": 3,
+    "key_journeys": ["Download Template", "Upload CSV", "Review & Approve"],
+    "validation_types": 5,
+    "validation_categories": ["Format", "Size", "Data", "Conditional", "Business Rules"],
+    "file_statuses": 8,
+    "status_list": ["Uploading", "Validating", "Validation Failed", "Validation Successful", "Pending Approval", "Approved", "Completed", "Deleted"],
+    "maximum_capacity": 10000,
+    "capacity_description": "10,000 payment rows per CSV file"
+  },
+
+  "technical_constraints": {
+    "dos_donts_source": "industry/dos_and_donts.pdf",
+    "mental_model": "Client → route (versioned, throttled, auth) → controller → FormRequest (validation + policy) → domain logic (services/models/transactions) → API Resource (shape output) → JSON with correct status codes",
+    "laravel_file_structure": {
+      "routes": "routes/api.php",
+      "controllers": "app/Http/Controllers/Api/V1/",
+      "requests": "app/Http/Requests/",
+      "services": "app/Services/",
+      "models": "app/Models/",
+      "migrations": "database/migrations/",
+      "resources": "app/Http/Resources/",
+      "policies": "app/Policies/",
+      "jobs": "app/Jobs/",
+      "notifications": "app/Notifications/"
+    },
+    "volopa_specific": {
+      "authentication": ["OAuth2", "WSSE"],
+      "tenant_isolation": "client_id on all tables",
+      "currency_rules": "Currency-specific approval workflows",
+      "multi_tenant": true
+    }
+  },
+
+  "expected_outputs": {
+    "LaravelProductManager": {
+      "file": "docs/prd/volopa_mass_payments.md",
+      "sections": [
+        "Business Requirements (15 FRs)",
+        "User Stories (mapped to FRs)",
+        "Acceptance Criteria",
+        "API Endpoint Specifications",
+        "Security and Compliance Requirements"
+      ]
+    },
+    "LaravelArchitect": {
+      "file": "docs/system_design/volopa_mass_payments.md",
+      "sections": [
+        "Data Models (MassPaymentFile, PaymentInstruction, etc.)",
+        "Database Schema with Relationships",
+        "API Endpoint Design (routes, methods, responses)",
+        "Service Layer Architecture",
+        "Status State Machine (8 states)",
+        "Validation Architecture",
+        "Async Job Architecture",
+        "Integration with Existing Volopa Models",
+        "Security Design (client isolation, RBAC)"
+      ]
+    },
+    "LaravelProjectManager": {
+      "file": "docs/task/volopa_mass_payments.json",
+      "content": "Task breakdown mapping 42 sub-requirements to ~50 implementation tasks with dependencies"
+    },
+    "LaravelEngineer": {
+      "directory": "app/",
+      "files": {
+        "models": 8,
+        "controllers": 5,
+        "services": 6,
+        "form_requests": 4,
+        "policies": 2,
+        "api_resources": 8,
+        "jobs": 2,
+        "migrations": 5,
+        "validation_rules": 6,
+        "routes": 1
+      },
+      "total_files": 47
+    }
+  }
+}

@@ -1,0 +1,621 @@
+{
+  "meta": {
+    "title": "Laravel Technical Implementation Requirements - LaravelEngineer",
+    "description": "Implementation-specific patterns, syntax, and code-level constraints",
+    "source": "industry/dos_and_donts.pdf (implementation-specific subset)",
+    "target_agent": "LaravelEngineer",
+    "role": "Implements code following architectural design from LaravelArchitect",
+    "requires": [
+      "architectural_requirements.json (design patterns from Architect)",
+      "technical_requirements.json (this file - implementation specifics)"
+    ],
+    "note": "Engineer must load BOTH architectural_requirements.json AND technical_requirements.json to get complete dos_and_donts.pdf",
+    "output": "app/ directory (~40 Laravel files)"
+  },
+
+  "implementation_workflow": {
+    "description": "Step-by-step implementation process for LaravelEngineer",
+    "steps": [
+      "1. Read task from ProjectManager's task breakdown",
+      "2. Read architectural design from LaravelArchitect's system design",
+      "3. Apply architectural patterns (from architectural_requirements.json)",
+      "4. Apply implementation patterns (from this file)",
+      "5. Write code using exact Laravel syntax",
+      "6. Write feature tests for implemented code",
+      "7. Verify no anti-patterns are present"
+    ],
+    "implementation_checklist": [
+      "✓ Routes defined in routes/api.php with proper naming",
+      "✓ Migrations with indexes, foreign keys, constraints",
+      "✓ Models with relationships, $fillable, global scopes",
+      "✓ FormRequests with validation rules",
+      "✓ Policies with authorization methods",
+      "✓ Thin controllers (10-15 lines max)",
+      "✓ Services for complex logic with DB::transaction()",
+      "✓ Eager loading ->with() to prevent N+1",
+      "✓ Pagination ->paginate(20) for all lists",
+      "✓ API Resources for all responses",
+      "✓ Proper HTTP status codes (201, 204, 404, 422)",
+      "✓ Queue jobs dispatched for large operations",
+      "✓ Cache::remember() for reference data",
+      "✓ Feature tests covering all endpoints",
+      "✓ Logging for important events",
+      "✓ No hardcoded values or timestamps"
+    ]
+  },
+
+  "laravel_syntax_patterns": {
+    "routing": {
+      "category": "Route Definition Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-ROUTE-001",
+          "requirement": "Define routes in routes/api.php using Route facade",
+          "file_location": "routes/api.php",
+          "syntax": "Route::prefix('v1')->middleware(['auth:api'])->group(function () { ... });",
+          "example": "Route::post('/mass-payments', [MassPaymentController::class, 'store'])->name('api.v1.mass-payments.store');"
+        },
+        {
+          "id": "IMPL-ROUTE-002",
+          "requirement": "Use consistent route naming with dot notation",
+          "pattern": "->name('api.v1.{resource}.{action}')",
+          "examples": {
+            "index": "->name('api.v1.mass-payments.index')",
+            "store": "->name('api.v1.mass-payments.store')",
+            "show": "->name('api.v1.mass-payments.show')",
+            "update": "->name('api.v1.mass-payments.update')",
+            "destroy": "->name('api.v1.mass-payments.destroy')"
+          }
+        },
+        {
+          "id": "IMPL-ROUTE-003",
+          "requirement": "Apply middleware using array syntax",
+          "syntax": "->middleware(['auth:api', 'throttle:60,1'])",
+          "volopa_specific": "->middleware(['volopa.auth', 'throttle:60,1'])"
+        }
+      ]
+    },
+
+    "migrations": {
+      "category": "Migration Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-MIG-001",
+          "requirement": "Use Schema::create() for new tables",
+          "file_pattern": "database/migrations/{timestamp}_create_{table}_table.php",
+          "syntax": "Schema::create('table_name', function (Blueprint $table) { ... });",
+          "example": "Schema::create('mass_payment_files', function (Blueprint $table) {\n    $table->uuid('id')->primary();\n    $table->foreignId('client_id')->constrained('tcc_accounts');\n    $table->string('file_name');\n    $table->enum('status', ['uploading', 'validating', 'completed']);\n    $table->timestamps();\n});"
+        },
+        {
+          "id": "IMPL-MIG-002",
+          "requirement": "Add indexes using $table->index()",
+          "syntax": "$table->index('column_name'); // or $table->index(['col1', 'col2']);",
+          "examples": [
+            "$table->index('client_id');",
+            "$table->index(['client_id', 'status']);",
+            "$table->index('created_at');"
+          ]
+        },
+        {
+          "id": "IMPL-MIG-003",
+          "requirement": "Add foreign keys using $table->foreign()",
+          "syntax": "$table->foreign('column')->references('id')->on('table')->onDelete('cascade');",
+          "example": "$table->foreign('client_id')->references('id')->on('tcc_accounts')->onDelete('cascade');"
+        },
+        {
+          "id": "IMPL-MIG-004",
+          "requirement": "Add unique constraints using $table->unique()",
+          "syntax": "$table->unique('column'); // or $table->unique(['col1', 'col2']);",
+          "example": "$table->unique(['client_id', 'file_name']);"
+        }
+      ]
+    },
+
+    "models": {
+      "category": "Eloquent Model Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-MODEL-001",
+          "requirement": "Define relationships using Eloquent methods",
+          "syntax": {
+            "belongsTo": "public function relation() { return $this->belongsTo(RelatedModel::class, 'foreign_key'); }",
+            "hasMany": "public function relation() { return $this->hasMany(RelatedModel::class, 'foreign_key'); }",
+            "belongsToMany": "public function relation() { return $this->belongsToMany(RelatedModel::class, 'pivot_table'); }"
+          },
+          "examples": [
+            "public function client() { return $this->belongsTo(TccAccount::class, 'client_id'); }",
+            "public function paymentInstructions() { return $this->hasMany(PaymentInstruction::class); }"
+          ]
+        },
+        {
+          "id": "IMPL-MODEL-002",
+          "requirement": "Set $fillable or $guarded for mass-assignment protection",
+          "syntax": "protected $fillable = ['field1', 'field2']; // OR protected $guarded = ['id'];",
+          "example": "protected $fillable = ['client_id', 'file_name', 'status', 'total_amount'];",
+          "never": "protected $guarded = []; // NEVER leave empty - security risk"
+        },
+        {
+          "id": "IMPL-MODEL-003",
+          "requirement": "Add global scopes in booted() method",
+          "syntax": "protected static function booted() { static::addGlobalScope('name', function ($query) { ... }); }",
+          "example": "protected static function booted() {\n    static::addGlobalScope('client', function ($query) {\n        $query->where('client_id', auth()->user()->client_id);\n    });\n}"
+        },
+        {
+          "id": "IMPL-MODEL-004",
+          "requirement": "Define query scopes for common filters",
+          "syntax": "public function scopeName($query, $param) { return $query->where('...'); }",
+          "example": "public function scopeByStatus($query, $status) { return $query->where('status', $status); }",
+          "usage": "MassPaymentFile::byStatus('approved')->get();"
+        }
+      ]
+    },
+
+    "form_requests": {
+      "category": "FormRequest Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-REQ-001",
+          "requirement": "Define validation rules in rules() method",
+          "file_pattern": "app/Http/Requests/{Action}{Resource}Request.php",
+          "syntax": "public function rules() { return ['field' => 'required|string|max:255', ...]; }",
+          "example": "public function rules() {\n    return [\n        'file' => 'required|file|mimes:csv|max:10240',\n        'client_id' => 'required|exists:tcc_accounts,id'\n    ];\n}"
+        },
+        {
+          "id": "IMPL-REQ-002",
+          "requirement": "Implement authorization in authorize() method",
+          "syntax": "public function authorize() { return $this->user()->can('action', Model::class); }",
+          "example": "public function authorize() { return $this->user()->can('create', MassPaymentFile::class); }"
+        },
+        {
+          "id": "IMPL-REQ-003",
+          "requirement": "Access validated data using validated() method",
+          "syntax": "$data = $request->validated();",
+          "never": "$data = $request->all(); // NEVER use all() - bypasses validation"
+        }
+      ]
+    },
+
+    "policies": {
+      "category": "Policy Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-POL-001",
+          "requirement": "Define authorization methods in Policy classes",
+          "file_pattern": "app/Policies/{Model}Policy.php",
+          "syntax": "public function action(User $user, Model $model) { return boolean; }",
+          "methods": ["viewAny", "view", "create", "update", "delete"],
+          "example": "public function approve(User $user, MassPaymentFile $file) {\n    return $user->hasRole('approver') && $file->status === 'pending_approval';\n}"
+        },
+        {
+          "id": "IMPL-POL-002",
+          "requirement": "Use policy in controllers via authorize()",
+          "syntax": "$this->authorize('action', $model);",
+          "example": "$this->authorize('approve', $massPaymentFile);"
+        }
+      ]
+    },
+
+    "controllers": {
+      "category": "Controller Implementation Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-CTRL-001",
+          "requirement": "Keep controllers thin (max 10-15 lines per method)",
+          "pattern": "Validate via FormRequest → Authorize via Policy → Delegate to Service → Return Resource",
+          "example": "public function store(UploadMassPaymentFileRequest $request) {\n    $file = $this->service->upload($request->validated());\n    return new MassPaymentFileResource($file);\n}"
+        },
+        {
+          "id": "IMPL-CTRL-002",
+          "requirement": "Use dependency injection in constructor",
+          "syntax": "public function __construct(private ServiceClass $service) {}",
+          "example": "public function __construct(private MassPaymentService $service) {}"
+        },
+        {
+          "id": "IMPL-CTRL-003",
+          "requirement": "Return responses with proper status codes",
+          "syntax": "return response()->json($data, $statusCode);",
+          "examples": {
+            "200_OK": "return new ResourceClass($model);",
+            "201_Created": "return response()->json(new ResourceClass($model), 201);",
+            "204_NoContent": "return response()->noContent();",
+            "404_NotFound": "return response()->json(['message' => 'Not found'], 404);"
+          }
+        }
+      ]
+    },
+
+    "services": {
+      "category": "Service Layer Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-SVC-001",
+          "requirement": "Use DB::transaction() for multi-write operations",
+          "syntax": "DB::transaction(function () use ($data) { ... });",
+          "example": "public function createPayments(MassPaymentFile $file, array $rows) {\n    DB::transaction(function () use ($file, $rows) {\n        foreach ($rows as $row) {\n            PaymentInstruction::create($row);\n        }\n        $file->update(['status' => 'completed']);\n    });\n}"
+        },
+        {
+          "id": "IMPL-SVC-002",
+          "requirement": "Inject models via dependency injection, not facades",
+          "example": "public function __construct(private MassPaymentFile $massPaymentFile) {}",
+          "usage": "$file = $this->massPaymentFile->create($data);"
+        }
+      ]
+    },
+
+    "resources": {
+      "category": "API Resource Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-RES-001",
+          "requirement": "Define resource transformation in toArray() method",
+          "file_pattern": "app/Http/Resources/{Model}Resource.php",
+          "syntax": "public function toArray($request) { return ['key' => $this->attribute, ...]; }",
+          "example": "public function toArray($request) {\n    return [\n        'id' => $this->id,\n        'file_name' => $this->file_name,\n        'status' => $this->status,\n        'client' => new ClientResource($this->whenLoaded('client')),\n        'created_at' => $this->created_at\n    ];\n}"
+        },
+        {
+          "id": "IMPL-RES-002",
+          "requirement": "Return collections using Resource::collection()",
+          "syntax": "return ResourceClass::collection($models);",
+          "with_pagination": "return ResourceClass::collection($query->paginate(20));"
+        },
+        {
+          "id": "IMPL-RES-003",
+          "requirement": "Use snake_case for JSON keys",
+          "example": "return ['mass_payment_file_id' => $this->id, 'created_at' => $this->created_at];",
+          "never": "return ['massPaymentFileId' => $this->id]; // camelCase"
+        },
+        {
+          "id": "IMPL-RES-004",
+          "requirement": "Use $this->whenLoaded() for relationships to prevent N+1",
+          "syntax": "'relation' => new RelationResource($this->whenLoaded('relation'))",
+          "example": "'client' => new ClientResource($this->whenLoaded('client'))"
+        }
+      ]
+    },
+
+    "queries": {
+      "category": "Eloquent Query Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-QUERY-001",
+          "requirement": "Use ->with() for eager loading relationships",
+          "syntax": "Model::with(['relation1', 'relation2.nested'])->get()",
+          "example": "$files = MassPaymentFile::with(['client', 'paymentInstructions'])->paginate(20);"
+        },
+        {
+          "id": "IMPL-QUERY-002",
+          "requirement": "Use ->paginate() for all list queries",
+          "syntax": "Model::paginate($perPage);",
+          "default": "->paginate(20)",
+          "never": "Model::all(); // or Model::get() without pagination in controllers"
+        },
+        {
+          "id": "IMPL-QUERY-003",
+          "requirement": "Use ->select() to limit columns when not all are needed",
+          "syntax": "Model::select(['id', 'name', 'status'])->get();",
+          "example": "MassPaymentFile::select(['id', 'file_name', 'status'])->paginate();"
+        }
+      ]
+    },
+
+    "jobs": {
+      "category": "Queue Job Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-JOB-001",
+          "requirement": "Create job classes implementing ShouldQueue",
+          "file_pattern": "app/Jobs/{Operation}Job.php",
+          "syntax": "class JobName implements ShouldQueue { use Dispatchable, InteractsWithQueue, Queueable, SerializesModels; public function handle() { ... } }",
+          "example": "class ValidateMassPaymentFileJob implements ShouldQueue {\n    public function __construct(public MassPaymentFile $file) {}\n    public function handle() { /* validation logic */ }\n}"
+        },
+        {
+          "id": "IMPL-JOB-002",
+          "requirement": "Dispatch jobs using ::dispatch()",
+          "syntax": "JobClass::dispatch($parameters);",
+          "example": "ValidateMassPaymentFileJob::dispatch($file);"
+        },
+        {
+          "id": "IMPL-JOB-003",
+          "requirement": "Handle job failures in failed() method",
+          "syntax": "public function failed(Throwable $exception) { ... }",
+          "example": "public function failed(Throwable $exception) {\n    $this->file->update(['status' => 'validation_failed', 'error' => $exception->getMessage()]);\n}"
+        }
+      ]
+    },
+
+    "caching": {
+      "category": "Cache Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-CACHE-001",
+          "requirement": "Use Cache::remember() for retrieving/storing cached data",
+          "syntax": "Cache::remember($key, $ttl, function () { return $value; });",
+          "example": "$currencies = Cache::remember('currencies', 86400, function () {\n    return Currency::all();\n});"
+        },
+        {
+          "id": "IMPL-CACHE-002",
+          "requirement": "Use Cache::forget() to invalidate cache",
+          "syntax": "Cache::forget($key);",
+          "example": "Currency::updated(function ($currency) { Cache::forget('currencies'); });"
+        },
+        {
+          "id": "IMPL-CACHE-003",
+          "requirement": "Use Cache::tags() for group invalidation",
+          "syntax": "Cache::tags(['tag1', 'tag2'])->put($key, $value, $ttl);",
+          "invalidation": "Cache::tags(['tag1'])->flush();"
+        }
+      ]
+    },
+
+    "testing": {
+      "category": "Feature Test Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-TEST-001",
+          "requirement": "Use $this->actingAs() to authenticate test user",
+          "syntax": "$this->actingAs($user)->get('/api/v1/endpoint');",
+          "example": "$response = $this->actingAs($user)->postJson('/api/v1/mass-payments', $data);"
+        },
+        {
+          "id": "IMPL-TEST-002",
+          "requirement": "Assert JSON structure using assertJsonStructure()",
+          "syntax": "$response->assertJsonStructure(['data' => ['id', 'name']]);",
+          "example": "$response->assertJsonStructure(['data' => ['id', 'file_name', 'status']]);"
+        },
+        {
+          "id": "IMPL-TEST-003",
+          "requirement": "Assert HTTP status codes",
+          "syntax": "$response->assertStatus(200);",
+          "shortcuts": {
+            "200": "->assertOk()",
+            "201": "->assertCreated()",
+            "204": "->assertNoContent()",
+            "401": "->assertUnauthorized()",
+            "403": "->assertForbidden()",
+            "404": "->assertNotFound()",
+            "422": "->assertUnprocessable()"
+          }
+        },
+        {
+          "id": "IMPL-TEST-004",
+          "requirement": "Assert database state using assertDatabaseHas()",
+          "syntax": "$this->assertDatabaseHas('table', ['column' => 'value']);",
+          "example": "$this->assertDatabaseHas('mass_payment_files', ['id' => $file->id, 'status' => 'approved']);"
+        }
+      ]
+    },
+
+    "error_handling": {
+      "category": "Error Handling Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-ERR-001",
+          "requirement": "Return consistent error response format",
+          "syntax": "return response()->json(['message' => 'Error message', 'errors' => [...]], $statusCode);",
+          "example": "return response()->json(['message' => 'Validation failed', 'errors' => ['field' => ['error']]], 422);"
+        },
+        {
+          "id": "IMPL-ERR-002",
+          "requirement": "Use try-catch for exception handling",
+          "syntax": "try { ... } catch (Exception $e) { Log::error($e); return response()->json(['message' => 'Error'], 500); }",
+          "never_expose": "return response()->json(['error' => $e->getMessage()]); // in production"
+        }
+      ]
+    },
+
+    "logging": {
+      "category": "Logging Syntax",
+      "requirements": [
+        {
+          "id": "IMPL-LOG-001",
+          "requirement": "Use Log facade for logging events",
+          "syntax": "Log::info('message', ['context' => 'value']);",
+          "levels": ["Log::debug()", "Log::info()", "Log::warning()", "Log::error()", "Log::critical()"],
+          "example": "Log::info('Mass payment file uploaded', ['file_id' => $file->id, 'user_id' => $user->id]);"
+        },
+        {
+          "id": "IMPL-LOG-002",
+          "requirement": "Always include context in logs (IDs, user info)",
+          "example": "Log::error('Payment processing failed', ['file_id' => $file->id, 'error' => $exception->getMessage()]);"
+        }
+      ]
+    }
+  },
+
+  "implementation_anti_patterns": {
+    "code_existence_checks": [
+      {
+        "id": "IMPL-DONT-001",
+        "anti_pattern": "Using classes or methods that don't exist in repository",
+        "why_bad": "Code won't compile or run, breaks build",
+        "prevention": "Search codebase before using classes, verify imports exist",
+        "example_bad": "use App\\Services\\NonExistentService;",
+        "example_good": "// Search: grep -r 'class ServiceName' app/\n// Or use IDE autocomplete to verify class exists"
+      },
+      {
+        "id": "IMPL-DONT-002",
+        "anti_pattern": "Adding methods that already exist in repository",
+        "why_bad": "Duplicate code, naming conflicts, confusion",
+        "prevention": "Search for existing methods before implementing",
+        "example": "// Search: grep -r 'function methodName' app/Models/Model.php\n// Check if Model::methodName() already exists"
+      }
+    ],
+
+    "hardcoding_anti_patterns": [
+      {
+        "id": "IMPL-DONT-003",
+        "anti_pattern": "Hardcoding timestamps or timezones",
+        "why_bad": "Timezone bugs, incorrect dates in different environments",
+        "example_bad": "['created_at' => '2025-01-01 00:00:00']",
+        "example_good": "['created_at' => now()] // or Carbon::now()"
+      },
+      {
+        "id": "IMPL-DONT-004",
+        "anti_pattern": "Hardcoding environment-specific values",
+        "why_bad": "Code breaks when deployed to different environments",
+        "example_bad": "private $apiUrl = 'https://api.production.com';",
+        "example_good": "private $apiUrl = config('services.api.url');"
+      },
+      {
+        "id": "IMPL-DONT-005",
+        "anti_pattern": "Using magic numbers or strings",
+        "why_bad": "Hard to understand and maintain",
+        "example_bad": "if ($status === 'approved') { ... }",
+        "example_good": "const STATUS_APPROVED = 'approved';\nif ($status === self::STATUS_APPROVED) { ... }"
+      }
+    ],
+
+    "security_anti_patterns": [
+      {
+        "id": "IMPL-DONT-006",
+        "anti_pattern": "Disabling mass-assignment protection",
+        "why_bad": "Allows unauthorized field updates, security vulnerability",
+        "example_bad": "protected $guarded = [];",
+        "example_good": "protected $fillable = ['field1', 'field2'];"
+      },
+      {
+        "id": "IMPL-DONT-007",
+        "anti_pattern": "Exposing stack traces in production",
+        "why_bad": "Reveals internal implementation, security risk",
+        "example_bad": "return response()->json(['error' => $exception->getTraceAsString()], 500);",
+        "example_good": "Log::error($exception);\nreturn response()->json(['message' => 'Server error'], 500);"
+      },
+      {
+        "id": "IMPL-DONT-008",
+        "anti_pattern": "Returning environment variables or config in API responses",
+        "why_bad": "Leaks sensitive configuration",
+        "example_bad": "return ['api_key' => config('services.payment.key')];",
+        "example_good": "// NEVER expose API keys, database credentials, secrets in responses"
+      }
+    ],
+
+    "query_anti_patterns": [
+      {
+        "id": "IMPL-DONT-009",
+        "anti_pattern": "Using all() or get() without pagination in controllers",
+        "why_bad": "Memory exhaustion with large datasets",
+        "example_bad": "return MassPaymentFile::all();",
+        "example_good": "return MassPaymentFile::paginate(20);"
+      },
+      {
+        "id": "IMPL-DONT-010",
+        "anti_pattern": "Accessing relationships without eager loading",
+        "why_bad": "N+1 query problem - severe performance degradation",
+        "example_bad": "$files = MassPaymentFile::all();\nforeach ($files as $file) { echo $file->client->name; }",
+        "example_good": "$files = MassPaymentFile::with('client')->all();\nforeach ($files as $file) { echo $file->client->name; }"
+      }
+    ],
+
+    "validation_anti_patterns": [
+      {
+        "id": "IMPL-DONT-011",
+        "anti_pattern": "Using $request->all() instead of validated()",
+        "why_bad": "Bypasses validation, allows unexpected fields",
+        "example_bad": "$data = $request->all();\nModel::create($data);",
+        "example_good": "$data = $request->validated();\nModel::create($data);"
+      },
+      {
+        "id": "IMPL-DONT-012",
+        "anti_pattern": "Building queries directly from user input without validation",
+        "why_bad": "SQL injection risk, unauthorized data access",
+        "example_bad": "Model::where($request->input('field'), $request->input('value'))->get();",
+        "example_good": "$allowedFields = ['status', 'created_at'];\nif (in_array($field, $allowedFields)) {\n    Model::where($field, $value)->get();\n}"
+      }
+    ],
+
+    "transaction_anti_patterns": [
+      {
+        "id": "IMPL-DONT-013",
+        "anti_pattern": "Multi-write operations without DB::transaction()",
+        "why_bad": "Data inconsistency if one write succeeds and another fails",
+        "example_bad": "$file = MassPaymentFile::create($data);\nPaymentInstruction::create($instructionData);",
+        "example_good": "DB::transaction(function () use ($data, $instructionData) {\n    $file = MassPaymentFile::create($data);\n    PaymentInstruction::create($instructionData);\n});"
+      }
+    ],
+
+    "response_anti_patterns": [
+      {
+        "id": "IMPL-DONT-014",
+        "anti_pattern": "Using inconsistent casing in JSON responses",
+        "why_bad": "Breaks client expectations",
+        "example_bad": "return ['id' => 1, 'fileName' => 'test.csv'];",
+        "example_good": "return ['id' => 1, 'file_name' => 'test.csv']; // snake_case"
+      },
+      {
+        "id": "IMPL-DONT-015",
+        "anti_pattern": "Returning raw Eloquent models",
+        "why_bad": "Exposes internal structure, leaks sensitive fields",
+        "example_bad": "return MassPaymentFile::find($id);",
+        "example_good": "return new MassPaymentFileResource(MassPaymentFile::find($id));"
+      }
+    ],
+
+    "observability_anti_patterns": [
+      {
+        "id": "IMPL-DONT-016",
+        "anti_pattern": "Not logging important events",
+        "why_bad": "Hard to debug production issues, no audit trail",
+        "example_good": "Log::info('Mass payment approved', ['file_id' => $file->id, 'user_id' => $user->id]);"
+      }
+    ]
+  },
+
+  "file_structure": {
+    "description": "Laravel file organization patterns",
+    "paths": {
+      "routes": "routes/api.php",
+      "controllers": "app/Http/Controllers/Api/V1/{Resource}Controller.php",
+      "requests": "app/Http/Requests/{Action}{Resource}Request.php",
+      "resources": "app/Http/Resources/{Model}Resource.php",
+      "models": "app/Models/{Model}.php",
+      "services": "app/Services/{Domain}Service.php",
+      "policies": "app/Policies/{Model}Policy.php",
+      "jobs": "app/Jobs/{Operation}Job.php",
+      "migrations": "database/migrations/{timestamp}_create_{table}_table.php",
+      "factories": "database/factories/{Model}Factory.php",
+      "tests": "tests/Feature/{Resource}Test.php"
+    },
+    "naming_conventions": {
+      "controllers": "PascalCase + Controller suffix (MassPaymentController)",
+      "models": "PascalCase, singular (MassPaymentFile, not MassPaymentFiles)",
+      "tables": "snake_case, plural (mass_payment_files)",
+      "migrations": "snake_case with action (create_mass_payment_files_table)",
+      "routes": "kebab-case (/mass-payments, not /massPayments)"
+    }
+  },
+
+  "volopa_specific_implementation": {
+    "authentication": {
+      "requirement": "Use Volopa's custom OAuth2/WSSE middleware",
+      "implementation": "Route::middleware(['volopa.auth'])->group(function () { ... });",
+      "note": "Do not use Laravel's default auth:api - Volopa has custom implementation"
+    },
+    "tenant_isolation": {
+      "requirement": "Filter all queries by client_id",
+      "implementation_methods": [
+        "Global scope: static::addGlobalScope('client', fn($query) => $query->where('client_id', auth()->user()->client_id))",
+        "Middleware: Filter requests by client_id",
+        "Policy: Verify $model->client_id === $user->client_id"
+      ],
+      "example": "protected static function booted() {\n    static::addGlobalScope('client', function ($query) {\n        if (auth()->check()) {\n            $query->where('client_id', auth()->user()->client_id);\n        }\n    });\n}"
+    }
+  },
+
+  "usage_instructions": {
+    "loading_requirements": "LaravelEngineer must load BOTH architectural_requirements.json AND technical_requirements.json",
+    "load_order": [
+      "1. Load architectural_requirements.json (design patterns from Architect)",
+      "2. Load technical_requirements.json (implementation syntax and code patterns)",
+      "3. Combine both into constraints field"
+    ],
+    "implementation_process": [
+      "Read task from ProjectManager",
+      "Read architectural design from Architect's system design",
+      "Apply architectural patterns (transaction boundaries, N+1 prevention, pagination)",
+      "Apply implementation syntax (exact Laravel code from this file)",
+      "Write code in proper file locations",
+      "Write feature tests",
+      "Verify no anti-patterns present"
+    ]
+  }
+}

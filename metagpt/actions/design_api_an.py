@@ -83,6 +83,19 @@ REFINED_PROGRAM_CALL_FLOW = ActionNode(
     example=MMC2,
 )
 
+SYSTEM_CONSTRAINTS = ActionNode(
+    key="System Constraints",
+    expected_type=str,
+    instruction="Define hard rules that restrict the solution space. These include technical limits, policy mandates, "
+    "compliance rules. Structure as DOS (required patterns) and DONTS (prohibited patterns). "
+    "Source from environment context (platform-level) and project context (feature-specific).",
+    example="""DOS:
+- category: rule
+
+DONTS:
+- category: rule""",
+)
+
 ANYTHING_UNCLEAR = ActionNode(
     key="Anything UNCLEAR",
     expected_type=str,
@@ -96,6 +109,7 @@ NODES = [
     FILE_LIST,
     DATA_STRUCTURES_AND_INTERFACES,
     PROGRAM_CALL_FLOW,
+    SYSTEM_CONSTRAINTS,
     ANYTHING_UNCLEAR,
 ]
 
@@ -104,6 +118,7 @@ REFINED_NODES = [
     REFINED_FILE_LIST,
     REFINED_DATA_STRUCTURES_AND_INTERFACES,
     REFINED_PROGRAM_CALL_FLOW,
+    SYSTEM_CONSTRAINTS,
     ANYTHING_UNCLEAR,
 ]
 

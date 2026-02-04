@@ -6,10 +6,9 @@
 @Desc    : Laravel Architect role for Volopa Mass Payments system
 """
 
-import json
-from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from metagpt.roles.architect import Architect
+from industry.utils.context_reader import ContextReader, ContextIndex
 
 
 class LaravelArchitect(Architect):
@@ -23,7 +22,7 @@ class LaravelArchitect(Architect):
     - Create API endpoint specifications
     - Design validation and authorization architecture
 
-    Allocated Intents (from massPaymentsVolopaAgents.txt):
+    Allocated Intents:
     - uploadPaymentFile: Design file upload architecture (async processing, storage)
     - validatePaymentFile: Design validation service architecture
     - getUploadedStatus: Design status tracking system
@@ -147,91 +146,80 @@ class LaravelArchitect(Architect):
         """
         super().__init__(**kwargs)
 
-        # Load architectural requirements from JSON
-        self.requirements = self._load_requirements()
-
-        # Update constraints with loaded architectural patterns
-        self._update_constraints_from_requirements()
+        # Load YAML context
+        self._context_reader = ContextReader()
+        self._context_index: Optional[ContextIndex] = None
+        self._load_yaml_context()
 
         # With use_fixed_sop=True, set max_react_loop to 1 to execute actions once
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=1)
 
-    def _load_requirements(self) -> dict:
-        """Load architectural_requirements.json file"""
-        requirements_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements.json"
+    def _load_yaml_context(self) -> None:
+        """Load context from YAML files and extract constraints dimension."""
+        self._context_index = self._context_reader.load_all()
 
-        with open(requirements_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        # Format constraints from YAML and append to role constraints
+        constraints_text = self._format_yaml_constraints()
+        if constraints_text:
+            self.constraints += constraints_text
 
-    def _update_constraints_from_requirements(self):
-        """Inject loaded architectural patterns into role constraints"""
+    def _format_yaml_constraints(self) -> str:
+        """Format constraints from YAML context for the Architect role."""
+        if not self._context_index:
+            return ""
 
-        # Extract relevant sections
-        meta = self.requirements['meta']
-        mental_model = self.requirements['mental_model']
-        arch_dos = self.requirements.get('architectural_dos', {})
-        arch_donts = self.requirements.get('architectural_donts', {})
+        lines = ["\n\n=== SYSTEM CONSTRAINTS (from YAML context) ==="]
 
-        # Build dynamic constraint text
-        dos_text = self._format_architectural_patterns(arch_dos, pattern_type="DOS")
-        donts_text = self._format_architectural_patterns(arch_donts, pattern_type="DONTS")
+        # DOS - Required patterns
+        dos = self._context_index.get_dos()
+        if dos:
+            lines.append("\nDOS (Required Patterns):")
+            for category, rules in dos.items():
+                lines.append(f"  {category}:")
+                if isinstance(rules, list):
+                    for rule in rules:
+                        lines.append(f"    - {rule}")
 
-        # Append to existing constraints
-        self.constraints += f"""
+        # DONTS - Prohibited patterns
+        donts = self._context_index.get_donts()
+        if donts:
+            lines.append("\nDONTS (Prohibited Patterns):")
+            for category, rules in donts.items():
+                lines.append(f"  {category}:")
+                if isinstance(rules, list):
+                    for rule in rules:
+                        lines.append(f"    - {rule}")
 
-LOADED ARCHITECTURAL REQUIREMENTS FROM JSON:
+        # Unresolved constraints
+        unresolved = self._context_index.get_unresolved()
+        if unresolved:
+            lines.append("\nUNRESOLVED (Pending Clarification):")
+            for item in unresolved:
+                dim = item.get('dimension', '')
+                question = item.get('question', item.get('area', ''))
+                item_id = item.get('id', '')
+                lines.append(f"    - [{dim}] {item_id}: {question}")
 
-Source: {meta['source']}
-Target Output: {meta['output']}
+        return "\n".join(lines)
 
-MENTAL MODEL (Loaded from JSON):
-Flow: {mental_model['flow']}
+    @property
+    def context_index(self) -> Optional[ContextIndex]:
+        """Access to the indexed context for external use."""
+        return self._context_index
 
-Architectural Layers:
-"""
-        # Add layer details
-        for layer_name, layer_info in mental_model['layers'].items():
-            self.constraints += f"\n- {layer_name}: {layer_info['responsibility']}"
-            self.constraints += f"\n  Pattern: {layer_info['design_pattern']}"
+    def get_constraints_for_design(self) -> Dict[str, Any]:
+        """
+        Get constraints structured for SYSTEM_CONSTRAINTS node in design output.
 
-        self.constraints += f"""
+        Returns:
+            Dict with dos, donts, and unresolved keys
+        """
+        if not self._context_index:
+            return {}
 
-ARCHITECTURAL DESIGN PATTERNS (DOS) - Loaded from JSON:
-{dos_text}
-
-ARCHITECTURAL ANTI-PATTERNS (DONTS) - Loaded from JSON:
-{donts_text}
-"""
-
-    def _format_architectural_patterns(self, patterns: dict, pattern_type: str) -> str:
-        """Format architectural DOS or DONTS patterns as text"""
-        lines = []
-
-        for category_key, category_data in patterns.items():
-            if isinstance(category_data, dict) and 'category' in category_data:
-                lines.append(f"\n### {category_data['category']}")
-
-                if 'requirements' in category_data:
-                    for req in category_data['requirements']:
-                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
-                        lines.append(f"Rationale: {req['rationale']}")
-
-                        if 'design_specification' in req:
-                            lines.append(f"Design Spec: {req['design_specification']}")
-
-                        if 'example' in req:
-                            lines.append(f"Example: {req['example']}")
-
-                        if 'volopa_specific' in req:
-                            lines.append(f"Volopa-Specific: {req['volopa_specific']}")
-
-        return '\n'.join(lines)
-
-
-# Placeholder for future customization
-# TODO: Add Laravel-specific system design templates
-# TODO: Add Mermaid diagram generators for Laravel patterns
-# TODO: Add database schema design helpers (migration templates)
-# TODO: Integrate Volopa-specific patterns (WSSE auth, approval workflows)
-# TODO: Add API specification generator (OpenAPI/Swagger)
+        return {
+            'dos': self._context_index.get_dos(),
+            'donts': self._context_index.get_donts(),
+            'unresolved': self._context_index.get_unresolved(),
+        }
