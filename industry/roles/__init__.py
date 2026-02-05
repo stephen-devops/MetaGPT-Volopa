@@ -3,7 +3,7 @@
 """
 @Time    : 2025-12-02
 @File    : __init__.py
-@Desc    : Laravel-specific MetaGPT roles for Volopa Mass Payments system
+@Desc    : Laravel-specific MetaGPT roles for Volopa OOP Expenses system
 """
 
 from .laravel_product_manager import LaravelProductManager

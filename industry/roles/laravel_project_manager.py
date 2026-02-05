@@ -3,12 +3,11 @@
 """
 @Time    : 2025-12-02
 @File    : laravel_project_manager.py
-@Desc    : Laravel Project Manager role for Volopa Mass Payments system
+@Desc    : Laravel Project Manager role for Volopa OOP Expense system
 """
 
 import json
 from pathlib import Path
-from typing import Dict, Any
 from metagpt.roles.project_manager import ProjectManager
 
 
@@ -18,24 +17,22 @@ class LaravelProjectManager(ProjectManager):
 
     Responsibilities:
     - Break down system design into dependency-ordered tasks
-    - Analyze Laravel file dependencies (migrations → models → services → controllers)
+    - Analyze Laravel file dependencies (migrations -> models -> services -> controllers)
     - Generate task list with proper execution order
     - Document shared knowledge and Laravel conventions
     - Identify required Laravel packages (composer dependencies)
 
-    Output Structure:
-    - Required packages (composer.json dependencies)
-    - Logic Analysis (file-by-file with dependencies)
-    - Task list (dependency-ordered filenames)
-    - Full API spec (OpenAPI 3.0)
-    - Shared Knowledge (Laravel conventions + DOS/DONTS)
+    Domain Modules:
+    - User Management: permission tables, role hierarchy, access control
+    - Pocket Expense CSV Upload: upload pipeline, validation service, background sync
+    - Single Expense Capturing: CRUD, FX conversion, metadata, source config
     """
 
     use_fixed_sop: bool = True
     name: str = "Manuel"
     profile: str = "Laravel Project Manager"
     goal: str = """
-    Break down Laravel system design into dependency-ordered tasks following
+    Break down OOP Expense system design into dependency-ordered tasks following
     Laravel conventions (migrations first, then models, then services, controllers, routes)
     """
 
@@ -57,22 +54,42 @@ class LaravelProjectManager(ProjectManager):
 
     2. Execution Order Priority (for Task list):
        P0: Migrations (database schema) - no dependencies
+           - create_opt_pocket_expense_type_table
+           - create_pocket_expense_source_client_config_table
+           - create_pocket_expense_table
+           - create_pocket_expense_metadata_table
+           - create_user_feature_permission_table
+           - create_pocket_expense_file_uploads_table
+           - create_pocket_expense_uploads_data_table
        P1: Models (Eloquent) - depend on migrations
+           - PocketExpense, PocketExpenseMetadata, PocketExpenseFileUpload
+           - OptPocketExpenseType, PocketExpenseSourceClientConfig
+           - UserFeaturePermission, PocketExpenseUploadsData
        P2: Policies (authorization) - depend on models
+           - PocketExpensePolicy (CRUD + approve based on user_feature_permission)
        P3: FormRequests (validation) - depend on policies
+           - UploadPocketExpenseCSVRequest, StorePocketExpenseRequest
        P4: Config files (config/*.php) - no dependencies
        P5: Services (business logic) - depend on models
+           - PocketExpenseCSVValidator, FXConversionService
+           - ExpenseSourceService, PermissionService
        P6: Queue Jobs - depend on services
+           - ProcessExpenseUpload (batch sync to main service)
        P7: Notifications - depend on models
+           - ExpenseUploadCompleted
        P8: Middleware - no dependencies
        P9: Resources (transformers) - depend on models
+           - PocketExpenseResource, ValidationErrorResource
+           - PocketExpenseFileUploadResource
        P10: Controllers (thin layer) - depend on services + FormRequests + Resources
+           - PocketExpenseUploadController, PocketExpenseController
+           - UserPermissionController
        P11: Routes (routes/api.php) - depend on controllers
        P12: Tests (feature tests) - depend on all application code
 
     3. Parallel Development Opportunities (note in Logic Analysis):
-       - Multiple migrations (if no FK dependencies)
-       - Multiple models (if no relationships)
+       - Multiple migrations (if no FK dependencies between them)
+       - Multiple models (if no cross-relationships)
        - Multiple FormRequests
        - Multiple services (if no inter-service deps)
        - Multiple API Resources
@@ -81,11 +98,13 @@ class LaravelProjectManager(ProjectManager):
        - Controllers depend on: Services + FormRequests + Resources
        - Services depend on: Models
        - FormRequests depend on: Policies (for authorize method)
-       - Policies depend on: Models
+       - Policies depend on: Models + UserFeaturePermission
+       - PocketExpenseCSVValidator depends on: OptPocketExpenseType, currencies, countries, sources
+       - ProcessExpenseUpload job depends on: PocketExpenseUploadsData model + PocketExpense creation service
        - Tests depend on: All application code
 
     5. Required Composer Packages:
-       - league/csv (for CSV processing)
+       - league/csv (for CSV parsing)
        - Any other Laravel packages needed
 
     DO NOT include code examples, diff blocks, or implementation details.
@@ -104,7 +123,7 @@ class LaravelProjectManager(ProjectManager):
         """
         super().__init__(**kwargs)
 
-        # Load functional requirements for task breakdown guidance
+        # Load requirements from all three JSON files
         self.requirements = self._load_requirements()
 
         # Update constraints with task breakdown data
@@ -114,81 +133,151 @@ class LaravelProjectManager(ProjectManager):
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=1)
 
-        # Output will be a JSON document with:
-        # {
-        #   "Required packages": ["laravel/framework:^10.0", ...],
-        #   "Logic Analysis": [
-        #     ["file.php", "Description with dependencies"]
-        #   ],
-        #   "Task list": ["file1.php", "file2.php", ...],  # Dependency order
-        #   "Full API spec": "openapi: 3.0.0\n...",
-        #   "Shared Knowledge": "All services use transactions..."
-        # }
-
     def _load_requirements(self) -> dict:
-        """Load user_requirements.json file for task breakdown guidance"""
-        requirements_path = Path(__file__).parent.parent / "requirements" / "user_requirements.json"
+        """Load all three OOP Expense requirement JSON files"""
+        req_dir = Path(__file__).parent.parent / "requirements" / "updated_req"
 
-        with open(requirements_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        files = {
+            "user_management": req_dir / "SD-OOP_User_Management_System.json",
+            "pocket_expense": req_dir / "SD-OOP_Pocket_expense.json",
+            "single_data_capturing": req_dir / "SD-OOP_Expense_single_data_capturing.json",
+        }
+
+        loaded = {}
+        for key, path in files.items():
+            with open(path, 'r', encoding='utf-8') as f:
+                loaded[key] = json.load(f)
+
+        return loaded
 
     def _update_constraints_from_requirements(self):
-        """Inject task breakdown guidance from functional requirements"""
+        """Inject task breakdown guidance from loaded requirements"""
 
-        # Extract sections
-        stats = self.requirements['summary_statistics']
-        frs = self.requirements['functional_requirements']
-        expected = self.requirements['expected_outputs']['LaravelProjectManager']
+        um = self.requirements['user_management']
+        pe = self.requirements['pocket_expense']
+        sdc = self.requirements['single_data_capturing']
 
-        # Build task mapping
-        task_mapping = self._build_task_mapping(frs)
+        # Build task mapping from all three modules
+        task_mapping = self._build_task_mapping(um, pe, sdc)
+        stats = self._compute_stats(um, pe, sdc)
 
-        # Append to existing constraints
         self.constraints += f"""
 
-LOADED FUNCTIONAL REQUIREMENTS FROM JSON:
+LOADED REQUIREMENTS FROM JSON:
 
 Task Breakdown Statistics:
-- Total FRs: {stats['total_functional_requirements']}
-- Total Sub-Requirements: {stats['total_sub_requirements']}
-- Estimated Tasks to Create: {stats['estimated_tasks']}
-- Estimated Files to Generate: {stats['estimated_files']}
+{stats}
 
-Task Mapping Guide (Sub-Requirement → Tasks):
+Task Mapping Guide (Module -> Implementation Tasks):
 {task_mapping}
 
 Expected Output:
-{expected['content']}
+Task breakdown mapping all OOP Expense modules to implementation tasks with dependencies,
+covering User Management (permissions, role hierarchy), Pocket Expense CSV Upload
+(upload pipeline, validation, background sync), and Single Expense Capturing
+(CRUD, FX conversion, metadata, source config).
 """
 
-    def _build_task_mapping(self, frs: dict) -> str:
-        """Build mapping of sub-requirements to implementation tasks"""
-        lines = []
-        task_counter = 1
+    def _compute_stats(self, um: dict, pe: dict, sdc: dict) -> str:
+        um_tables = len(um.get('database_schema', {}).get('tables', []))
+        sdc_tables = len(sdc.get('database_schema', {}).get('tables', []))
+        pe_new_tables = 1 if pe.get('data_model', {}).get('new_table') else 0
+        pe_local_tables = 1 if pe.get('storing_pocket_expenses_from_file_upload', {}).get('local_storage_schema') else 0
+        total_tables = um_tables + sdc_tables + pe_new_tables + pe_local_tables
 
-        for fr_id, fr_data in frs.items():
-            lines.append(f"\n{fr_id}: {fr_data['category']}")
+        csv_columns = len(pe.get('csv_file_definition', {}).get('columns', []))
+        roles = len(um.get('permission_metrics', []))
+        expense_types = len(sdc.get('database_schema', {}).get('tables', [{}])[0].get('seed_data', []))
 
-            for sub_id, sub_req in fr_data['sub_requirements'].items():
-                lines.append(f"  {sub_id}: {sub_req['title']}")
-
-                # Extract Engineer files as task hints
-                if 'agent_tasks' in sub_req and 'Engineer' in sub_req['agent_tasks']:
-                    eng_files = sub_req['agent_tasks']['Engineer']
-                    if isinstance(eng_files, list):
-                        for file in eng_files:
-                            lines.append(f"    Task {task_counter}: Implement {file}")
-                            task_counter += 1
-                    elif isinstance(eng_files, str):
-                        lines.append(f"    Task {task_counter}: {eng_files}")
-                        task_counter += 1
-
+        lines = [
+            f"- Total DB Tables: {total_tables}",
+            f"  - User Management: {um_tables} (user_feature_permission, oop_expenses)",
+            f"  - Single Data Capturing: {sdc_tables} (opt_pocket_expense_type, source_client_config, pocket_expense, pocket_expense_metadata)",
+            f"  - Pocket Expense Upload: {pe_new_tables + pe_local_tables} (file_uploads, uploads_data)",
+            f"- CSV Columns: {csv_columns}",
+            f"- User Roles: {roles}",
+            f"- Expense Types: {expense_types}",
+            f"- Estimated Models: ~8 (PocketExpense, PocketExpenseMetadata, PocketExpenseFileUpload, PocketExpenseUploadsData, OptPocketExpenseType, PocketExpenseSourceClientConfig, UserFeaturePermission, OopExpenses)",
+            f"- Estimated Controllers: ~3 (PocketExpenseUploadController, PocketExpenseController, UserPermissionController)",
+            f"- Estimated Services: ~5 (PocketExpenseCSVValidator, FXConversionService, ExpenseSourceService, PermissionService, PocketExpenseService)",
+            f"- Estimated Migrations: ~7",
+            f"- Estimated Total Files: ~35-40",
+        ]
         return '\n'.join(lines)
 
+    def _build_task_mapping(self, um: dict, pe: dict, sdc: dict) -> str:
+        lines = []
 
-# Placeholder for future customization
-# TODO: Add Laravel-specific dependency analyzer
-# TODO: Add task ordering algorithm (topological sort for dependencies)
-# TODO: Add Laravel package recommender based on system design
-# TODO: Add OpenAPI spec generator from system design
-# TODO: Integrate Volopa-specific shared knowledge (WSSE auth, approval patterns)
+        # Module 1: User Management
+        lines.append("\n=== Module 1: User Management ===")
+        lines.append("  Tables: user_feature_permission, oop_expenses")
+        er = um.get('er_diagram', {})
+        for rel in er.get('relationships', []):
+            lines.append(f"  Relationship: {rel['from']} --{rel['label']}--> {rel['to']}")
+        acf = um.get('access_control_flow', {})
+        enablement = acf.get('service_enablement_flow', [])
+        if enablement:
+            lines.append("  Service Enablement Flow:")
+            for step in enablement:
+                lines.append(f"    - {step}")
+        lines.append("  Tasks:")
+        lines.append("    - Migration: create_user_feature_permission_table")
+        lines.append("    - Migration: create_oop_expenses_table")
+        lines.append("    - Model: UserFeaturePermission (relationships, unique constraints)")
+        lines.append("    - Model: OopExpense (status enum, relationships)")
+        lines.append("    - Policy: OopExpensePolicy (role-based CRUD + approve)")
+        lines.append("    - Service: PermissionService (grant, revoke, check management rights)")
+        lines.append("    - Controller: UserPermissionController")
+        lines.append("    - Resource: UserFeaturePermissionResource")
+
+        # Module 2: Pocket Expense CSV Upload
+        lines.append("\n=== Module 2: Pocket Expense - CSV Batch Upload ===")
+        api = pe.get('api_contract', {}).get('route', {})
+        lines.append(f"  Endpoint: {api.get('method', 'POST')} {api.get('path', '/api/uploads/pocket-expense/csv')}")
+        lines.append(f"  Max Rows: 200")
+        lines.append(f"  Validation: All-or-nothing (synchronous)")
+        lines.append(f"  Background Sync: ProcessExpenseUpload job, batches of 100")
+        fp = pe.get('file_processing', {})
+        for step in fp.get('steps', []):
+            lines.append(f"  Processing Step {step.get('step', '?')}: {step.get('name', '')}")
+        lines.append("  Tasks:")
+        lines.append("    - Migration: create_pocket_expense_file_uploads_table")
+        lines.append("    - Migration: create_pocket_expense_uploads_data_table")
+        lines.append("    - Model: PocketExpenseFileUpload (status lifecycle, soft deletes)")
+        lines.append("    - Model: PocketExpenseUploadsData (FK to file_uploads)")
+        lines.append("    - FormRequest: UploadPocketExpenseCSVRequest (file, user_id, expense_user_id, client_id)")
+        lines.append("    - Service: PocketExpenseCSVValidator (preload reference data, row-level validation)")
+        lines.append("    - Controller: PocketExpenseUploadController@uploadPocketExpenseCSV")
+        lines.append("    - Resource: ValidationErrorResource (line_number, field, error, value)")
+        lines.append("    - Job: ProcessExpenseUpload (background sync in batches)")
+        lines.append("    - Notification: ExpenseUploadCompleted")
+
+        # Module 3: Single Expense Data Capturing
+        lines.append("\n=== Module 3: Single Expense Data Capturing ===")
+        db_tables = sdc.get('database_schema', {}).get('tables', [])
+        for t in db_tables:
+            lines.append(f"  Table: {t.get('name', '?')} ({len(t.get('columns', []))} cols)")
+        fx = sdc.get('fx_conversion_flow', {})
+        for step_key, step_val in fx.items():
+            lines.append(f"  FX Step: {step_val.get('name', step_key)}")
+        src = sdc.get('oop_expense_source', {})
+        defaults = src.get('default_and_global_source_setup', {}).get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])
+        lines.append(f"  Default Sources: {defaults}")
+        lines.append("  Tasks:")
+        lines.append("    - Migration: create_opt_pocket_expense_type_table (+ seed data)")
+        lines.append("    - Migration: create_pocket_expense_source_client_config_table (+ global Other)")
+        lines.append("    - Migration: create_pocket_expense_table")
+        lines.append("    - Migration: create_pocket_expense_metadata_table")
+        lines.append("    - Model: OptPocketExpenseType")
+        lines.append("    - Model: PocketExpenseSourceClientConfig (unique name per client)")
+        lines.append("    - Model: PocketExpense (status enum, relationships to metadata/user/client/type)")
+        lines.append("    - Model: PocketExpenseMetadata (polymorphic metadata_type enum, FKs)")
+        lines.append("    - FormRequest: StorePocketExpenseRequest")
+        lines.append("    - Service: PocketExpenseService (CRUD with transactions)")
+        lines.append("    - Service: FXConversionService (dated rate, 30-day lookback, commission)")
+        lines.append("    - Service: ExpenseSourceService (defaults, Other handling, max 20 limit)")
+        lines.append("    - Policy: PocketExpensePolicy (based on user_feature_permission)")
+        lines.append("    - Controller: PocketExpenseController (thin CRUD)")
+        lines.append("    - Resource: PocketExpenseResource (with metadata, whenLoaded)")
+
+        return '\n'.join(lines)

@@ -3,54 +3,43 @@
 """
 @Time    : 2025-12-02
 @File    : laravel_engineer.py
-@Desc    : Laravel Engineer role for Volopa Mass Payments system
+@Desc    : Laravel Engineer role for Volopa OOP Expense system
 """
 
 import json
 from pathlib import Path
-from typing import Dict, Any
 from metagpt.roles.engineer import Engineer
-from metagpt.roles.role import RoleReactMode
 
 
 class LaravelEngineer(Engineer):
     """
-    Laravel Engineer specialized for implementing Laravel API code following DOS/DONTS.
+    Laravel Engineer specialized for implementing OOP Expense Laravel API code following DOS/DONTS.
 
     Responsibilities:
     - Write Laravel controllers (thin, proper status codes)
     - Write FormRequests (validation + policy authorization)
-    - Write services (business logic with transactions)
-    - Write Eloquent models (relationships, casts, fillable)
-    - Write migrations (schema with indexes and foreign keys)
+    - Write services (PocketExpenseCSVValidator, FX conversion, approval workflow)
+    - Write Eloquent models (PocketExpense, PocketExpenseMetadata, relationships, casts, fillable)
+    - Write migrations (pocket_expense, pocket_expense_metadata, user_feature_permission, etc.)
     - Write API Resources (response transformers)
     - Write feature tests (assert JSON, status codes, DB state)
 
-    Allocated Intents (from massPaymentsVolopaAgents.txt):
-    - createPaymentInstructions: Implement payment creation logic
-    - approvePaymentFile: Implement approval workflow with authorization
-    - updateFileStatus: Implement state transition logic
-    - redirectPaymentConfirmation: Implement routing logic
-    - redirectDraftPayments: Implement routing logic
-
-    ReAct + RAG Integration:
-    - Uses ReAct mode for dynamic reasoning about implementation
-    - Uses SearchCodeBase action to query Volopa Laravel examples (when implemented)
-    - Applies DOS/DONTS constraints during _think() phase
-    - Self-corrects based on validation results
+    Domain Modules:
+    - User Management: permission CRUD, role delegation, access control
+    - Pocket Expense CSV Upload: upload endpoint, CSV parsing, validation, background sync
+    - Single Expense Capturing: CRUD, FX conversion, metadata management, source config
     """
 
     use_fixed_sop: bool = True
     name: str = "Lucas"
     profile: str = "Laravel API Developer"
-    goal: str = "Write Laravel code following DOS/DONTS patterns and Volopa conventions"
+    goal: str = "Write Laravel code for OOP Expense system following DOS/DONTS patterns and Volopa conventions"
 
-    # ✅ CRITICAL: Full DOS/DONTS embedded as constraints
     constraints: str = """
 CRITICAL OUTPUT FORMAT REQUIREMENT:
-- Development Plan: List ONLY filenames to be created (e.g., "app/Models/MassPaymentFile.php")
+- Development Plan: List ONLY filenames to be created (e.g., "app/Models/PocketExpense.php")
 - Incremental Change: For EACH file, provide ONLY this simple format:
-  "app/Models/MassPaymentFile.php: Create Eloquent model with relationships"
+  "app/Models/PocketExpense.php: Create Eloquent model with relationships"
 
 DO NOT generate actual code, diff blocks, or full file contents in the Incremental Change section.
 Keep each Incremental Change entry to ONE line with filename and brief description only.
@@ -58,27 +47,27 @@ Keep each Incremental Change entry to ONE line with filename and brief descripti
 Example correct format:
 {
   "Development Plan": [
-    "app/Models/MassPaymentFile.php",
-    "app/Services/ValidationService.php"
+    "app/Models/PocketExpense.php",
+    "app/Services/PocketExpenseCSVValidator.php"
   ],
   "Incremental Change": [
-    "app/Models/MassPaymentFile.php: Eloquent model with UUID, relationships, soft deletes",
-    "app/Services/ValidationService.php: Validation methods for CSV and payment data"
+    "app/Models/PocketExpense.php: Eloquent model with UUID, relationships to metadata/user/client, soft deletes",
+    "app/Services/PocketExpenseCSVValidator.php: CSV validation with preloaded reference data, all-or-nothing"
   ]
 }
 
 MENTAL MODEL:
-Client → route (versioned, throttled, auth) → controller → FormRequest
+Client → route (Oauth2UserClient middleware) → controller → FormRequest
 (validation + policy) → service/model (domain logic, transactions) →
 API Resource (shape output) → JSON with correct status codes and error format
 
 DOS - Always Follow These Practices:
-- Add routes to routes/api.php under /v1 prefix with auth middleware
-- Keep route names consistent (e.g., api.v1.mass-payments.upload)
+- Add routes to routes/api.php with Oauth2UserClient middleware
+- Keep route names consistent (e.g., uploads.pocket-expense.csv)
 - Write migrations with proper indexes, unique constraints, and foreign keys
 - Add Eloquent model relationships (hasMany, belongsTo, etc.)
 - Validate all request content in FormRequests (not controllers)
-- Use Policies or Gates for authorization checks
+- Use Policies or Gates for authorization checks via user_feature_permission
 - Keep controllers thin - push business logic into services or models
 - Use DB::transaction() when touching multiple tables
 - Return proper HTTP status codes:
@@ -89,11 +78,11 @@ DOS - Always Follow These Practices:
   * 401: Unauthorized (not authenticated)
   * 403: Forbidden (authenticated but not authorized)
   * 404: Resource not found
-  * 422: Validation failed
+  * 422: Validation failed (CSV errors, form validation)
 - Create API Resources to shape responses and hide internal fields
 - Add pagination using Resource::collection($query->paginate())
 - Write feature tests that assert JSON shape, status codes, DB state, and policy enforcement
-- Volopa uses custom authorization middlewares for OAuth2 access tokens or WSSE credentials
+- Volopa uses Oauth2UserClient middleware for authentication
 
 DON'TS - Never Do These:
 - Don't use a class or method that doesn't exist in the current repository
@@ -106,13 +95,24 @@ DON'TS - Never Do These:
 - Don't build query filters directly from user input (SQL injection risk)
 - Don't create N+1 queries (use eager loading: ->with(['relation']))
 - Don't return unbounded lists (always paginate)
-- Don't forget DB::transaction() for multi-write operations
+- Don't forget DB::transaction() for multi-write operations (especially all-or-nothing CSV)
 - Don't hardcode timestamps or timezones (use Carbon, database defaults)
-- Don't ignore caching opportunities (especially for reference data)
-- Don't let file uploads bloat the API process (use queues for large files)
+- Don't ignore caching opportunities (especially for expense types, currencies, countries, sources)
+- Don't let file uploads bloat the API process (use queues for background sync)
 - Don't respond with inconsistent JSON shapes or casing (use Resources)
 - Don't leak environment variables or config in responses
 - Don't forget observability (logging, monitoring, error tracking)
+- Don't create expenses partially on CSV failure (all-or-nothing validation)
+
+DOMAIN-SPECIFIC IMPLEMENTATION NOTES:
+- PocketExpense status enum: draft, submitted, approved, rejected
+- PocketExpenseFileUpload status: uploaded, validation_failed, validation_passed, processing, completed, failed, sync_failed
+- opt_pocket_expense_type: ATM Withdrawal (-), Point of Sale (-), Fee & Charges (-), Refund from Merchant (+)
+- pocket_expense_metadata types: category, tracking_code_type_1, tracking_code_type_2, project, additional_field, file, expense_source
+- Permission hierarchy: Primary Admin > Admin > Business User / Card User
+- user_feature_permission: grants feature access per (user_id, client_id, feature_id) with optional manager_user_id
+- CSV validation: synchronous, all-or-nothing, max 200 rows, errors array with line_number/field/error/value
+- Background sync: validated rows stored in pocket_expense_uploads_data, ProcessExpenseUpload job syncs in batches of 100
 """
 
     def __init__(self, **kwargs):
@@ -127,190 +127,179 @@ DON'TS - Never Do These:
         """
         super().__init__(**kwargs)
 
-        # Load both architectural and technical requirements from JSON
-        self.architectural_requirements = self._load_architectural_requirements()
-        self.technical_requirements = self._load_technical_requirements()
+        # Load requirements from all three JSON files
+        self.requirements = self._load_requirements()
 
-        # Update constraints with loaded patterns from both files
+        # Update constraints with loaded patterns
         self._update_constraints_from_requirements()
 
         # Set incremental mode to False to skip WriteCodePlanAndChange phase
-        # This avoids JSON parsing errors with large code blocks
-        # The Engineer will go straight to WriteCode for each file
         self.config.inc = False
 
         # Engineer needs multiple loops to write all files
-        # Set max_react_loop high enough to write all files (35 files in task list)
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=50)
 
-        # Note: Nested directory fix moved to _think() override below
-        # (repo doesn't exist during __init__, it's created in _think())
+        # File processing order:
+        # 1. Migrations (pocket_expense, pocket_expense_metadata, user_feature_permission, etc.)
+        # 2. Models (PocketExpense, PocketExpenseMetadata, PocketExpenseFileUpload, etc.)
+        # 3. Policies (PocketExpensePolicy, UserFeaturePermissionPolicy)
+        # 4. FormRequests (UploadPocketExpenseCSVRequest, StorePocketExpenseRequest, etc.)
+        # 5. Services (PocketExpenseCSVValidator, FXConversionService, etc.)
+        # 6. Controllers (PocketExpenseUploadController, PocketExpenseController, etc.)
+        # 7. Routes (routes/api.php)
+        # 8. Resources (PocketExpenseResource, ValidationErrorResource, etc.)
+        # 9. Jobs (ProcessExpenseUpload)
+        # 10. Tests
 
-        # Note: Engineer will receive task breakdown from ProjectManager
-        # and process files in dependency order:
-        # 1. Migrations
-        # 2. Models
-        # 3. Policies
-        # 4. FormRequests
-        # 5. Services
-        # 6. Controllers
-        # 7. Routes
-        # 8. Resources
-        # 9. Tests
+    def _load_requirements(self) -> dict:
+        """Load all three OOP Expense requirement JSON files"""
+        req_dir = Path(__file__).parent.parent / "requirements" / "updated_req"
 
-        # Each WriteCode action will have access to:
-        # - CodingContext with design_doc, task_doc, code_doc
-        # - Constraints (DOS/DONTS) via self.constraints → self.llm.system_prompt
-        # - RAG examples (when SearchCodeBase is implemented)
+        files = {
+            "user_management": req_dir / "SD-OOP_User_Management_System.json",
+            "pocket_expense": req_dir / "SD-OOP_Pocket_expense.json",
+            "single_data_capturing": req_dir / "SD-OOP_Expense_single_data_capturing.json",
+        }
 
-    def _load_architectural_requirements(self) -> dict:
-        """Load architectural_requirements.json file for design patterns"""
-        requirements_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements.json"
+        loaded = {}
+        for key, path in files.items():
+            with open(path, 'r', encoding='utf-8') as f:
+                loaded[key] = json.load(f)
 
-        with open(requirements_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-    def _load_technical_requirements(self) -> dict:
-        """Load technical_requirements.json file for implementation syntax"""
-        requirements_path = Path(__file__).parent.parent / "requirements" / "technical_requirements.json"
-
-        with open(requirements_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        return loaded
 
     def _update_constraints_from_requirements(self):
-        """Inject loaded architectural and technical patterns into role constraints"""
+        """Inject loaded requirements into role constraints"""
 
-        # Extract sections from architectural requirements
-        arch_meta = self.architectural_requirements['meta']
-        mental_model = self.architectural_requirements['mental_model']
-        arch_dos = self.architectural_requirements.get('architectural_dos', {})
-        arch_donts = self.architectural_requirements.get('architectural_donts', {})
+        um = self.requirements['user_management']
+        pe = self.requirements['pocket_expense']
+        sdc = self.requirements['single_data_capturing']
 
-        # Extract sections from technical requirements
-        tech_meta = self.technical_requirements['meta']
-        impl_workflow = self.technical_requirements.get('implementation_workflow', {})
-        syntax_patterns = self.technical_requirements.get('laravel_syntax_patterns', {})
-        impl_dos = self.technical_requirements.get('implementation_dos', {})
-        impl_donts = self.technical_requirements.get('implementation_donts', {})
-
-        # Build formatted text
-        arch_dos_text = self._format_architectural_patterns(arch_dos, "ARCHITECTURAL DOS")
-        arch_donts_text = self._format_architectural_patterns(arch_donts, "ARCHITECTURAL DONTS")
-        impl_dos_text = self._format_implementation_patterns(impl_dos, "IMPLEMENTATION DOS")
-        impl_donts_text = self._format_implementation_patterns(impl_donts, "IMPLEMENTATION DONTS")
-        syntax_text = self._format_syntax_patterns(syntax_patterns)
-
-        # Append to existing constraints
-        self.constraints += f"""
-
-LOADED REQUIREMENTS FROM JSON FILES:
-
-=== ARCHITECTURAL REQUIREMENTS (Design Patterns) ===
-Source: {arch_meta['source']}
-
-MENTAL MODEL (from Architectural Requirements):
-Flow: {mental_model['flow']}
-
-Architectural Layers:
-"""
-        # Add layer details
-        for layer_name, layer_info in mental_model['layers'].items():
-            self.constraints += f"\n- {layer_name}: {layer_info['responsibility']}"
-            self.constraints += f"\n  Pattern: {layer_info['design_pattern']}"
+        # Extract key implementation details
+        db_tables_um = self._format_table_summary(um.get('database_schema', {}).get('tables', []))
+        db_tables_sdc = self._format_table_summary(sdc.get('database_schema', {}).get('tables', []))
+        csv_columns = self._format_csv_columns(pe.get('csv_file_definition', {}).get('columns', []))
+        api_route = self._format_api_route(pe.get('api_contract', {}))
+        error_response = self._format_error_response(pe.get('error_response', {}))
+        success_response = self._format_success_response(pe.get('success_response', {}))
+        validation_rules = self._format_validation_rules(pe.get('validation_service', {}))
+        security = self._format_security(pe.get('security_and_permissions', {}))
+        fx_flow = self._format_fx_flow(sdc.get('fx_conversion_flow', {}))
+        expense_sources = self._format_expense_sources(sdc.get('oop_expense_source', {}))
 
         self.constraints += f"""
 
-{arch_dos_text}
+LOADED IMPLEMENTATION REQUIREMENTS FROM JSON:
 
-{arch_donts_text}
+=== DATABASE TABLES: User Management ===
+{db_tables_um}
 
-=== TECHNICAL REQUIREMENTS (Implementation Syntax) ===
-Source: {tech_meta['source']}
+=== DATABASE TABLES: Expense Single Data Capturing ===
+{db_tables_sdc}
 
-IMPLEMENTATION WORKFLOW:
+=== CSV COLUMN MAPPING (Pocket Expense Upload) ===
+{csv_columns}
+
+=== API ROUTE ===
+{api_route}
+
+=== ERROR RESPONSE FORMAT (HTTP 422) ===
+{error_response}
+
+=== SUCCESS RESPONSE FORMAT ===
+{success_response}
+
+=== CSV VALIDATION RULES (PocketExpenseCSVValidator) ===
+{validation_rules}
+
+=== SECURITY & PERMISSIONS ===
+{security}
+
+=== FX CONVERSION FLOW ===
+{fx_flow}
+
+=== EXPENSE SOURCE CONFIG ===
+{expense_sources}
 """
-        if 'steps' in impl_workflow:
-            for step in impl_workflow['steps']:
-                self.constraints += f"\n{step}"
 
-        self.constraints += f"""
-
-IMPLEMENTATION CHECKLIST:
-"""
-        if 'implementation_checklist' in impl_workflow:
-            for item in impl_workflow['implementation_checklist']:
-                self.constraints += f"\n{item}"
-
-        self.constraints += f"""
-
-{syntax_text}
-
-{impl_dos_text}
-
-{impl_donts_text}
-"""
-
-    def _format_architectural_patterns(self, patterns: dict, title: str) -> str:
-        """Format architectural DOS or DONTS patterns"""
-        lines = [f"\n=== {title} ==="]
-
-        for category_key, category_data in patterns.items():
-            if isinstance(category_data, dict) and 'category' in category_data:
-                lines.append(f"\n### {category_data['category']}")
-
-                if 'requirements' in category_data:
-                    for req in category_data['requirements']:
-                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
-                        if 'design_specification' in req:
-                            lines.append(f"Design: {req['design_specification']}")
-                        if 'example' in req:
-                            lines.append(f"Example: {req['example']}")
-
+    def _format_table_summary(self, tables: list) -> str:
+        lines = []
+        for table in tables:
+            name = table.get('name', 'unknown')
+            cols = [c['name'] for c in table.get('columns', [])]
+            fks = table.get('foreign_keys', [])
+            lines.append(f"  {name}: columns=[{', '.join(cols)}] FKs={len(fks)}")
         return '\n'.join(lines)
 
-    def _format_implementation_patterns(self, patterns: dict, title: str) -> str:
-        """Format implementation DOS or DONTS patterns"""
-        lines = [f"\n=== {title} ==="]
-
-        for category_key, category_data in patterns.items():
-            if isinstance(category_data, dict) and 'category' in category_data:
-                lines.append(f"\n### {category_data['category']}")
-
-                if 'requirements' in category_data:
-                    for req in category_data['requirements']:
-                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
-                        if 'implementation_details' in req:
-                            lines.append(f"Implementation: {req['implementation_details']}")
-                        if 'code_example' in req:
-                            lines.append(f"Code: {req['code_example']}")
-
+    def _format_csv_columns(self, columns: list) -> str:
+        lines = []
+        for col in columns:
+            csv_col = col.get('csv_column')
+            if csv_col:
+                db_field = col.get('target_db_field', 'N/A')
+                required = "REQ" if col.get('required') else "OPT"
+                rules = col.get('validation_rules', [])
+                rules_str = '; '.join(rules) if rules else 'none'
+                lines.append(f"  [{required}] {csv_col} -> {db_field} | rules: {rules_str}")
+            else:
+                db_field = col.get('target_db_field', 'N/A')
+                source = col.get('source', col.get('default_value', 'system'))
+                lines.append(f"  [SYS] {db_field} <- {source}")
         return '\n'.join(lines)
 
-    def _format_syntax_patterns(self, patterns: dict) -> str:
-        """Format Laravel syntax patterns"""
-        lines = ["\n=== LARAVEL SYNTAX PATTERNS ==="]
+    def _format_api_route(self, api: dict) -> str:
+        route = api.get('route', {})
+        return f"  {route.get('method', 'POST')} {route.get('path', '/api/uploads/pocket-expense/csv')} | middleware: {route.get('middleware', 'Oauth2UserClient')} | content: {api.get('content_type', 'multipart/form-data')}"
 
-        for category_key, category_data in patterns.items():
-            if isinstance(category_data, dict) and 'category' in category_data:
-                lines.append(f"\n### {category_data['category']}")
+    def _format_error_response(self, er: dict) -> str:
+        structure = er.get('structure', {})
+        return json.dumps(structure, indent=2) if structure else '  (see JSON file)'
 
-                if 'requirements' in category_data:
-                    for req in category_data['requirements']:
-                        lines.append(f"\n**{req['id']}**: {req['requirement']}")
-                        if 'syntax' in req:
-                            lines.append(f"Syntax: {req['syntax']}")
-                        if 'example' in req:
-                            lines.append(f"Example: {req['example']}")
+    def _format_success_response(self, sr: dict) -> str:
+        structure = sr.get('structure', {})
+        return json.dumps(structure, indent=2) if structure else '  (see JSON file)'
 
+    def _format_validation_rules(self, vs: dict) -> str:
+        lines = []
+        rules = vs.get('key_rules_per_row', {})
+        for field, rule in rules.items():
+            req = "REQ" if rule.get('required') else "OPT"
+            details = {k: v for k, v in rule.items() if k != 'required'}
+            lines.append(f"  [{req}] {field}: {details}")
+        return '\n'.join(lines)
+
+    def _format_security(self, sec: dict) -> str:
+        lines = [f"  Middleware: {sec.get('endpoint_protection', 'Oauth2UserClient')}"]
+        for check in sec.get('server_side_checks', []):
+            lines.append(f"  - {check}")
+        return '\n'.join(lines)
+
+    def _format_fx_flow(self, fx: dict) -> str:
+        lines = []
+        for step_key, step_val in fx.items():
+            name = step_val.get('name', step_key)
+            flow_items = step_val.get('flow', [])
+            lines.append(f"  {name}: {' → '.join(flow_items[:4])}{'...' if len(flow_items) > 4 else ''}")
+        return '\n'.join(lines)
+
+    def _format_expense_sources(self, src: dict) -> str:
+        lines = []
+        setup = src.get('default_and_global_source_setup', {})
+        defaults = setup.get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])
+        lines.append(f"  Defaults on enable: {defaults}")
+        lines.append(f"  Global 'Other': client_id=NULL, not deletable")
+        config = src.get('client_config_behaviour', {})
+        lines.append(f"  Max active per client: {config.get('max_active_sources_per_client', 20)}")
+        submission = src.get('expense_submission', {})
+        lines.append(f"  Non-Other: save expense_source_id only")
+        lines.append(f"  Other: save expense_source_id (global Other ID) + custom_source_text")
         return '\n'.join(lines)
 
     async def _think(self) -> bool:
         """Override _think to ensure correct src_path before code generation."""
-        # Call parent _think first - this creates self.repo and may set nested path
         result = await super()._think()
 
-        # FIX: Correct the src_path if it's nested (AFTER parent sets it)
         from pathlib import Path
         from metagpt.logs import logger
 
@@ -318,14 +307,10 @@ IMPLEMENTATION CHECKLIST:
             workdir = Path(self.repo.workdir)
             current_src = self.repo.src_relative_path
 
-            # Check if we have nested structure (workdir/projectname/projectname)
             if current_src and current_src.name == workdir.name:
-                # We have nested structure, correct it to use workspace root
-                # Use "." to indicate current directory (workdir itself)
                 self.repo.with_src_path(Path("."))
                 logger.info(f"LaravelEngineer: Corrected nested src_path from '{current_src}' to '.' (workspace root)")
 
-                # Delete the empty nested directory if it exists
                 nested_dir = workdir / current_src
                 if nested_dir.exists() and nested_dir.is_dir():
                     import shutil
@@ -335,25 +320,8 @@ IMPLEMENTATION CHECKLIST:
                     except Exception as e:
                         logger.warning(f"LaravelEngineer: Could not remove nested directory '{nested_dir}': {e}")
 
-                # Also ensure .src_workspace exists with correct content
                 src_workspace_file = workdir / ".src_workspace"
                 src_workspace_file.write_text(".")
                 logger.info(f"LaravelEngineer: Created/updated .src_workspace file")
 
         return result
-
-
-# Placeholder for future RAG integration
-# TODO: Implement SearchCodeBase action for querying Volopa Laravel examples
-# TODO: Add RAG query generation based on file type and intent
-# TODO: Integrate with AWS OpenSearch (Volopa's knowledge base)
-# TODO: Add code validation against DOS/DONTS patterns
-# TODO: Add self-correction loop for constraint violations
-# TODO: Add Laravel-specific code templates (controller, service, model, etc.)
-
-# Example RAG queries for allocated intents:
-# - "Laravel service creating payment records with DB transaction"
-# - "Laravel controller approval workflow with policy authorization"
-# - "Laravel model with status enum and state transitions"
-# - "Laravel FormRequest with conditional validation rules"
-# - "Laravel API Resource with nested relationships and eager loading"

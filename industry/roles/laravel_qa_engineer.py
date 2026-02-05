@@ -3,7 +3,7 @@
 """
 @Time    : 2025-12-15
 @File    : laravel_qa_engineer.py
-@Desc    : Laravel QA Engineer role for testing Volopa Mass Payments system
+@Desc    : Laravel QA Engineer role for testing Volopa OOP Expense system
 """
 
 import json
@@ -20,79 +20,81 @@ class LaravelQaEngineer(QaEngineer):
     Responsibilities:
     - Write feature tests for all API endpoints
     - Test validation rules in FormRequests
-    - Test authorization in Policies
-    - Test database transactions and rollbacks
+    - Test authorization via user_feature_permission and Policies
+    - Test database transactions and rollbacks (all-or-nothing CSV)
     - Test N+1 query prevention (eager loading)
     - Test pagination on list endpoints
     - Test API Resource transformations
     - Test multi-tenant isolation (client_id filtering)
-    - Test status state machine transitions
-    - Test queue job processing
+    - Test expense status workflow transitions (draft -> submitted -> approved -> rejected)
+    - Test queue job processing (ProcessExpenseUpload)
     - Test error handling and status codes
 
-    Allocated Intents (from massPaymentsVolopaAgents.txt):
-    - validatePaymentData: Test CSV validation rules
-    - validateRecipientData: Test recipient validation
-    - testMultiTenantIsolation: Test client_id filtering
-    - testTransactionIntegrity: Test DB::transaction() rollbacks
-    - testAuthorizationRules: Test Policy enforcement
+    Domain Modules:
+    - User Management: permission grant/revoke, role hierarchy, management rights
+    - Pocket Expense CSV Upload: file upload, CSV validation, background sync
+    - Single Expense Capturing: CRUD, FX conversion, metadata, source config
 
     Test Coverage Requirements:
     - Unit tests: 0% (focus on feature/integration tests for APIs)
     - Feature tests: 100% coverage of all endpoints
-    - Policy tests: 100% coverage of authorization rules
-    - Validation tests: 100% coverage of FormRequest rules
+    - Policy tests: 100% coverage of authorization rules via user_feature_permission
+    - Validation tests: 100% coverage of FormRequest and CSV validation rules
     """
 
     use_fixed_sop: bool = True
     name: str = "Darius"
     profile: str = "Laravel QA Engineer"
-    goal: str = "Write comprehensive PHP Unit tests ensuring Laravel code follows DOS/DONTS patterns"
+    goal: str = (
+        "Write comprehensive PHPUnit tests ensuring Laravel OOP Expense code follows specifications as input. "
+        "Use same language as user requirement"
+    )
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-        # Load requirements from industry/requirements/
-        self.arch_requirements = self._load_architectural_requirements()
-        self.tech_requirements = self._load_technical_requirements()
-        self.user_requirements = self._load_user_requirements()
+        # Load requirements from industry/requirements/updated_req/
+        self.requirements = self._load_requirements()
 
         # Build comprehensive test constraints
         self._build_test_constraints()
 
-    def _load_architectural_requirements(self) -> Dict[str, Any]:
-        """Load architectural design patterns to test"""
-        json_path = Path(__file__).parent.parent / "requirements" / "architectural_requirements.json"
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+    def _load_requirements(self) -> dict:
+        """Load all three OOP Expense requirement JSON files"""
+        req_dir = Path(__file__).parent.parent / "requirements" / "updated_req"
 
-    def _load_technical_requirements(self) -> Dict[str, Any]:
-        """Load implementation patterns to test"""
-        json_path = Path(__file__).parent.parent / "requirements" / "technical_requirements.json"
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        files = {
+            "user_management": req_dir / "SD-OOP_User_Management_System.json",
+            "pocket_expense": req_dir / "SD-OOP_Pocket_expense.json",
+            "single_data_capturing": req_dir / "SD-OOP_Expense_single_data_capturing.json",
+        }
 
-    def _load_user_requirements(self) -> Dict[str, Any]:
-        """Load functional requirements to test"""
-        json_path = Path(__file__).parent.parent / "requirements" / "user_requirements.json"
-        with open(json_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        loaded = {}
+        for key, path in files.items():
+            with open(path, 'r', encoding='utf-8') as f:
+                loaded[key] = json.load(f)
+
+        return loaded
 
     def _build_test_constraints(self):
         """
         Build comprehensive test constraints from:
-        1. Architectural requirements (test design patterns are implemented)
-        2. Technical requirements (test Laravel syntax is correct)
-        3. User requirements (test functional requirements work)
+        1. User Management requirements (role hierarchy, permissions, access control)
+        2. Pocket Expense requirements (CSV upload, validation, error handling)
+        3. Single Data Capturing requirements (CRUD, FX, metadata, sources)
         """
 
-        # Extract key sections
-        arch_mental_model = self.arch_requirements['mental_model']['flow']
-        user_frs = self.user_requirements['functional_requirements']
-        stats = self.user_requirements['summary_statistics']
+        um = self.requirements['user_management']
+        pe = self.requirements['pocket_expense']
+        sdc = self.requirements['single_data_capturing']
+
+        # Build test requirement summaries
+        permission_tests = self._format_permission_tests(um)
+        csv_upload_tests = self._format_csv_upload_tests(pe)
+        single_expense_tests = self._format_single_expense_tests(sdc)
 
         self.constraints = f"""
-You are a Laravel QA Engineer writing PHPUnit/Pest feature tests for a Laravel API.
+You are a Laravel QA Engineer writing PHPUnit/Pest feature tests for the Volopa OOP Expense API.
 
 ========================================
 CRITICAL TEST OUTPUT FORMAT
@@ -123,7 +125,7 @@ class {{Resource}}Test extends TestCase
         $user = User::factory()->create(['client_id' => 1]);
 
         // Act
-        $response = $this->actingAs($user)->getJson('/api/v1/endpoint');
+        $response = $this->actingAs($user)->getJson('/api/endpoint');
 
         // Assert
         $response->assertOk();
@@ -137,12 +139,14 @@ TESTING MENTAL MODEL
 ========================================
 
 Test the complete flow:
-{arch_mental_model}
+Client -> route (Oauth2UserClient middleware) -> controller -> FormRequest
+(validation + policy) -> service/model (domain logic, transactions) ->
+API Resource (shape output) -> JSON with correct status codes and error format
 
 For EVERY endpoint, test:
 1. Route exists and is accessible
-2. Authentication required (401 if not authenticated)
-3. Authorization enforced (403 if not authorized)
+2. Authentication required (401 if not authenticated via Oauth2UserClient)
+3. Authorization enforced (403 if user_feature_permission check fails)
 4. Validation rules work (422 with proper errors)
 5. Business logic executes correctly
 6. Response structure matches API Resource
@@ -150,81 +154,84 @@ For EVERY endpoint, test:
 8. Status codes are appropriate
 
 ========================================
-FUNCTIONAL REQUIREMENTS TO TEST
+MODULE 1: USER MANAGEMENT TESTS
 ========================================
 
-You must write tests covering ALL {stats['total_sub_requirements']} functional requirements:
+{permission_tests}
 
-{self._format_test_requirements(user_frs)}
+========================================
+MODULE 2: POCKET EXPENSE CSV UPLOAD TESTS
+========================================
+
+{csv_upload_tests}
+
+========================================
+MODULE 3: SINGLE EXPENSE DATA CAPTURING TESTS
+========================================
+
+{single_expense_tests}
 
 ========================================
 ARCHITECTURAL PATTERNS TO TEST
 ========================================
 
-## 1. Transaction Integrity (ARCH-TRANS-001)
-
-Test that multi-write operations are atomic:
+## 1. Transaction Integrity - All-or-Nothing CSV
 
 ```php
 /** @test */
-public function test_payment_creation_rolls_back_on_validation_failure()
+public function test_csv_upload_rolls_back_on_any_validation_failure()
 {{
     $user = User::factory()->create();
-    $file = MassPaymentFile::factory()->create(['client_id' => $user->client_id]);
 
-    // Simulate validation failure
-    $response = $this->actingAs($user)->postJson('/api/v1/mass-payments/{{$file->id}}/process', [
-        'rows' => [['invalid' => 'data']]  // Invalid data
+    // CSV with 5 valid rows and 1 invalid row
+    $csv = $this->createCsvWithInvalidRow();
+
+    $response = $this->actingAs($user)->postJson('/api/uploads/pocket-expense/csv', [
+        'file' => $csv,
+        'user_id' => $user->id,
+        'expense_user_id' => $user->id,
+        'client_id' => $user->client_id,
     ]);
 
-    $response->assertUnprocessable();
+    $response->assertStatus(422);
 
-    // Assert ROLLBACK occurred - no partial data saved
-    $this->assertDatabaseCount('payment_instructions', 0);
-    $this->assertEquals('validation_failed', $file->fresh()->status);
+    // Assert ROLLBACK: zero expenses created (all-or-nothing)
+    $this->assertDatabaseCount('pocket_expense', 0);
+    $response->assertJsonStructure([
+        'success', 'message', 'upload_id', 'total_rows', 'error_count',
+        'errors' => [['line_number', 'field', 'error', 'value']]
+    ]);
 }}
 ```
 
-## 2. N+1 Query Prevention (ARCH-PERF-001)
-
-Test that eager loading is used:
+## 2. N+1 Query Prevention
 
 ```php
 /** @test */
-public function test_list_endpoint_eager_loads_relationships()
+public function test_expense_list_eager_loads_relationships()
 {{
     $user = User::factory()->create();
-    MassPaymentFile::factory()->count(3)->create([
-        'client_id' => $user->client_id
-    ]);
+    PocketExpense::factory()->count(5)->create(['client_id' => $user->client_id]);
 
-    // Enable query log
     \\DB::enableQueryLog();
-
-    $response = $this->actingAs($user)->getJson('/api/v1/mass-payments');
-
+    $response = $this->actingAs($user)->getJson('/api/pocket-expenses');
     $queries = \\DB::getQueryLog();
 
-    // Assert: Should be 1 query for files + 1 for eager loaded relations
-    // NOT 1 + N queries (where N = number of files)
-    $this->assertLessThanOrEqual(3, count($queries), 'N+1 query detected!');
-
+    $this->assertLessThanOrEqual(4, count($queries), 'N+1 query detected!');
     $response->assertOk();
 }}
 ```
 
-## 3. Pagination Required (ARCH-PERF-002)
-
-Test that lists are paginated:
+## 3. Pagination Required
 
 ```php
 /** @test */
-public function test_list_endpoint_returns_paginated_results()
+public function test_expense_list_returns_paginated_results()
 {{
     $user = User::factory()->create();
-    MassPaymentFile::factory()->count(50)->create(['client_id' => $user->client_id]);
+    PocketExpense::factory()->count(50)->create(['client_id' => $user->client_id]);
 
-    $response = $this->actingAs($user)->getJson('/api/v1/mass-payments');
+    $response = $this->actingAs($user)->getJson('/api/pocket-expenses');
 
     $response->assertOk();
     $response->assertJsonStructure([
@@ -232,174 +239,78 @@ public function test_list_endpoint_returns_paginated_results()
         'links' => ['first', 'last', 'prev', 'next'],
         'meta' => ['current_page', 'total', 'per_page']
     ]);
-
-    // Assert default page size (20)
-    $this->assertCount(20, $response->json('data'));
 }}
 ```
 
-## 4. API Resources Used (ARCH-RESP-001)
-
-Test that responses use API Resources (not raw models):
+## 4. Multi-Tenant Isolation
 
 ```php
 /** @test */
-public function test_response_uses_api_resource_structure()
-{{
-    $user = User::factory()->create();
-    $file = MassPaymentFile::factory()->create(['client_id' => $user->client_id]);
-
-    $response = $this->actingAs($user)->getJson("/api/v1/mass-payments/{{$file->id}}");
-
-    $response->assertOk();
-
-    // Assert: Response matches API Resource structure (snake_case, specific fields)
-    $response->assertJsonStructure([
-        'data' => [
-            'id',
-            'file_name',
-            'status',
-            'total_amount',
-            'client' => ['id', 'name'],  // Nested resource
-            'created_at',
-            'updated_at'
-        ]
-    ]);
-
-    // Assert: Internal fields are NOT exposed
-    $response->assertJsonMissing(['password', 'remember_token']);
-}}
-```
-
-## 5. Async Processing (ARCH-ASYNC-001)
-
-Test that large operations are queued:
-
-```php
-/** @test */
-public function test_large_file_processing_is_queued()
-{{
-    Queue::fake();
-
-    $user = User::factory()->create();
-
-    $response = $this->actingAs($user)->postJson('/api/v1/mass-payments', [
-        'file' => UploadedFile::fake()->create('large.csv', 5000)  // Large file
-    ]);
-
-    $response->assertCreated();
-    $response->assertJsonPath('data.status', 'processing');
-
-    // Assert: Job was dispatched
-    Queue::assertPushed(ValidateMassPaymentFileJob::class);
-}}
-```
-
-## 6. Multi-Tenant Isolation (ARCH-SEC-002)
-
-Test that users only access their client's data:
-
-```php
-/** @test */
-public function test_user_cannot_access_other_client_files()
+public function test_user_cannot_access_other_client_expenses()
 {{
     $user = User::factory()->create(['client_id' => 1]);
-    $otherClientFile = MassPaymentFile::factory()->create(['client_id' => 999]);
+    $otherExpense = PocketExpense::factory()->create(['client_id' => 999]);
 
-    $response = $this->actingAs($user)->getJson("/api/v1/mass-payments/{{$otherClientFile->id}}");
+    $response = $this->actingAs($user)->getJson("/api/pocket-expenses/{{$otherExpense->id}}");
 
-    // Assert: 404 or 403 (not 200)
     $this->assertTrue(in_array($response->status(), [403, 404]));
 }}
 
 /** @test */
-public function test_list_endpoint_only_returns_own_client_files()
+public function test_list_only_returns_own_client_expenses()
 {{
     $user = User::factory()->create(['client_id' => 1]);
-    MassPaymentFile::factory()->count(5)->create(['client_id' => 1]);  // Own client
-    MassPaymentFile::factory()->count(10)->create(['client_id' => 999]);  // Other client
+    PocketExpense::factory()->count(3)->create(['client_id' => 1]);
+    PocketExpense::factory()->count(10)->create(['client_id' => 999]);
 
-    $response = $this->actingAs($user)->getJson('/api/v1/mass-payments');
+    $response = $this->actingAs($user)->getJson('/api/pocket-expenses');
 
     $response->assertOk();
-    $this->assertCount(5, $response->json('data'));  // Only own client's files
-
-    // Assert: All returned files belong to user's client
-    foreach ($response->json('data') as $file) {{
-        $this->assertEquals($user->client_id, $file['client']['id']);
-    }}
+    $this->assertCount(3, $response->json('data'));
 }}
 ```
 
-========================================
-VALIDATION & AUTHORIZATION TESTING
-========================================
-
-## FormRequest Validation Tests
-
-Test ALL validation rules defined in FormRequests:
+## 5. Async Processing - Background Sync
 
 ```php
 /** @test */
-public function test_validation_fails_with_invalid_data()
+public function test_csv_upload_dispatches_background_job_on_success()
 {{
+    Queue::fake();
     $user = User::factory()->create();
+    $csv = $this->createValidCsv();
 
-    $response = $this->actingAs($user)->postJson('/api/v1/mass-payments', [
-        'file' => 'not-a-file',  // Invalid
-        'client_id' => 'invalid'  // Invalid
+    $response = $this->actingAs($user)->postJson('/api/uploads/pocket-expense/csv', [
+        'file' => $csv,
+        'user_id' => $user->id,
+        'expense_user_id' => $user->id,
+        'client_id' => $user->client_id,
     ]);
 
-    $response->assertUnprocessable();
-    $response->assertJsonValidationErrors(['file', 'client_id']);
-}}
-
-/** @test */
-public function test_validation_passes_with_valid_data()
-{{
-    $user = User::factory()->create();
-
-    $response = $this->actingAs($user)->postJson('/api/v1/mass-payments', [
-        'file' => UploadedFile::fake()->create('valid.csv', 100),
-        'client_id' => $user->client_id
-    ]);
-
-    $response->assertCreated();
+    $response->assertOk();
+    Queue::assertPushed(ProcessExpenseUpload::class);
 }}
 ```
 
-## Policy Authorization Tests
-
-Test ALL authorization rules defined in Policies:
+## 6. API Resources (Not Raw Models)
 
 ```php
 /** @test */
-public function test_user_cannot_approve_without_approver_role()
+public function test_expense_response_uses_api_resource_structure()
 {{
-    $user = User::factory()->create(['role' => 'uploader']);  // Not approver
-    $file = MassPaymentFile::factory()->create([
-        'client_id' => $user->client_id,
-        'status' => 'pending_approval'
-    ]);
+    $user = User::factory()->create();
+    $expense = PocketExpense::factory()->create(['client_id' => $user->client_id]);
 
-    $response = $this->actingAs($user)->postJson("/api/v1/mass-payments/{{$file->id}}/approve");
-
-    $response->assertForbidden();
-}}
-
-/** @test */
-public function test_approver_can_approve_pending_file()
-{{
-    $user = User::factory()->create(['role' => 'approver']);
-    $file = MassPaymentFile::factory()->create([
-        'client_id' => $user->client_id,
-        'status' => 'pending_approval'
-    ]);
-
-    $response = $this->actingAs($user)->postJson("/api/v1/mass-payments/{{$file->id}}/approve");
+    $response = $this->actingAs($user)->getJson("/api/pocket-expenses/{{$expense->id}}");
 
     $response->assertOk();
-    $this->assertEquals('approved', $file->fresh()->status);
+    $response->assertJsonStructure([
+        'data' => [
+            'id', 'date', 'merchant_name', 'currency', 'amount',
+            'status', 'expense_type', 'created_at', 'updated_at'
+        ]
+    ]);
+    $response->assertJsonMissing(['password', 'remember_token']);
 }}
 ```
 
@@ -407,160 +318,29 @@ public function test_approver_can_approve_pending_file()
 STATUS CODES TESTING
 ========================================
 
-Test proper HTTP status codes for all scenarios:
-
 ```php
 /** @test */
-public function test_endpoint_returns_correct_status_codes()
+public function test_endpoints_return_correct_status_codes()
 {{
     $user = User::factory()->create();
 
     // 200 OK - Successful GET
-    $this->actingAs($user)->getJson('/api/v1/mass-payments')->assertOk();
+    $this->actingAs($user)->getJson('/api/pocket-expenses')->assertOk();
 
     // 201 Created - Successful POST
-    $response = $this->actingAs($user)->postJson('/api/v1/mass-payments', [/* valid data */]);
+    $response = $this->actingAs($user)->postJson('/api/pocket-expenses', [/* valid data */]);
     $response->assertCreated();
-
-    // 204 No Content - Successful DELETE
-    $file = MassPaymentFile::factory()->create(['client_id' => $user->client_id]);
-    $this->actingAs($user)->deleteJson("/api/v1/mass-payments/{{$file->id}}")->assertNoContent();
 
     // 401 Unauthorized - No authentication
-    $this->getJson('/api/v1/mass-payments')->assertUnauthorized();
-
-    // 403 Forbidden - Authenticated but not authorized
-    $otherClientFile = MassPaymentFile::factory()->create(['client_id' => 999]);
-    $this->actingAs($user)->getJson("/api/v1/mass-payments/{{$otherClientFile->id}}")->assertForbidden();
-
-    // 404 Not Found - Resource doesn't exist
-    $this->actingAs($user)->getJson('/api/v1/mass-payments/nonexistent-id')->assertNotFound();
+    $this->getJson('/api/pocket-expenses')->assertUnauthorized();
 
     // 422 Unprocessable Entity - Validation failed
-    $this->actingAs($user)->postJson('/api/v1/mass-payments', [/* invalid data */])->assertUnprocessable();
-}}
-```
+    $this->actingAs($user)->postJson('/api/pocket-expenses', [/* invalid data */])->assertUnprocessable();
 
-========================================
-IMPLEMENTATION ANTI-PATTERNS TESTING
-========================================
-
-Test that code does NOT contain anti-patterns:
-
-## Test: No Raw Models Returned
-
-```php
-/** @test */
-public function test_response_does_not_expose_internal_model_fields()
-{{
-    $user = User::factory()->create(['password' => bcrypt('secret'), 'remember_token' => 'abc123']);
-    $file = MassPaymentFile::factory()->create(['client_id' => $user->client_id]);
-
-    $response = $this->actingAs($user)->getJson("/api/v1/mass-payments/{{$file->id}}");
-
-    // Assert: Sensitive fields NOT exposed
-    $response->assertJsonMissing(['password', 'remember_token', 'api_secret']);
-}}
-```
-
-## Test: Consistent JSON Casing (snake_case)
-
-```php
-/** @test */
-public function test_response_uses_snake_case_consistently()
-{{
-    $user = User::factory()->create();
-    $file = MassPaymentFile::factory()->create(['client_id' => $user->client_id]);
-
-    $response = $this->actingAs($user)->getJson("/api/v1/mass-payments/{{$file->id}}");
-
-    $json = $response->json('data');
-
-    // Assert: All keys are snake_case (not camelCase)
-    foreach (array_keys($json) as $key) {{
-        $this->assertEquals($key, strtolower(preg_replace('/(?<!^)[A-Z]/', '_$0', $key)));
-    }}
-}}
-```
-
-========================================
-VOLOPA-SPECIFIC TESTING
-========================================
-
-## Test: OAuth2/WSSE Authentication
-
-```php
-/** @test */
-public function test_endpoint_requires_volopa_authentication()
-{{
-    // Test without auth header
-    $response = $this->getJson('/api/v1/mass-payments');
-    $response->assertUnauthorized();
-
-    // Test with Volopa OAuth2 token (if middleware configured)
-    $response = $this->withHeader('Authorization', 'Bearer valid-token')
-                     ->getJson('/api/v1/mass-payments');
-    $response->assertOk();
-}}
-```
-
-## Test: Client Feature Flags
-
-```php
-/** @test */
-public function test_feature_flag_controls_access()
-{{
-    $user = User::factory()->create(['client_id' => 1]);
-
-    // Disable feature for client
-    ClientFeature::where('client_id', 1)->update(['mass_payments_enabled' => false]);
-
-    $response = $this->actingAs($user)->getJson('/api/v1/mass-payments');
-
-    $response->assertForbidden();
-    $response->assertJson(['message' => 'Mass payments not enabled for your client']);
-}}
-```
-
-========================================
-DATABASE STATE TESTING
-========================================
-
-Always test database changes:
-
-```php
-/** @test */
-public function test_creating_file_saves_to_database()
-{{
-    $user = User::factory()->create();
-
-    $response = $this->actingAs($user)->postJson('/api/v1/mass-payments', [
-        'file' => UploadedFile::fake()->create('test.csv', 100)
-    ]);
-
-    $response->assertCreated();
-
-    // Assert: Record exists in database
-    $this->assertDatabaseHas('mass_payment_files', [
-        'client_id' => $user->client_id,
-        'status' => 'uploading'
-    ]);
-}}
-
-/** @test */
-public function test_deleting_file_removes_from_database()
-{{
-    $user = User::factory()->create();
-    $file = MassPaymentFile::factory()->create(['client_id' => $user->client_id]);
-
-    $response = $this->actingAs($user)->deleteJson("/api/v1/mass-payments/{{$file->id}}");
-
-    $response->assertNoContent();
-
-    // Assert: Record deleted (or soft deleted)
-    $this->assertDatabaseMissing('mass_payment_files', ['id' => $file->id]);
-    // OR for soft deletes:
-    // $this->assertSoftDeleted('mass_payment_files', ['id' => $file->id]);
+    // 422 CSV validation failure
+    $this->actingAs($user)->postJson('/api/uploads/pocket-expense/csv', [
+        'file' => $this->createCsvWithInvalidRow()
+    ])->assertStatus(422);
 }}
 ```
 
@@ -568,16 +348,18 @@ public function test_deleting_file_removes_from_database()
 TEST ORGANIZATION
 ========================================
 
-Organize tests by resource:
+Organize tests by module and concern:
 
 tests/Feature/
-├── MassPaymentFileTest.php          (CRUD operations, validation, authorization)
-├── PaymentInstructionTest.php       (Payment creation, approval)
-├── RecipientTemplateTest.php        (Template download)
-├── StatusTransitionTest.php         (State machine transitions)
-├── MultiTenantIsolationTest.php     (Client data isolation)
-├── TransactionIntegrityTest.php     (Rollback scenarios)
-└── ValidationRulesTest.php          (All validation rules)
+├── UserPermissionTest.php              (grant/revoke, role hierarchy, management rights)
+├── PocketExpenseUploadTest.php         (CSV upload, validation, error response, background sync)
+├── PocketExpenseTest.php               (CRUD, status workflow, approval)
+├── PocketExpenseMetadataTest.php       (metadata types, source handling)
+├── ExpenseSourceConfigTest.php         (defaults, Other handling, max 20 limit)
+├── FXConversionTest.php                (dated rates, commission, lookback)
+├── MultiTenantIsolationTest.php        (client_id filtering across all endpoints)
+├── TransactionIntegrityTest.php        (all-or-nothing CSV, rollback scenarios)
+└── CSVValidationRulesTest.php          (per-field validation: date, type, currency, amount, etc.)
 
 Each test file should test ONE resource or ONE concern.
 
@@ -585,44 +367,32 @@ Each test file should test ONE resource or ONE concern.
 CRITICAL TEST REQUIREMENTS
 ========================================
 
-1. ✅ Use RefreshDatabase trait (reset DB for each test)
-2. ✅ Use factories for test data (NOT manual creation)
-3. ✅ Test happy path AND error scenarios
-4. ✅ Assert JSON structure AND database state
-5. ✅ Test authorization (403) before testing functionality
-6. ✅ Test validation (422) with multiple invalid scenarios
-7. ✅ Test multi-tenant isolation for EVERY endpoint
-8. ✅ Test N+1 queries using query log
-9. ✅ Test pagination structure (links + meta)
-10. ✅ Test proper status codes (200, 201, 204, 401, 403, 404, 422)
-
-========================================
-TEST COVERAGE GOAL
-========================================
-
-Achieve 100% coverage of:
-- All {stats['total_sub_requirements']} functional requirements
-- All API endpoints (routes)
-- All FormRequest validation rules
-- All Policy authorization methods
-- All status state transitions
-- All multi-write transactions
-- All multi-tenant isolation scenarios
-
-Total estimated tests: ~150-200 test methods across {stats['total_sub_requirements']} sub-requirements
+1. Use RefreshDatabase trait (reset DB for each test)
+2. Use factories for test data (NOT manual creation)
+3. Test happy path AND error scenarios
+4. Assert JSON structure AND database state
+5. Test authorization via user_feature_permission (403 if not authorized)
+6. Test CSV validation (422) with all-or-nothing behavior
+7. Test multi-tenant isolation for EVERY endpoint
+8. Test N+1 queries using query log
+9. Test pagination structure (links + meta)
+10. Test proper status codes (200, 201, 204, 401, 403, 404, 422)
 
 ========================================
 SUMMARY
 ========================================
 
 Write feature tests that ensure:
-1. All functional requirements work correctly
-2. All architectural patterns are implemented (transactions, N+1, pagination, etc.)
-3. All implementation syntax is correct (status codes, Resources, snake_case)
-4. All security requirements are enforced (auth, authorization, client isolation)
-5. All anti-patterns are NOT present (raw models, hardcoded values, etc.)
+1. All user management flows work (permission grant/revoke, role hierarchy)
+2. CSV upload validates all-or-nothing with correct error structure
+3. Single expense CRUD follows status workflow (draft -> submitted -> approved -> rejected)
+4. FX conversion uses dated rates with 30-day lookback and commission
+5. Expense sources enforce max 20 limit, global Other handling
+6. Multi-tenant isolation enforced everywhere (client_id scoping)
+7. All architectural patterns implemented (transactions, N+1, pagination, Resources)
+8. All security requirements enforced (Oauth2UserClient, user_feature_permission)
 
-Your tests are the final validation that the Laravel Mass Payments system is:
+Your tests are the final validation that the Volopa OOP Expense system is:
 - Functionally correct
 - Architecturally sound
 - Secure and isolated
@@ -630,30 +400,202 @@ Your tests are the final validation that the Laravel Mass Payments system is:
 - Following all DOS/DONTS patterns
 """
 
-    def _format_test_requirements(self, frs: Dict) -> str:
-        """Format functional requirements as test scenarios"""
+    def _format_permission_tests(self, um: dict) -> str:
+        """Format user management requirements as test scenarios"""
         lines = []
-        for fr_id, fr_data in frs.items():
-            lines.append(f"\n### {fr_id}: {fr_data['category']}")
-            for sub_id, sub_req in fr_data['sub_requirements'].items():
-                lines.append(f"\n**{sub_id}**: {sub_req['title']}")
-                lines.append("Test scenarios:")
 
-                # Extract test scenarios from criteria
-                if 'criteria' in sub_req:
-                    for criterion in sub_req['criteria']:
-                        lines.append(f"  - Test: {criterion}")
+        # Permission metrics tests
+        metrics = um.get('permission_metrics', [])
+        lines.append("## Role-Permission Matrix Tests")
+        for m in metrics:
+            role = m.get('role', 'Unknown')
+            perms = m.get('default_permissions', {})
+            lines.append(f"\n### {role}")
+            lines.append(f"Default permissions: {perms}")
+            lines.append(f"Test scenarios:")
+            for perm_key, perm_val in perms.items():
+                if perm_val:
+                    lines.append(f"  - Test: {role} CAN {perm_key}: {perm_val}")
+                else:
+                    lines.append(f"  - Test: {role} CANNOT {perm_key}")
+            if 'with_management_rights' in m:
+                mgmt = m['with_management_rights']
+                lines.append(f"  With management rights:")
+                for mk, mv in mgmt.items():
+                    if mv:
+                        lines.append(f"    - Test: {role} with mgmt rights CAN {mk}: {mv}")
+                    else:
+                        lines.append(f"    - Test: {role} with mgmt rights CANNOT {mk}")
 
-                # Add validation tests if present
-                if 'validations' in sub_req:
-                    lines.append("  - Test: All validation rules pass with valid data")
-                    lines.append("  - Test: Validation fails with invalid data (422)")
+        # Access control flow tests
+        acf = um.get('access_control_flow', {})
+        lines.append("\n## Access Control Flow Tests")
 
-                # Add authorization test
-                lines.append("  - Test: Requires authentication (401 without auth)")
-                lines.append("  - Test: Requires authorization (403 if not authorized)")
+        enablement = acf.get('service_enablement_flow', [])
+        if enablement:
+            lines.append("\nService Enablement:")
+            for step in enablement:
+                lines.append(f"  - Test: {step}")
 
-                # Add multi-tenant test
-                lines.append("  - Test: Client data isolation (403/404 for other client's data)")
+        defaults = acf.get('default_permissions_once_enabled', {})
+        for role_key, role_val in defaults.items():
+            if isinstance(role_val, dict):
+                desc = role_val.get('description', role_key)
+                lines.append(f"\n{desc}:")
+                for p in role_val.get('permissions', []) + role_val.get('additional_permissions', []):
+                    lines.append(f"  - Test: {p}")
+
+        # Grant/revoke tests
+        granting = acf.get('granting_managing_rights', {})
+        lines.append("\n## Grant/Revoke Managing Rights Tests")
+        for who in granting.get('who_can_grant', []):
+            lines.append(f"  - Test: {who['role']} can grant via {who['method']}")
+
+        revoking = acf.get('revoking_managing_rights', {})
+        effect = revoking.get('revocation_effect', '')
+        if effect:
+            lines.append(f"  - Test: Revocation effect: {effect}")
+
+        return '\n'.join(lines)
+
+    def _format_csv_upload_tests(self, pe: dict) -> str:
+        """Format pocket expense CSV upload requirements as test scenarios"""
+        lines = []
+
+        # API contract tests
+        api = pe.get('api_contract', {})
+        route = api.get('route', {})
+        lines.append(f"## API Endpoint: {route.get('method', 'POST')} {route.get('path', '/api/uploads/pocket-expense/csv')}")
+        lines.append(f"Middleware: {route.get('middleware', 'Oauth2UserClient')}")
+
+        lines.append("\n### Request Validation Tests")
+        validation = api.get('server_side_validation', {})
+        for field, rule in validation.items():
+            lines.append(f"  - Test: {field} validates with rule: {rule}")
+            lines.append(f"  - Test: {field} rejects invalid input (422)")
+
+        lines.append("\n### Additional Check Tests")
+        for check in api.get('additional_checks', []):
+            lines.append(f"  - Test: {check}")
+
+        # CSV column validation tests
+        lines.append("\n### CSV Column Validation Tests")
+        vs = pe.get('validation_service', {})
+        rules = vs.get('key_rules_per_row', {})
+        for field, rule in rules.items():
+            req = "required" if rule.get('required') else "optional"
+            lines.append(f"\n  {field} ({req}):")
+            for k, v in rule.items():
+                if k != 'required':
+                    lines.append(f"    - Test: {k} = {v}")
+
+        # Error response tests
+        lines.append("\n### Error Response Tests (HTTP 422)")
+        er = pe.get('error_response', {})
+        lines.append(f"  - Test: Response has success=false, message, upload_id, total_rows, error_count")
+        lines.append(f"  - Test: errors array contains line_number, field, error, value per error")
+        lines.append(f"  - Test: line_number corresponds to CSV line (header = line 1)")
+        lines.append(f"  - Test: errors stored in pocket_expense_file_uploads.validation_errors")
+
+        # Success response tests
+        lines.append("\n### Success Response Tests")
+        lines.append(f"  - Test: Response has success=true, message, upload_id, total_rows")
+        lines.append(f"  - Test: All pocket_expense records created")
+        lines.append(f"  - Test: PocketExpenseFileUpload status = 'completed', processed_at set")
+        lines.append(f"  - Test: Notification issued to target user")
+
+        # All-or-nothing tests
+        lines.append("\n### All-or-Nothing Validation Tests")
+        lines.append(f"  - Test: If 1 row invalid out of 200, zero expenses created")
+        lines.append(f"  - Test: If all rows valid, all expenses created")
+        lines.append(f"  - Test: Max 200 rows enforced")
+
+        # Background sync tests
+        ls = pe.get('storing_pocket_expenses_from_file_upload', {})
+        flow = ls.get('flow', [])
+        if flow:
+            lines.append("\n### Background Sync Tests")
+            for step in flow:
+                lines.append(f"  - Test: {step}")
+
+        # Security tests
+        sec = pe.get('security_and_permissions', {})
+        lines.append("\n### Security Tests")
+        for check in sec.get('server_side_checks', []):
+            lines.append(f"  - Test: {check}")
+
+        return '\n'.join(lines)
+
+    def _format_single_expense_tests(self, sdc: dict) -> str:
+        """Format single expense data capturing requirements as test scenarios"""
+        lines = []
+
+        # Expense type tests
+        tables = sdc.get('database_schema', {}).get('tables', [])
+        for table in tables:
+            if table.get('name') == 'opt_pocket_expense_type':
+                lines.append("## Expense Type Tests")
+                for seed in table.get('seed_data', []):
+                    sign = seed.get('amount_sign', 'negative')
+                    lines.append(f"  - Test: {seed['option']} has amount_sign={sign}")
+                lines.append(f"  - Test: Amount sign applied correctly (+ve for Refund, -ve for others)")
+
+        # Expense source tests
+        src = sdc.get('oop_expense_source', {})
+        lines.append("\n## Expense Source Config Tests")
+        setup = src.get('default_and_global_source_setup', {})
+        defaults = setup.get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])
+        lines.append(f"  - Test: On OOP feature enable, 3 defaults created: {defaults}")
+        lines.append(f"  - Test: Global 'Other' record exists with client_id=NULL")
+        lines.append(f"  - Test: 'Other' is not deletable or editable by clients")
+
+        dropdown = src.get('dropdown_display', {})
+        lines.append(f"  - Test: Dropdown lists active client-specific sources (deleted=0)")
+        lines.append(f"  - Test: Dropdown includes global 'Other' (client_id IS NULL)")
+
+        submission = src.get('expense_submission', {})
+        lines.append(f"  - Test: Non-Other source saves expense_source_id only")
+        lines.append(f"  - Test: 'Other' source saves global Other ID + custom_source_text")
+
+        config = src.get('client_config_behaviour', {})
+        lines.append(f"  - Test: Max {config.get('max_active_sources_per_client', 20)} active sources per client enforced")
+        lines.append(f"  - Test: Unique source names per client (client_id, name)")
+        lines.append(f"  - Test: Soft-deleted sources remain on historical expenses")
+        lines.append(f"  - Test: Soft-deleted sources excluded from future dropdowns")
+
+        # Pocket expense CRUD tests
+        lines.append("\n## Pocket Expense CRUD Tests")
+        lines.append(f"  - Test: Create expense with status='draft'")
+        lines.append(f"  - Test: Update expense (edit own)")
+        lines.append(f"  - Test: View own expense")
+        lines.append(f"  - Test: Delete own expense")
+        lines.append(f"  - Test: Status workflow: draft -> submitted -> approved")
+        lines.append(f"  - Test: Status workflow: draft -> submitted -> rejected")
+        lines.append(f"  - Test: Only authorized users can approve (via user_feature_permission)")
+
+        # Metadata tests
+        lines.append("\n## Pocket Expense Metadata Tests")
+        lines.append(f"  - Test: Category metadata with details_json")
+        lines.append(f"  - Test: Tracking code metadata (type_1 and type_2)")
+        lines.append(f"  - Test: Project metadata")
+        lines.append(f"  - Test: File metadata")
+        lines.append(f"  - Test: Expense source metadata (including custom 'Other' value)")
+        lines.append(f"  - Test: Additional field metadata")
+        lines.append(f"  - Test: One metadata record per type per expense (unique constraint)")
+
+        # FX conversion tests
+        fx = sdc.get('fx_conversion_flow', {})
+        lines.append("\n## FX Conversion Tests")
+        for step_key, step_val in fx.items():
+            name = step_val.get('name', step_key)
+            lines.append(f"\n  {name}:")
+            for item in step_val.get('flow', []):
+                lines.append(f"    - Test: {item}")
+
+        lines.append(f"  - Test: FX rate with 30-day lookback (returns rate if within 30 days)")
+        lines.append(f"  - Test: FX rate returns 'No FX Available' if no rate in 30 days")
+        lines.append(f"  - Test: Adjusted rate = BaseRate x (1 - Commission%)")
+        lines.append(f"  - Test: User can override converted amount (user_converted_amount stored)")
+        lines.append(f"  - Test: Backend recalculates FX on form submit")
 
         return '\n'.join(lines)

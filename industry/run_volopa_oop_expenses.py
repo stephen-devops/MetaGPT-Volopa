@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 @Time    : 2025-12-02
-@File    : run_volopa_mass_payments.py
-@Desc    : Example runner for Volopa Mass Payments API development using Laravel MetaGPT roles
+@File    : run_volopa_oop_expenses.py
+@Desc    : Example runner for Volopa OOP Expenses API development using Laravel MetaGPT roles
 """
 
 import asyncio
@@ -42,7 +42,7 @@ from industry.roles import (
 
 async def main():
     """
-    Run the Volopa Mass Payments API development team.
+    Run the Volopa OOP Expenses API development team.
 
     Workflow:
     1. LaravelProductManager creates PRD
@@ -53,7 +53,7 @@ async def main():
     """
 
     # Configure workspace
-    workspace_path = Path(__file__).parent.parent / "workspace" / "volopa_mass_payments"
+    workspace_path = Path(__file__).parent.parent / "workspace" / "volopa_oop_expenses"
 
     # FIX: Delete existing workspace to prevent "unknown origin" errors
     # MetaGPT's Engineer role tracks which files it creates during a run.
@@ -73,7 +73,7 @@ async def main():
     try:
         # Check if workspace directory is tracked by git
         git_check = subprocess.run(
-            ["git", "ls-files", "workspace/volopa_mass_payments"],
+            ["git", "ls-files", "workspace/volopa_oop_expenses"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -82,14 +82,14 @@ async def main():
         if git_check.stdout.strip():
             # Workspace files are tracked, unstage all changes
             subprocess.run(
-                ["git", "reset", "HEAD", "workspace/volopa_mass_payments"],
+                ["git", "reset", "HEAD", "workspace/volopa_oop_expenses"],
                 cwd=project_root,
                 capture_output=True,
                 check=False
             )
             # Clean untracked files and remove deleted files from working tree
             subprocess.run(
-                ["git", "clean", "-fd", "workspace/volopa_mass_payments"],
+                ["git", "clean", "-fd", "workspace/volopa_oop_expenses"],
                 cwd=project_root,
                 capture_output=True,
                 check=False
@@ -109,8 +109,8 @@ async def main():
         logger.info("Deleted cached team state for fresh role initialization with use_fixed_sop=True")
 
     # FIX: Create .src_workspace to prevent nested directory structure
-    # Without this, MetaGPT creates workspace/volopa_mass_payments/volopa_mass_payments/
-    # With this set to ".", code goes directly into workspace/volopa_mass_payments/
+    # Without this, MetaGPT creates workspace/volopa_oop_expenses/volopa_oop_expenses/
+    # With this set to ".", code goes directly into workspace/volopa_oop_expenses/
     src_workspace_file = workspace_path / ".src_workspace"
     if not src_workspace_file.exists():
         src_workspace_file.write_text(".")
@@ -118,7 +118,7 @@ async def main():
 
     config.update_via_cli(
         project_path=str(workspace_path),
-        project_name="volopa_mass_payments",
+        project_name="volopa_oop_expenses",
         inc=False,  # Incremental mode (False = start fresh)
         reqa_file="",  # Optional requirements file path
         max_auto_summarize_code=0,  # Max code size for auto-summarization (0 = no limit)
@@ -132,7 +132,7 @@ async def main():
     )
 
     # Create team and hire Laravel-specific roles
-    logger.info("Initializing Volopa Mass Payments development team...")
+    logger.info("Initializing Volopa OOP Expenses development team...")
     # use_mgx=False to avoid requiring a TeamLeader role
     company = Team(context=ctx, use_mgx=False)
 
@@ -152,70 +152,75 @@ async def main():
 
     # Define the requirement
     idea = """
-Build the Volopa Mass Payments API System for uploading CSV files with up to 10,000 payment instructions.
+Build the Volopa OOP (Out-of-Pocket) Expenses API System covering User Management,
+Pocket Expense CSV Batch Upload, and Single Expense Data Capturing.
 
 ## Core Requirements
 
-### File Upload & Management
-1. CSV upload with drag-and-drop interface
-2. Download recipient template with latest recipient details per currency
-3. Download blank CSV template for payments
-4. View uploaded file status (pending, validating, validated, failed, approved)
-5. View file summary (total records, valid records, failed records)
+### User Management & Permissions
+1. Role hierarchy: Primary Administrator, Administrator, Business User, Card User
+2. user_feature_permission table for feature-level RBAC (per user, client, feature)
+3. Permission delegation: Primary Admin grants management rights to Admin, who manages subset of users
+4. Default permissions on service enablement (all users can add/edit/view own expense)
+5. Administrator can approve expenses; Primary Admin has full access to all users
+6. Grant/revoke managing rights via Web App or Admin.Volopa
+7. Audit log of permission grants, enables, and disables
 
-### Validation
-1. Validate file format and structure
-2. Validate data integrity (required fields, data types, business rules)
-3. Display validation errors with row-level detail
-4. Check settlement methods for each recipient
+### Pocket Expense - CSV Batch Upload
+1. Admin selects target user, uploads CSV file (max 200 rows, text/csv or .txt)
+2. POST /api/uploads/pocket-expense/csv with Oauth2UserClient middleware
+3. Synchronous all-or-nothing validation: if any row fails, no expenses are created
+4. 14 CSV columns: Date, Expense Type, Currency Code, Amount, Equivalent Amount, VAT %, Merchant Name, Description, Merchant Address, Merchant Country, Source, Source Note, Notes (+ system fields)
+5. PocketExpenseCSVValidator service preloads reference data (expense types, currencies, countries, sources)
+6. Error response (HTTP 422): structured errors array with line_number, field, error, value
+7. Success response: upload_id, total_rows, expenses created
+8. Store validated rows in pocket_expense_uploads_data, dispatch ProcessExpenseUpload job (batch sync of 100)
+9. Notification issued to target user/admin on completion
 
-### Approval Workflow
-1. Currency-specific approval requirements (some currencies require approval)
-2. Notify designated approvers (bell icon notification)
-3. First-approver-wins pattern (only one approval needed)
-4. Redirect first approver to create payments
-5. Redirect subsequent approvers to draft payments page
-
-### Payment Processing
-1. Create payment instructions from validated CSV data
-2. Support multiple currencies (INR requires invoice_number field)
-3. Associate payments with recipients/beneficiaries
-4. Retrieve payment purpose codes by country and currency
-
-### Data Retrieval
-1. Get all beneficiaries filtered by currency
-2. Get beneficiaries associated with a specific file
-3. Get all uploaded files for a client
-4. Get draft files awaiting approval
+### Single Expense Data Capturing
+1. CRUD for pocket_expense records (draft, submitted, approved, rejected status workflow)
+2. Expense types: ATM Withdrawal (-), Point of Sale (-), Fee & Charges (-), Refund from Merchant (+)
+3. pocket_expense_metadata for flexible metadata (category, tracking codes, project, file, expense_source)
+4. Expense source config: 3 defaults (Cash, Corporate Card, Personal Card) + global "Other" (client_id=NULL) + max 20 active per client
+5. FX conversion: debounced API call after Date/Currency/Amount entered, 30-day lookback for dated FX rate, client commission adjustment
+6. User can override converted amount; backend recalculates FX on submit
+7. Currency conversion via wallet base currency lookup (prepaid_card -> account_tier -> account -> currency joins)
 
 ## Technical Requirements
 
 ### Laravel Architecture
 - Laravel 10+ with PHP 8.2+
-- RESTful API under /api/v1 prefix
-- OAuth2 and WSSE authentication support
-- JSON responses with proper status codes
+- RESTful API with Oauth2UserClient middleware
+- JSON responses with proper status codes (200, 201, 204, 422)
 - API Resources for response transformation
-- Queue-based async processing for large files
+- Queue-based async processing for CSV background sync
+- PocketExpenseCSVValidator with cached reference data
 
-### Data Volume
-- Support up to 10,000 payment rows per CSV file
-- Efficient batch processing without timeouts
-- Proper indexing for query performance
+### Database Tables
+- user_feature_permission (RBAC with grantor_id, manager_user_id)
+- oop_expenses (approval workflow with status enum)
+- opt_pocket_expense_type (expense type lookup with amount_sign)
+- pocket_expense_source_client_config (per-client + global sources)
+- pocket_expense (main expense records with status workflow)
+- pocket_expense_metadata (flexible metadata with enum type)
+- pocket_expense_file_uploads (CSV upload tracking with status lifecycle)
+- pocket_expense_uploads_data (local storage for background sync)
 
 ### Quality Standards
-- Follow DOS/DONTS patterns (see dos_and_donts.pdf)
+- Follow DOS/DONTS patterns
 - Thin controllers with service layer
 - FormRequest validation with policies
-- Database transactions for multi-write operations
+- DB::transaction() for multi-write operations (especially all-or-nothing CSV)
 - Feature tests for all endpoints
 - No N+1 queries (use eager loading)
+- Cache reference data (expense types, currencies, countries, sources)
 
 ## Success Criteria
-- API endpoints are versioned, authenticated, and throttled
-- File validation completes within 30 seconds for 10,000 rows
-- Approval workflow prevents duplicate processing
-- All responses use consistent JSON structure
+- All endpoints protected by Oauth2UserClient middleware
+- CSV validation is synchronous, all-or-nothing for max 200 rows
+- Permission checks enforced via user_feature_permission at every endpoint
+- FX conversion uses dated rates with 30-day lookback and client commission
+- All responses use consistent JSON structure via API Resources
 - Code passes all feature tests
 """
 
@@ -252,10 +257,10 @@ Build the Volopa Mass Payments API System for uploading CSV files with up to 10,
 if __name__ == "__main__":
     """
     Usage (from project root):
-        python industry/run_volopa_mass_payments.py
+        python industry/run_volopa_oop_expenses.py
 
         OR as a module:
-        python -m industry.run_volopa_mass_payments
+        python -m industry.run_volopa_oop_expenses
 
     Prerequisites:
         1. Configure MetaGPT (config/config2.yaml with LLM API keys)
@@ -263,15 +268,15 @@ if __name__ == "__main__":
         3. Ensure industry/roles/ modules are importable
 
     Output:
-        workspace/volopa_mass_payments/
+        workspace/volopa_oop_expenses/
         ├── docs/
         │   ├── requirement.txt
         │   ├── prd/
-        │   │   └── volopa_mass_payments.md
+        │   │   └── volopa_oop_expenses.md
         │   ├── system_design/
-        │   │   └── volopa_mass_payments.md
+        │   │   └── volopa_oop_expenses.md
         │   └── task/
-        │       └── volopa_mass_payments.json
+        │       └── volopa_oop_expenses.json
         ├── app/
         │   ├── Http/
         │   │   ├── Controllers/
@@ -283,8 +288,8 @@ if __name__ == "__main__":
         │   └── ...
         └── tests/
             └── Feature/
-                ├── MassPaymentFileTest.php
-                ├── PaymentInstructionTest.php
+                ├── PocketExpenseTest.php
+                ├── PocketExpenseUploadTest.php
                 └── ...
 
     Notes:
