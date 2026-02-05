@@ -1,0 +1,111 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class PocketExpenseController {
+        -PocketExpenseService service
+        +index(Request): JsonResponse
+        +store(CreatePocketExpenseRequest): JsonResponse
+        +show(id): JsonResponse
+        +update(id, UpdatePocketExpenseRequest): JsonResponse
+        +destroy(id): JsonResponse
+    }
+    class PocketExpenseUploadController {
+        -PocketExpenseCSVValidator validator
+        -PocketExpenseService service
+        +uploadCSV(PocketExpenseCSVUploadRequest): JsonResponse
+        +getUploadStatus(uploadId): JsonResponse
+    }
+    class CreatePocketExpenseRequest {
+        +authorize(): bool
+        +rules(): array
+        +messages(): array
+    }
+    class PocketExpenseCSVUploadRequest {
+        +authorize(): bool
+        +rules(): array
+        +messages(): array
+    }
+    class PocketExpenseService {
+        -FXConversionService fxService
+        +create(data, userId, clientId): PocketExpense
+        +update(expense, data): PocketExpense
+        +delete(expense): bool
+        +list(userId, clientId, filters): LengthAwarePaginator
+        +processCSVData(validatedRows, uploadId): bool
+    }
+    class PocketExpenseCSVValidator {
+        -array referenceDataCache
+        -int targetUserId
+        -int clientId
+        +validate(csvFilePath): ValidationResult
+        +validateRow(rowData, lineNumber): array
+        +cacheReferenceData(): void
+    }
+    class FXConversionService {
+        -Cache cache
+        +convertAmount(amount, fromCurrency, toCurrency, date): ConversionResult
+        +getRateWithLookback(fromCurrency, toCurrency, date, days): ?float
+        +applyClientCommission(rate, clientId): float
+    }
+    class PocketExpense {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +date: Carbon
+        +merchant_name: string
+        +amount: decimal
+        +currency: string
+        +status: string
+        +user(): BelongsTo
+        +metadata(): HasMany
+        +approver(): BelongsTo
+    }
+    class PocketExpenseMetadata {
+        +id: int
+        +pocket_expense_id: int
+        +metadata_type: string
+        +details_json: array
+        +expense(): BelongsTo
+    }
+    class PocketExpenseFileUpload {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +status: string
+        +total_records: int
+        +valid_records: int
+        +validation_errors: array
+        +uploadData(): HasMany
+    }
+    class PocketExpenseUploadData {
+        +id: int
+        +upload_id: int
+        +line_number: int
+        +status: string
+        +expense_data: array
+        +upload(): BelongsTo
+    }
+    class PocketExpensePolicy {
+        +viewAny(user, clientId): bool
+        +view(user, expense): bool
+        +create(user, clientId, targetUserId): bool
+        +update(user, expense): bool
+        +delete(user, expense): bool
+        +uploadCSV(user, clientId, targetUserId): bool
+    }
+    class ProcessExpenseUpload {
+        -int uploadId
+        +handle(): void
+        +failed(exception): void
+    }
+    class PocketExpenseResource {
+        +toArray(request): array
+    }
+    PocketExpenseController --> PocketExpenseService
+    PocketExpenseUploadController --> PocketExpenseCSVValidator
+    PocketExpenseUploadController --> PocketExpenseService
+    PocketExpenseService --> FXConversionService
+    PocketExpenseService --> PocketExpense
+    PocketExpense --> PocketExpenseMetadata
+    PocketExpenseFileUpload --> PocketExpenseUploadData
+    ProcessExpenseUpload --> PocketExpenseService
