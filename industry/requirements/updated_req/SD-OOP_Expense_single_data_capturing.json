@@ -2,12 +2,14 @@
   "document": {
     "title": "OOP Expense Single Data Capturing",
     "type": "software_design_specification",
-    "module": "Out-of-Pocket Expense Single Entry"
+    "module": "Out-of-Pocket Expense Single Entry",
+    "origin": "new"
   },
   "database_schema": {
     "tables": [
       {
         "name": "opt_pocket_expense_type",
+        "origin": "new",
         "description": "Lookup table for expense/transaction types",
         "columns": [
           { "name": "id", "type": "INT(11) UNSIGNED", "constraints": ["NOT NULL", "AUTO_INCREMENT"] },
@@ -24,6 +26,7 @@
       },
       {
         "name": "pocket_expense_source_client_config",
+        "origin": "new",
         "description": "Client-specific and global expense source configuration",
         "columns": [
           { "name": "id", "type": "INT(10) UNSIGNED", "constraints": ["NOT NULL", "AUTO_INCREMENT"] },
@@ -41,11 +44,12 @@
           { "name": "oop_expense_source_client_name_unique", "columns": ["client_id", "name"] }
         ],
         "foreign_keys": [
-          { "name": "oop_expense_source_client_id_foreign", "column": "client_id", "references": "client(id)" }
+          { "name": "oop_expense_source_client_id_foreign", "column": "client_id", "references": "client(id)", "referenced_table_origin": "existing" }
         ]
       },
       {
         "name": "pocket_expense",
+        "origin": "new",
         "description": "Main table for out-of-pocket expense records",
         "columns": [
           { "name": "id", "type": "INT(10) UNSIGNED", "constraints": ["NOT NULL", "AUTO_INCREMENT"] },
@@ -77,13 +81,14 @@
           { "name": "pocket_expense_expense_type_foreign", "column": "expense_type" }
         ],
         "foreign_keys": [
-          { "name": "pocket_expense_user_id_foreign", "column": "user_id", "references": "user(id)" },
-          { "name": "pocket_expense_client_id_foreign", "column": "client_id", "references": "client(id)" },
-          { "name": "pocket_expense_expense_type_foreign", "column": "expense_type", "references": "opt_pocket_expense_type(id)" }
+          { "name": "pocket_expense_user_id_foreign", "column": "user_id", "references": "user(id)", "referenced_table_origin": "existing" },
+          { "name": "pocket_expense_client_id_foreign", "column": "client_id", "references": "client(id)", "referenced_table_origin": "existing" },
+          { "name": "pocket_expense_expense_type_foreign", "column": "expense_type", "references": "opt_pocket_expense_type(id)", "referenced_table_origin": "new" }
         ]
       },
       {
         "name": "pocket_expense_metadata",
+        "origin": "new",
         "description": "Flexible metadata storage for pocket expenses (one record per type per expense)",
         "columns": [
           { "name": "id", "type": "INT(10) UNSIGNED", "constraints": ["NOT NULL", "AUTO_INCREMENT"] },
@@ -111,14 +116,14 @@
           { "name": "metadata_source_unique", "columns": ["pocket_expense_id", "metadata_type", "deleted"] }
         ],
         "foreign_keys": [
-          { "name": "metadata_expense_id_foreign", "column": "pocket_expense_id", "references": "pocket_expense(id)" },
-          { "name": "metadata_category_id_foreign", "column": "transaction_category_id", "references": "transaction_category(id)" },
-          { "name": "metadata_tracking_code_id_foreign", "column": "tracking_code_id", "references": "tracking_codes(id)" },
-          { "name": "metadata_project_id_foreign", "column": "project_id", "references": "configurable_projects(id)" },
-          { "name": "metadata_file_store_id_foreign", "column": "file_store_id", "references": "file_store(id)" },
-          { "name": "metadata_source_id_foreign", "column": "expense_source_id", "references": "pocket_expense_source_client_config(id)" },
-          { "name": "metadata_additional_field_id_foreign", "column": "additional_field_id", "references": "expense_additional_field(id)" },
-          { "name": "metadata_user_id_foreign", "column": "user_id", "references": "user(id)" }
+          { "name": "metadata_expense_id_foreign", "column": "pocket_expense_id", "references": "pocket_expense(id)", "referenced_table_origin": "new" },
+          { "name": "metadata_category_id_foreign", "column": "transaction_category_id", "references": "transaction_category(id)", "referenced_table_origin": "existing" },
+          { "name": "metadata_tracking_code_id_foreign", "column": "tracking_code_id", "references": "tracking_codes(id)", "referenced_table_origin": "existing" },
+          { "name": "metadata_project_id_foreign", "column": "project_id", "references": "configurable_projects(id)", "referenced_table_origin": "existing" },
+          { "name": "metadata_file_store_id_foreign", "column": "file_store_id", "references": "file_store(id)", "referenced_table_origin": "existing" },
+          { "name": "metadata_source_id_foreign", "column": "expense_source_id", "references": "pocket_expense_source_client_config(id)", "referenced_table_origin": "new" },
+          { "name": "metadata_additional_field_id_foreign", "column": "additional_field_id", "references": "expense_additional_field(id)", "referenced_table_origin": "existing" },
+          { "name": "metadata_user_id_foreign", "column": "user_id", "references": "user(id)", "referenced_table_origin": "existing" }
         ],
         "indexes": [
           { "name": "metadata_expense_id_index", "column": "pocket_expense_id" },
@@ -132,6 +137,7 @@
       }
     ],
     "metadata_json_examples": {
+      "origin": "new",
       "category": {
         "other": "Custom Software Development",
         "is_other": 1,
@@ -150,7 +156,9 @@
     }
   },
   "oop_expense_source": {
+    "origin": "new",
     "default_and_global_source_setup": {
+      "origin": "new",
       "on_client_oop_feature_enable": {
         "auto_create_defaults": ["Cash", "Corporate Card", "Personal Card"],
         "table": "oop_expense_source_client_config",
@@ -162,12 +170,14 @@
       }
     },
     "dropdown_display": {
+      "origin": "new",
       "items": [
         { "type": "client_specific", "filter": "client_id = current_client AND deleted = 0" },
         { "type": "global", "filter": "client_id IS NULL" }
       ]
     },
     "expense_submission": {
+      "origin": "new",
       "non_other_source": {
         "save": "expense_source_id only"
       },
@@ -177,6 +187,7 @@
       }
     },
     "client_config_behaviour": {
+      "origin": "new",
       "max_active_sources_per_client": 20,
       "soft_delete": {
         "mechanism": "Set deleted = 1",
@@ -192,8 +203,16 @@
     }
   },
   "currency_conversion": {
+    "origin": "existing",
     "description": "FX conversion for out-of-pocket expenses",
     "query_description": "Joins prepaid_card -> prepaid_card_tier_map -> account_tier -> account -> currency tables to determine base currencies",
+    "referenced_tables": [
+      { "name": "prepaid_card", "origin": "existing" },
+      { "name": "prepaid_card_tier_map", "origin": "existing" },
+      { "name": "account_tier", "origin": "existing" },
+      { "name": "account", "origin": "existing" },
+      { "name": "currency", "origin": "existing" }
+    ],
     "returned_fields": [
       "client_id",
       "account_base_currency_id",
@@ -209,8 +228,10 @@
     ]
   },
   "fx_conversion_flow": {
+    "origin": "new",
     "step_1_user_input": {
       "name": "User Input",
+      "origin": "new",
       "flow": [
         "User inputs Date / Currency / Amount",
         "Check: All Required Fields Entered?",
@@ -223,6 +244,8 @@
     },
     "step_2_fx_calculation": {
       "name": "FX Calculation",
+      "origin": "unclear",
+      "origin_note": "The FX calculation logic (rates, commission) likely uses existing platform FX infrastructure, but the specific flow with wallet-ccy-value endpoint and 30-day lookback may be new to OOP",
       "flow": [
         "Identify Wallet Base Currency (via /wallet-ccy-value endpoint)",
         "Get Dated FX Rate (max 30-day lookback)",
@@ -232,10 +255,16 @@
         "Adjusted Rate = BaseRate x (1 - Comm%)",
         "Converted Amount = Amount x AdjustedRate",
         "Return Converted Amount"
+      ],
+      "referenced_infrastructure": [
+        { "name": "/wallet-ccy-value endpoint", "origin": "existing" },
+        { "name": "FX rates", "origin": "existing" },
+        { "name": "Client commission", "origin": "existing" }
       ]
     },
     "step_3_frontend_save": {
       "name": "Frontend + Save",
+      "origin": "new",
       "flow": [
         "Frontend populates Converted Amount Field",
         "Check: User Overrides Value?",

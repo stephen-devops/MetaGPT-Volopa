@@ -2,10 +2,12 @@
   "document": {
     "title": "OOP User Management System",
     "type": "software_design_specification",
-    "module": "User Management & Permissions"
+    "module": "User Management & Permissions",
+    "origin": "new"
   },
   "hierarchy": {
     "description": "Primary Admin has full access to all users and can delegate management rights to Admin Users, who then manage a subset of users.",
+    "origin": "new",
     "tree": {
       "role": "Primary Admin (X)",
       "capabilities": [
@@ -21,61 +23,78 @@
     }
   },
   "er_diagram": {
-    "entities": ["features", "users", "clients", "user_feature_permission", "oop_expenses"],
+    "entities": [
+      { "name": "features", "origin": "existing" },
+      { "name": "users", "origin": "existing" },
+      { "name": "clients", "origin": "existing" },
+      { "name": "user_feature_permission", "origin": "new" },
+      { "name": "oop_expenses", "origin": "new" }
+    ],
     "relationships": [
-      { "from": "features", "to": "user_feature_permission", "type": "one_to_many", "label": "has" },
-      { "from": "users", "to": "user_feature_permission", "type": "one_to_many", "label": "has" },
-      { "from": "clients", "to": "user_feature_permission", "type": "one_to_many", "label": "has" },
-      { "from": "users", "to": "oop_expenses", "type": "one_to_many", "label": "creates" },
-      { "from": "clients", "to": "oop_expenses", "type": "one_to_many", "label": "contains" },
-      { "from": "users", "to": "oop_expenses", "type": "one_to_many", "label": "approves" }
+      { "from": "features", "to": "user_feature_permission", "type": "one_to_many", "label": "has", "origin": "new" },
+      { "from": "users", "to": "user_feature_permission", "type": "one_to_many", "label": "has", "origin": "new" },
+      { "from": "clients", "to": "user_feature_permission", "type": "one_to_many", "label": "has", "origin": "new" },
+      { "from": "users", "to": "oop_expenses", "type": "one_to_many", "label": "creates", "origin": "new" },
+      { "from": "clients", "to": "oop_expenses", "type": "one_to_many", "label": "contains", "origin": "new" },
+      { "from": "users", "to": "oop_expenses", "type": "one_to_many", "label": "approves", "origin": "new" }
     ]
   },
   "permission_metrics": [
     {
       "role": "Primary Administrator",
+      "origin": "existing",
       "default_permissions": {
         "own_expenses": ["create", "view", "update", "delete", "approve"],
         "all_users_expenses": ["create", "view", "update", "approve"],
-        "management_rights": ["grant", "revoke"]
+        "management_rights": ["grant", "revoke"],
+        "origin": "new"
       }
     },
     {
       "role": "Administrator",
+      "origin": "existing",
       "default_permissions": {
         "own_expenses": ["create", "view", "update", "delete", "approve"],
         "all_users_expenses": [],
-        "management_rights": []
+        "management_rights": [],
+        "origin": "new"
       },
       "with_management_rights": {
         "managed_users_expenses": ["create", "view", "update", "approve"],
-        "management_rights": ["grant", "revoke"]
+        "management_rights": ["grant", "revoke"],
+        "origin": "new"
       }
     },
     {
       "role": "Business User",
+      "origin": "existing",
       "default_permissions": {
         "own_expenses": ["create", "view", "update", "delete"],
         "all_users_expenses": [],
         "management_rights": [],
-        "approval_rights": []
+        "approval_rights": [],
+        "origin": "new"
       },
       "with_management_rights": {
         "managed_users_expenses": ["create", "view", "update"],
-        "approval_rights": []
+        "approval_rights": [],
+        "origin": "new"
       }
     },
     {
       "role": "Card User",
+      "origin": "existing",
       "default_permissions": {
         "own_expenses": ["create", "view", "update", "delete"],
         "all_users_expenses": [],
         "management_rights": [],
-        "approval_rights": []
+        "approval_rights": [],
+        "origin": "new"
       },
       "with_management_rights": {
         "managed_users_expenses": ["create", "view", "update"],
-        "approval_rights": []
+        "approval_rights": [],
+        "origin": "new"
       }
     }
   ],
@@ -83,6 +102,7 @@
     "tables": [
       {
         "name": "user_feature_permission",
+        "origin": "new",
         "columns": [
           { "name": "id", "type": "BIGINT UNSIGNED", "constraints": ["AUTO_INCREMENT", "PRIMARY KEY"] },
           { "name": "user_id", "type": "BIGINT UNSIGNED", "constraints": ["NOT NULL"] },
@@ -98,15 +118,16 @@
           { "name": "unique_user_feature", "columns": ["user_id", "client_id", "feature_id"] }
         ],
         "foreign_keys": [
-          { "column": "user_id", "references": "users(id)", "on_delete": "CASCADE" },
-          { "column": "client_id", "references": "clients(id)", "on_delete": "CASCADE" },
-          { "column": "feature_id", "references": "features(id)", "on_delete": "CASCADE" },
-          { "column": "grantor_id", "references": "users(id)", "on_delete": "CASCADE" },
-          { "column": "manager_user_id", "references": "users(id)", "on_delete": "CASCADE" }
+          { "column": "user_id", "references": "users(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" },
+          { "column": "client_id", "references": "clients(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" },
+          { "column": "feature_id", "references": "features(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" },
+          { "column": "grantor_id", "references": "users(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" },
+          { "column": "manager_user_id", "references": "users(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" }
         ]
       },
       {
         "name": "oop_expenses",
+        "origin": "new",
         "columns": [
           { "name": "id", "type": "BIGINT UNSIGNED", "constraints": ["AUTO_INCREMENT", "PRIMARY KEY"] },
           { "name": "user_id", "type": "BIGINT UNSIGNED", "constraints": ["NOT NULL"] },
@@ -135,15 +156,16 @@
           { "name": "updated_at", "type": "TIMESTAMP", "constraints": ["NULL"] }
         ],
         "foreign_keys": [
-          { "column": "user_id", "references": "users(id)", "on_delete": "CASCADE" },
-          { "column": "client_id", "references": "clients(id)", "on_delete": "CASCADE" },
-          { "column": "approved_by", "references": "users(id)", "on_delete": "SET NULL" }
+          { "column": "user_id", "references": "users(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" },
+          { "column": "client_id", "references": "clients(id)", "on_delete": "CASCADE", "referenced_table_origin": "existing" },
+          { "column": "approved_by", "references": "users(id)", "on_delete": "SET NULL", "referenced_table_origin": "existing" }
         ]
       }
     ],
     "notes": "Keep an audit log of granting, enable and disable of permissions"
   },
   "example_data": {
+    "origin": "new",
     "table": "user_feature_permission",
     "columns": ["user_id", "client_id", "feature_id", "grantor_id", "manager_user_id", "is_enabled", "created_at"],
     "records": [
@@ -159,6 +181,7 @@
     ]
   },
   "access_control_flow": {
+    "origin": "new",
     "service_enablement_flow": [
       "Sales/Ops Management enables Expense via Admin.Volopa",
       "System validates client has card services active",
@@ -166,6 +189,7 @@
       "Default permission applied automatically"
     ],
     "default_permissions_once_enabled": {
+      "origin": "new",
       "all_users": {
         "description": "ALL USERS (card user, business user, administrator, primary administrator) under the client",
         "permissions": ["Add own expense", "Edit own expense", "View own expense"]
@@ -186,19 +210,23 @@
       }
     },
     "granting_managing_rights": {
+      "origin": "new",
       "who_can_grant": [
         {
           "role": "Primary Administrator and Administrator",
-          "method": "Web App: Settings > Manage Users"
+          "method": "Web App: Settings > Manage Users",
+          "method_origin": "existing"
         },
         {
           "role": "Volopa Admin(1)",
-          "method": "Admin.Volopa: User accounts page"
+          "method": "Admin.Volopa: User accounts page",
+          "method_origin": "existing"
         }
       ],
       "note": "Managing access can be given to any user irrespective of the role"
     },
     "managing_user_once_rights_granted": {
+      "origin": "new",
       "card_user_and_business_user": {
         "permissions": [
           "Add expense for the managed user",
@@ -217,14 +245,17 @@
       }
     },
     "revoking_managing_rights": {
+      "origin": "new",
       "who_can_revoke": [
         {
           "role": "Primary Administrator",
-          "method": "Web App: Settings > Manage Users"
+          "method": "Web App: Settings > Manage Users",
+          "method_origin": "existing"
         },
         {
           "role": "Volopa Admin(1)",
-          "method": "Admin.Volopa: User accounts page"
+          "method": "Admin.Volopa: User accounts page",
+          "method_origin": "existing"
         }
       ],
       "revocation_effect": "If managing right is revoked, the user loses access to add, edit, view / approve access to that specific user. Until another manager is set the base user is managed by Primary administrator."
