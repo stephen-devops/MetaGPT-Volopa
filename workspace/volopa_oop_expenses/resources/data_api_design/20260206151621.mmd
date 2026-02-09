@@ -1,0 +1,122 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class ExpenseController {
+        +index(Request): JsonResponse
+        +store(CreateExpenseRequest): JsonResponse
+        +show(id): JsonResponse
+        +update(UpdateExpenseRequest, id): JsonResponse
+        +destroy(id): JsonResponse
+        +approve(id): JsonResponse
+        +reject(id): JsonResponse
+    }
+    class PocketExpenseUploadController {
+        +uploadCsv(UploadPocketExpenseCsvRequest): JsonResponse
+        +getUploadStatus(uploadId): JsonResponse
+    }
+    class UserPermissionController {
+        +index(Request): JsonResponse
+        +grantPermission(GrantUserPermissionRequest): JsonResponse
+        +revokePermission(id): JsonResponse
+    }
+    class FxConversionController {
+        +convert(Request): JsonResponse
+        +getRates(Request): JsonResponse
+    }
+    class ExpenseService {
+        +createExpense(array, User): OopExpense
+        +updateExpense(OopExpense, array): OopExpense
+        +approveExpense(OopExpense, User): OopExpense
+        +rejectExpense(OopExpense, User): OopExpense
+        +getUserExpenses(User, array): LengthAwarePaginator
+        +deleteExpense(OopExpense): bool
+    }
+    class PocketExpenseUploadService {
+        +processUpload(UploadedFile, User, int, int): PocketExpenseFileUpload
+        +validateCsvStructure(string): array
+        +createUploadRecord(array): PocketExpenseFileUpload
+    }
+    class PocketExpenseCSVValidator {
+        -int targetUserId
+        -int clientId
+        -int adminId
+        +__construct(int, int, int)
+        +validateCsv(string): array
+        +validateRow(array, int): array
+        +validateDataTypes(array): array
+        +validateCrossFields(array): array
+    }
+    class UserPermissionService {
+        +grantPermission(int, int, int, int): UserFeaturePermission
+        +revokePermission(UserFeaturePermission): bool
+        +getUserPermissions(User): Collection
+        +hasPermission(User, string, int): bool
+    }
+    class FxConversionService {
+        +convertAmount(float, string, string, string): array
+        +getRatesForDate(string, string): array
+        +getCachedRates(string, string): array
+        +fetchRatesFromApi(string, string): array
+    }
+    class OopExpense {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +amount: decimal
+        +currency: string
+        +status: enum
+        +user(): BelongsTo
+        +client(): BelongsTo
+        +approvedBy(): BelongsTo
+        +scopeForClient(Builder, int): Builder
+    }
+    class PocketExpenseFileUpload {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +status: enum
+        +total_records: int
+        +valid_records: int
+        +validation_errors: json
+        +uploadData(): HasMany
+    }
+    class UserFeaturePermission {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +feature_id: int
+        +grantor_id: int
+        +manager_user_id: int
+        +is_enabled: boolean
+        +user(): BelongsTo
+        +client(): BelongsTo
+        +feature(): BelongsTo
+        +grantor(): BelongsTo
+        +manager(): BelongsTo
+    }
+    class ExpenseResource {
+        +toArray(Request): array
+    }
+    class CreateExpenseRequest {
+        +authorize(): bool
+        +rules(): array
+    }
+    class ExpensePolicy {
+        +view(User, OopExpense): bool
+        +create(User): bool
+        +update(User, OopExpense): bool
+        +delete(User, OopExpense): bool
+        +approve(User, OopExpense): bool
+    }
+    ExpenseController --> ExpenseService
+    ExpenseController --> CreateExpenseRequest
+    ExpenseController --> ExpenseResource
+    PocketExpenseUploadController --> PocketExpenseUploadService
+    PocketExpenseUploadController --> UploadPocketExpenseCsvRequest
+    ExpenseService --> OopExpense
+    ExpenseService --> FxConversionService
+    PocketExpenseUploadService --> PocketExpenseCSVValidator
+    PocketExpenseUploadService --> PocketExpenseFileUpload
+    UserPermissionController --> UserPermissionService
+    UserPermissionService --> UserFeaturePermission
+    CreateExpenseRequest --> ExpensePolicy

@@ -54,53 +54,31 @@ class LaravelProjectManager(ProjectManager):
 
     2. Execution Order Priority (for Task list):
        P0: Migrations (database schema) - no dependencies
-           - create_opt_pocket_expense_type_table
-           - create_pocket_expense_source_client_config_table
-           - create_pocket_expense_table
-           - create_pocket_expense_metadata_table
-           - create_user_feature_permission_table
-           - create_pocket_expense_file_uploads_table
-           - create_pocket_expense_uploads_data_table
-       P1: Models (Eloquent) - depend on migrations
-           - PocketExpense, PocketExpenseMetadata, PocketExpenseFileUpload
-           - OptPocketExpenseType, PocketExpenseSourceClientConfig
-           - UserFeaturePermission, PocketExpenseUploadsData
-       P2: Policies (authorization) - depend on models
-           - PocketExpensePolicy (CRUD + approve based on user_feature_permission)
-       P3: FormRequests (validation) - depend on policies
-           - UploadPocketExpenseCSVRequest, StorePocketExpenseRequest
+       P1: Models (Eloquent) - depends on migrations
+       P2: Policies (authorization) - depends on models
+       P3: FormRequests (validation) - depends on policies
        P4: Config files (config/*.php) - no dependencies
-       P5: Services (business logic) - depend on models
-           - PocketExpenseCSVValidator, FXConversionService
-           - ExpenseSourceService, PermissionService
-       P6: Queue Jobs - depend on services
-           - ProcessExpenseUpload (batch sync to main service)
-       P7: Notifications - depend on models
-           - ExpenseUploadCompleted
+       P5: Services (business logic) - depends on models
+       P6: Queue Jobs - depends on services
+       P7: Notifications - depends on models
        P8: Middleware - no dependencies
-       P9: Resources (transformers) - depend on models
-           - PocketExpenseResource, ValidationErrorResource
-           - PocketExpenseFileUploadResource
-       P10: Controllers (thin layer) - depend on services + FormRequests + Resources
-           - PocketExpenseUploadController, PocketExpenseController
-           - UserPermissionController
-       P11: Routes (routes/api.php) - depend on controllers
-       P12: Tests (feature tests) - depend on all application code
+       P9: Resources (transformers) - depends on models
+       P10: Controllers (thin layer) - depends on services + FormRequests + Resources
+       P11: Routes (routes/api.php) - depends on controllers
+       P12: Tests (feature tests) - depends on all application code
 
     3. Parallel Development Opportunities (note in Logic Analysis):
        - Multiple migrations (if no FK dependencies between them)
        - Multiple models (if no cross-relationships)
        - Multiple FormRequests
-       - Multiple services (if no inter-service deps)
+       - Multiple services (if no inter-service dependencies)
        - Multiple API Resources
 
     4. Critical Dependencies (document in Logic Analysis):
        - Controllers depend on: Services + FormRequests + Resources
        - Services depend on: Models
        - FormRequests depend on: Policies (for authorize method)
-       - Policies depend on: Models + UserFeaturePermission
-       - PocketExpenseCSVValidator depends on: OptPocketExpenseType, currencies, countries, sources
-       - ProcessExpenseUpload job depends on: PocketExpenseUploadsData model + PocketExpense creation service
+       - Policies depend on: Models
        - Tests depend on: All application code
 
     5. Required Composer Packages:
@@ -259,6 +237,8 @@ covering User Management (permissions, role hierarchy), Pocket Expense CSV Uploa
             lines.append(f"  Table: {t.get('name', '?')} ({len(t.get('columns', []))} cols)")
         fx = sdc.get('fx_conversion_flow', {})
         for step_key, step_val in fx.items():
+            if not isinstance(step_val, dict):
+                continue
             lines.append(f"  FX Step: {step_val.get('name', step_key)}")
         src = sdc.get('oop_expense_source', {})
         defaults = src.get('default_and_global_source_setup', {}).get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])

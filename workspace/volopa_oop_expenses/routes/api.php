@@ -1,12 +1,23 @@
+## Development Plan
+
+The file to be created for the API routes:
+
+- routes/api.php
+
+## Incremental Change
+
+- routes/api.php: Define API routes with Oauth2UserClient middleware for expense management, CSV upload, user permissions, and FX conversion endpoints
+
 ## Code: routes/api.php
 
 ```php
 <?php
 
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\PocketExpenseController;
+use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\PocketExpenseUploadController;
-use App\Http\Controllers\Api\ExpenseSourceController;
+use App\Http\Controllers\Api\UserPermissionController;
+use App\Http\Controllers\Api\FxConversionController;
 
 /*
 |--------------------------------------------------------------------------
@@ -14,206 +25,126 @@ use App\Http\Controllers\Api\ExpenseSourceController;
 |--------------------------------------------------------------------------
 |
 | Here is where you can register API routes for your application. These
-| routes are loaded by the RouteServiceProvider and all of them will
-| be assigned to the "api" middleware group. Make something great!
+| routes are loaded by the RouteServiceProvider within a group which
+| is assigned the "api" middleware group. Enjoy building your API!
 |
 */
 
-// Apply Oauth2UserClient middleware to all API routes
-Route::middleware(['oauth2.user_client'])->group(function () {
+// Apply middleware to all API routes
+Route::middleware(['api', 'Oauth2UserClient'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Pocket Expense Routes
+    | Expense Management Routes
     |--------------------------------------------------------------------------
     |
-    | Routes for managing pocket expenses with CRUD operations.
-    | All routes require authentication and client context validation.
+    | Routes for managing out-of-pocket expenses including CRUD operations,
+    | approval workflows, and expense statistics.
     |
     */
-    Route::prefix('pocket-expenses')->name('pocket-expenses.')->group(function () {
+    
+    Route::prefix('expenses')->name('api.expenses.')->group(function () {
+        // Main expense CRUD operations
+        Route::get('/', [ExpenseController::class, 'index'])->name('index');
+        Route::post('/', [ExpenseController::class, 'store'])->name('store');
+        Route::get('/{id}', [ExpenseController::class, 'show'])->name('show')->where('id', '[0-9]+');
+        Route::put('/{id}', [ExpenseController::class, 'update'])->name('update')->where('id', '[0-9]+');
+        Route::delete('/{id}', [ExpenseController::class, 'destroy'])->name('destroy')->where('id', '[0-9]+');
         
-        // Main CRUD operations for pocket expenses
-        Route::get('/', [PocketExpenseController::class, 'index'])
-            ->name('index');
-            
-        Route::post('/', [PocketExpenseController::class, 'store'])
-            ->name('store');
-            
-        Route::get('/{id}', [PocketExpenseController::class, 'show'])
-            ->name('show')
-            ->where('id', '[0-9]+');
-            
-        Route::put('/{id}', [PocketExpenseController::class, 'update'])
-            ->name('update')
-            ->where('id', '[0-9]+');
-            
-        Route::delete('/{id}', [PocketExpenseController::class, 'destroy'])
-            ->name('destroy')
-            ->where('id', '[0-9]+');
-            
-        // Approval/rejection operations
-        Route::post('/{id}/approve', [PocketExpenseController::class, 'approve'])
-            ->name('approve')
-            ->where('id', '[0-9]+');
-            
-        Route::post('/{id}/reject', [PocketExpenseController::class, 'reject'])
-            ->name('reject')
-            ->where('id', '[0-9]+');
-            
+        // Expense approval workflow
+        Route::patch('/{id}/approve', [ExpenseController::class, 'approve'])->name('approve')->where('id', '[0-9]+');
+        Route::patch('/{id}/reject', [ExpenseController::class, 'reject'])->name('reject')->where('id', '[0-9]+');
+        
+        // Expense statistics and reporting
+        Route::get('/statistics', [ExpenseController::class, 'statistics'])->name('statistics');
+        
         // Bulk operations
-        Route::post('/bulk/approve', [PocketExpenseController::class, 'bulkApprove'])
-            ->name('bulk.approve');
-            
-        Route::post('/bulk/reject', [PocketExpenseController::class, 'bulkReject'])
-            ->name('bulk.reject');
-            
-        Route::post('/bulk/delete', [PocketExpenseController::class, 'bulkDelete'])
-            ->name('bulk.delete');
+        Route::post('/bulk/approve', [ExpenseController::class, 'bulkApprove'])->name('bulk.approve');
+        Route::post('/bulk/reject', [ExpenseController::class, 'bulkReject'])->name('bulk.reject');
+        
+        // Expense attachments and receipts
+        Route::get('/{id}/receipt', [ExpenseController::class, 'getReceipt'])->name('receipt')->where('id', '[0-9]+');
+        Route::post('/{id}/receipt', [ExpenseController::class, 'uploadReceipt'])->name('upload.receipt')->where('id', '[0-9]+');
+        Route::delete('/{id}/receipt', [ExpenseController::class, 'deleteReceipt'])->name('delete.receipt')->where('id', '[0-9]+');
     });
 
     /*
     |--------------------------------------------------------------------------
-    | Pocket Expense Upload Routes
+    | CSV Upload Routes
     |--------------------------------------------------------------------------
     |
-    | Routes for CSV file uploads and processing status tracking.
-    | Handles batch expense creation from CSV files.
+    | Routes for handling CSV file uploads for pocket expenses including
+    | upload processing, status monitoring, and error management.
     |
     */
-    Route::prefix('uploads/pocket-expense')->name('uploads.pocket-expense.')->group(function () {
+    
+    Route::prefix('uploads/pocket-expense')->name('api.uploads.pocket-expense.')->group(function () {
+        // CSV upload operations
+        Route::post('/csv', [PocketExpenseUploadController::class, 'uploadCsv'])->name('csv');
+        Route::get('/', [PocketExpenseUploadController::class, 'index'])->name('index');
+        Route::get('/{uploadId}', [PocketExpenseUploadController::class, 'getUploadStatus'])->name('status')->where('uploadId', '[0-9]+');
         
-        // CSV upload endpoint
-        Route::post('/csv', [PocketExpenseUploadController::class, 'uploadCSV'])
-            ->name('csv');
-            
-        // Upload status and results
-        Route::get('/{uploadId}/status', [PocketExpenseUploadController::class, 'getUploadStatus'])
-            ->name('status')
-            ->where('uploadId', '[0-9]+');
-            
-        // Download validation errors report
-        Route::get('/{uploadId}/errors', [PocketExpenseUploadController::class, 'downloadErrorReport'])
-            ->name('errors')
-            ->where('uploadId', '[0-9]+');
-            
-        // Download processed data report
-        Route::get('/{uploadId}/report', [PocketExpenseUploadController::class, 'downloadProcessingReport'])
-            ->name('report')
-            ->where('uploadId', '[0-9]+');
-            
-        // Retry failed upload processing
-        Route::post('/{uploadId}/retry', [PocketExpenseUploadController::class, 'retryProcessing'])
-            ->name('retry')
-            ->where('uploadId', '[0-9]+');
-            
-        // Cancel upload processing
-        Route::post('/{uploadId}/cancel', [PocketExpenseUploadController::class, 'cancelProcessing'])
-            ->name('cancel')
-            ->where('uploadId', '[0-9]+');
-            
-        // List user uploads
-        Route::get('/', [PocketExpenseUploadController::class, 'listUploads'])
-            ->name('index');
+        // Upload management
+        Route::delete('/{uploadId}', [PocketExpenseUploadController::class, 'deleteUpload'])->name('delete')->where('uploadId', '[0-9]+');
+        Route::patch('/{uploadId}/cancel', [PocketExpenseUploadController::class, 'cancelUpload'])->name('cancel')->where('uploadId', '[0-9]+');
+        Route::post('/{uploadId}/reprocess', [PocketExpenseUploadController::class, 'reprocessUpload'])->name('reprocess')->where('uploadId', '[0-9]+');
+        
+        // Error handling and download
+        Route::get('/{uploadId}/errors', [PocketExpenseUploadController::class, 'downloadErrors'])->name('download-errors')->where('uploadId', '[0-9]+');
+        Route::get('/{uploadId}/details', [PocketExpenseUploadController::class, 'getUploadDetails'])->name('details')->where('uploadId', '[0-9]+');
+        
+        // Upload data management
+        Route::get('/{uploadId}/data', [PocketExpenseUploadController::class, 'getUploadData'])->name('data')->where('uploadId', '[0-9]+');
+        Route::get('/{uploadId}/data/{rowId}', [PocketExpenseUploadController::class, 'getUploadRowData'])->name('data.row')->where(['uploadId' => '[0-9]+', 'rowId' => '[0-9]+']);
     });
 
     /*
     |--------------------------------------------------------------------------
-    | Expense Source Routes
+    | User Permission Routes
     |--------------------------------------------------------------------------
     |
-    | Routes for managing expense source configurations.
-    | Handles both global and client-specific expense sources.
+    | Routes for managing user permissions including granting, revoking,
+    | and monitoring permission assignments with hierarchical support.
     |
     */
-    Route::prefix('expense-sources')->name('expense-sources.')->group(function () {
+    
+    Route::prefix('permissions')->name('api.permissions.')->group(function () {
+        // Permission CRUD operations
+        Route::get('/', [UserPermissionController::class, 'index'])->name('index');
+        Route::post('/grant', [UserPermissionController::class, 'grantPermission'])->name('grant');
+        Route::get('/{id}', [UserPermissionController::class, 'show'])->name('show')->where('id', '[0-9]+');
+        Route::put('/{id}', [UserPermissionController::class, 'update'])->name('update')->where('id', '[0-9]+');
+        Route::delete('/{id}', [UserPermissionController::class, 'revokePermission'])->name('revoke')->where('id', '[0-9]+');
         
-        // List expense sources for client
-        Route::get('/', [ExpenseSourceController::class, 'index'])
-            ->name('index');
-            
-        // Get specific expense source
-        Route::get('/{id}', [ExpenseSourceController::class, 'show'])
-            ->name('show')
-            ->where('id', '[0-9]+');
-            
-        // Create new client-specific expense source
-        Route::post('/', [ExpenseSourceController::class, 'store'])
-            ->name('store');
-            
-        // Update expense source
-        Route::put('/{id}', [ExpenseSourceController::class, 'update'])
-            ->name('update')
-            ->where('id', '[0-9]+');
-            
-        // Delete (soft delete) expense source
-        Route::delete('/{id}', [ExpenseSourceController::class, 'destroy'])
-            ->name('destroy')
-            ->where('id', '[0-9]+');
-            
-        // Restore soft-deleted expense source
-        Route::post('/{id}/restore', [ExpenseSourceController::class, 'restore'])
-            ->name('restore')
-            ->where('id', '[0-9]+');
-            
-        // Get expense sources for dropdown (simplified format)
-        Route::get('/dropdown/{clientId}', [ExpenseSourceController::class, 'getDropdownOptions'])
-            ->name('dropdown')
-            ->where('clientId', '[0-9]+');
-            
-        // Initialize default sources for new client
-        Route::post('/initialize/{clientId}', [ExpenseSourceController::class, 'initializeDefaults'])
-            ->name('initialize')
-            ->where('clientId', '[0-9]+');
-            
-        // Bulk update sources for client
-        Route::put('/bulk/{clientId}', [ExpenseSourceController::class, 'bulkUpdate'])
-            ->name('bulk.update')
-            ->where('clientId', '[0-9]+');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Reference Data Routes
-    |--------------------------------------------------------------------------
-    |
-    | Routes for retrieving reference data used in expense creation.
-    | Includes expense types, currencies, countries, etc.
-    |
-    */
-    Route::prefix('reference-data')->name('reference-data.')->group(function () {
+        // Permission status management
+        Route::patch('/{id}/enable', [UserPermissionController::class, 'enablePermission'])->name('enable')->where('id', '[0-9]+');
+        Route::patch('/{id}/disable', [UserPermissionController::class, 'disablePermission'])->name('disable')->where('id', '[0-9]+');
+        Route::patch('/{id}/toggle', [UserPermissionController::class, 'togglePermission'])->name('toggle')->where('id', '[0-9]+');
         
-        // Get all expense types
-        Route::get('/expense-types', [PocketExpenseController::class, 'getExpenseTypes'])
-            ->name('expense-types');
-            
-        // Get supported currencies
-        Route::get('/currencies', [PocketExpenseController::class, 'getCurrencies'])
-            ->name('currencies');
-            
-        // Get supported countries
-        Route::get('/countries', [PocketExpenseController::class, 'getCountries'])
-            ->name('countries');
-            
-        // Get transaction categories for client
-        Route::get('/categories/{clientId}', [PocketExpenseController::class, 'getCategories'])
-            ->name('categories')
-            ->where('clientId', '[0-9]+');
-            
-        // Get tracking codes for client
-        Route::get('/tracking-codes/{clientId}', [PocketExpenseController::class, 'getTrackingCodes'])
-            ->name('tracking-codes')
-            ->where('clientId', '[0-9]+');
-            
-        // Get projects for client
-        Route::get('/projects/{clientId}', [PocketExpenseController::class, 'getProjects'])
-            ->name('projects')
-            ->where('clientId', '[0-9]+');
-            
-        // Get additional fields for client
-        Route::get('/additional-fields/{clientId}', [PocketExpenseController::class, 'getAdditionalFields'])
-            ->name('additional-fields')
-            ->where('clientId', '[0-9]+');
+        // Permission manager assignment
+        Route::patch('/{id}/manager', [UserPermissionController::class, 'setPermissionManager'])->name('set-manager')->where('id', '[0-9]+');
+        Route::delete('/{id}/manager', [UserPermissionController::class, 'removePermissionManager'])->name('remove-manager')->where('id', '[0-9]+');
+        
+        // Bulk permission operations
+        Route::post('/bulk/grant', [UserPermissionController::class, 'bulkGrantPermissions'])->name('bulk.grant');
+        Route::post('/bulk/revoke', [UserPermissionController::class, 'bulkRevokePermissions'])->name('bulk.revoke');
+        Route::post('/bulk/enable', [UserPermissionController::class, 'bulkEnablePermissions'])->name('bulk.enable');
+        Route::post('/bulk/disable', [UserPermissionController::class, 'bulkDisablePermissions'])->name('bulk.disable');
+        
+        // Permission analytics and reporting
+        Route::get('/statistics', [UserPermissionController::class, 'getPermissionStatistics'])->name('statistics');
+        Route::get('/audit/{id}', [UserPermissionController::class, 'getPermissionAuditTrail'])->name('audit')->where('id', '[0-9]+');
+        Route::get('/usage/{id}', [UserPermissionController::class, 'getPermissionUsageHistory'])->name('usage')->where('id', '[0-9]+');
+        
+        // Permission templates and management
+        Route::get('/templates', [UserPermissionController::class, 'getPermissionTemplates'])->name('templates');
+        Route::post('/templates', [UserPermissionController::class, 'createPermissionTemplate'])->name('templates.create');
+        Route::post('/templates/{templateId}/apply', [UserPermissionController::class, 'applyPermissionTemplate'])->name('templates.apply')->where('templateId', '[0-9]+');
+        
+        // Delegation and hierarchy
+        Route::get('/granted', [UserPermissionController::class, 'getGrantedPermissions'])->name('granted');
+        Route::get('/managed', [UserPermissionController::class, 'getManagedPermissions'])->name('managed');
+        Route::get('/hierarchy/{id}', [UserPermissionController::class, 'getPermissionHierarchy'])->name('hierarchy')->where('id', '[0-9]+');
     });
 
     /*
@@ -221,28 +152,72 @@ Route::middleware(['oauth2.user_client'])->group(function () {
     | FX Conversion Routes
     |--------------------------------------------------------------------------
     |
-    | Routes for foreign exchange rate conversion functionality.
-    | Used for real-time currency conversion during expense creation.
+    | Routes for foreign exchange rate conversion including real-time rates,
+    | historical data, and currency support information.
     |
     */
-    Route::prefix('fx')->name('fx.')->group(function () {
+    
+    Route::prefix('fx')->name('api.fx.')->group(function () {
+        // Currency conversion operations
+        Route::post('/convert', [FxConversionController::class, 'convert'])->name('convert');
+        Route::get('/rates', [FxConversionController::class, 'getRates'])->name('rates');
         
-        // Get FX rate for specific date and currency pair
-        Route::get('/rate', [PocketExpenseController::class, 'getFXRate'])
-            ->name('rate');
-            
-        // Convert amount between currencies
-        Route::post('/convert', [PocketExpenseController::class, 'convertAmount'])
-            ->name('convert');
-            
-        // Get client base currency
-        Route::get('/base-currency/{clientId}', [PocketExpenseController::class, 'getBaseCurrency'])
-            ->name('base-currency')
-            ->where('clientId', '[0-9]+');
-            
-        // Get historical rates for currency pair
-        Route::get('/history', [PocketExpenseController::class, 'getFXHistory'])
-            ->name('history');
+        // Currency information and support
+        Route::get('/currencies', [FxConversionController::class, 'getSupportedCurrencies'])->name('currencies');
+        Route::get('/currencies/{code}', [FxConversionController::class, 'getCurrencyInfo'])->name('currency.info')->where('code', '[A-Z]{3}');
+        
+        // Historical data and trends
+        Route::get('/history', [FxConversionController::class, 'getHistoricalRates'])->name('history');
+        Route::get('/trends', [FxConversionController::class, 'getRateTrends'])->name('trends');
+        
+        // User conversion history
+        Route::get('/conversions', [FxConversionController::class, 'getConversionHistory'])->name('conversions');
+        Route::get('/conversions/summary', [FxConversionController::class, 'getConversionSummary'])->name('conversions.summary');
+        
+        // Rate alerts and notifications
+        Route::get('/alerts', [FxConversionController::class, 'getRateAlerts'])->name('alerts');
+        Route::post('/alerts', [FxConversionController::class, 'createRateAlert'])->name('alerts.create');
+        Route::delete('/alerts/{alertId}', [FxConversionController::class, 'deleteRateAlert'])->name('alerts.delete')->where('alertId', '[0-9]+');
+        
+        // Cache and data management
+        Route::post('/cache/clear', [FxConversionController::class, 'clearCache'])->name('cache.clear');
+        Route::get('/cache/status', [FxConversionController::class, 'getCacheStatus'])->name('cache.status');
+    });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Configuration and Reference Data Routes
+    |--------------------------------------------------------------------------
+    |
+    | Routes for managing configuration data such as expense sources,
+    | expense types, and other reference information.
+    |
+    */
+    
+    Route::prefix('config')->name('api.config.')->group(function () {
+        // Expense source configuration
+        Route::get('/expense-sources', [ExpenseController::class, 'getExpenseSources'])->name('expense-sources');
+        Route::post('/expense-sources', [ExpenseController::class, 'createExpenseSource'])->name('expense-sources.create');
+        Route::put('/expense-sources/{id}', [ExpenseController::class, 'updateExpenseSource'])->name('expense-sources.update')->where('id', '[0-9]+');
+        Route::delete('/expense-sources/{id}', [ExpenseController::class, 'deleteExpenseSource'])->name('expense-sources.delete')->where('id', '[0-9]+');
+        
+        // Expense type configuration
+        Route::get('/expense-types', [ExpenseController::class, 'getExpenseTypes'])->name('expense-types');
+        Route::post('/expense-types', [ExpenseController::class, 'createExpenseType'])->name('expense-types.create');
+        Route::put('/expense-types/{id}', [ExpenseController::class, 'updateExpenseType'])->name('expense-types.update')->where('id', '[0-9]+');
+        Route::delete('/expense-types/{id}', [ExpenseController::class, 'deleteExpenseType'])->name('expense-types.delete')->where('id', '[0-9]+');
+        
+        // Client configuration
+        Route::get('/clients/{clientId}/settings', [ExpenseController::class, 'getClientSettings'])->name('clients.settings')->where('clientId', '[0-9]+');
+        Route::put('/clients/{clientId}/settings', [ExpenseController::class, 'updateClientSettings'])->name('clients.settings.update')->where('clientId', '[0-9]+');
+        
+        // Feature configuration
+        Route::get('/features', [UserPermissionController::class, 'getFeatures'])->name('features');
+        Route::get('/features/{featureId}', [UserPermissionController::class, 'getFeature'])->name('features.show')->where('featureId', '[0-9]+');
+        
+        // Validation rules and constraints
+        Route::get('/validation-rules', [ExpenseController::class, 'getValidationRules'])->name('validation-rules');
+        Route::get('/validation-rules/{context}', [ExpenseController::class, 'getContextValidationRules'])->name('validation-rules.context');
     });
 
     /*
@@ -250,203 +225,27 @@ Route::middleware(['oauth2.user_client'])->group(function () {
     | File Management Routes
     |--------------------------------------------------------------------------
     |
-    | Routes for managing file attachments and receipts.
-    | Handles file uploads, downloads, and management.
+    | Routes for handling file uploads, downloads, and management including
+    | receipts, CSV templates, and export operations.
     |
     */
-    Route::prefix('files')->name('files.')->group(function () {
+    
+    Route::prefix('files')->name('api.files.')->group(function () {
+        // File upload and management
+        Route::post('/upload', [ExpenseController::class, 'uploadFile'])->name('upload');
+        Route::get('/{fileId}', [ExpenseController::class, 'downloadFile'])->name('download')->where('fileId', '[0-9a-f\-]+');
+        Route::delete('/{fileId}', [ExpenseController::class, 'deleteFile'])->name('delete')->where('fileId', '[0-9a-f\-]+');
         
-        // Upload receipt file
-        Route::post('/receipts', [PocketExpenseController::class, 'uploadReceipt'])
-            ->name('receipts.upload');
-            
-        // Download/view file
-        Route::get('/{id}', [PocketExpenseController::class, 'downloadFile'])
-            ->name('show')
-            ->where('id', '[0-9]+');
-            
-        // Delete file
-        Route::delete('/{id}', [PocketExpenseController::class, 'deleteFile'])
-            ->name('destroy')
-            ->where('id', '[0-9]+');
-            
-        // Get file metadata
-        Route::get('/{id}/metadata', [PocketExpenseController::class, 'getFileMetadata'])
-            ->name('metadata')
-            ->where('id', '[0-9]+');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Dashboard and Analytics Routes
-    |--------------------------------------------------------------------------
-    |
-    | Routes for dashboard data and expense analytics.
-    | Provides summary statistics and reporting data.
-    |
-    */
-    Route::prefix('dashboard')->name('dashboard.')->group(function () {
+        // CSV templates and samples
+        Route::get('/templates/expense-csv', [PocketExpenseUploadController::class, 'downloadCsvTemplate'])->name('templates.expense-csv');
+        Route::get('/samples/expense-csv', [PocketExpenseUploadController::class, 'downloadCsvSample'])->name('samples.expense-csv');
         
-        // Get expense summary for user/client
-        Route::get('/summary', [PocketExpenseController::class, 'getDashboardSummary'])
-            ->name('summary');
-            
-        // Get expense statistics
-        Route::get('/statistics', [PocketExpenseController::class, 'getExpenseStatistics'])
-            ->name('statistics');
-            
-        // Get recent activities
-        Route::get('/activities', [PocketExpenseController::class, 'getRecentActivities'])
-            ->name('activities');
-            
-        // Get pending approvals count
-        Route::get('/pending-approvals', [PocketExpenseController::class, 'getPendingApprovals'])
-            ->name('pending-approvals');
-            
-        // Get expense trends
-        Route::get('/trends', [PocketExpenseController::class, 'getExpenseTrends'])
-            ->name('trends');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Export Routes
-    |--------------------------------------------------------------------------
-    |
-    | Routes for exporting expense data in various formats.
-    | Supports CSV, Excel, and PDF exports with filtering.
-    |
-    */
-    Route::prefix('exports')->name('exports.')->group(function () {
+        // Export operations
+        Route::post('/export/expenses', [ExpenseController::class, 'exportExpenses'])->name('export.expenses');
+        Route::post('/export/permissions', [UserPermissionController::class, 'exportPermissions'])->name('export.permissions');
+        Route::get('/export/{exportId}/status', [ExpenseController::class, 'getExportStatus'])->name('export.status')->where('exportId', '[0-9a-f\-]+');
+        Route::get('/export/{exportId}/download', [ExpenseController::class, 'downloadExport'])->name('export.download')->where('exportId', '[0-9a-f\-]+');
         
-        // Export expenses to CSV
-        Route::post('/csv', [PocketExpenseController::class, 'exportToCSV'])
-            ->name('csv');
-            
-        // Export expenses to Excel
-        Route::post('/excel', [PocketExpenseController::class, 'exportToExcel'])
-            ->name('excel');
-            
-        // Export expenses to PDF
-        Route::post('/pdf', [PocketExpenseController::class, 'exportToPDF'])
-            ->name('pdf');
-            
-        // Get export status
-        Route::get('/{exportId}/status', [PocketExpenseController::class, 'getExportStatus'])
-            ->name('status')
-            ->where('exportId', '[0-9]+');
-            
-        // Download export file
-        Route::get('/{exportId}/download', [PocketExpenseController::class, 'downloadExport'])
-            ->name('download')
-            ->where('exportId', '[0-9]+');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Notification Routes
-    |--------------------------------------------------------------------------
-    |
-    | Routes for managing expense-related notifications.
-    | Handles notification preferences and delivery.
-    |
-    */
-    Route::prefix('notifications')->name('notifications.')->group(function () {
-        
-        // Get user notifications
-        Route::get('/', [PocketExpenseController::class, 'getNotifications'])
-            ->name('index');
-            
-        // Mark notification as read
-        Route::post('/{id}/read', [PocketExpenseController::class, 'markNotificationRead'])
-            ->name('read')
-            ->where('id', '[0-9]+');
-            
-        // Mark all notifications as read
-        Route::post('/mark-all-read', [PocketExpenseController::class, 'markAllNotificationsRead'])
-            ->name('mark-all-read');
-            
-        // Get notification preferences
-        Route::get('/preferences', [PocketExpenseController::class, 'getNotificationPreferences'])
-            ->name('preferences');
-            
-        // Update notification preferences
-        Route::put('/preferences', [PocketExpenseController::class, 'updateNotificationPreferences'])
-            ->name('preferences.update');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | System Routes
-    |--------------------------------------------------------------------------
-    |
-    | Routes for system-level operations and health checks.
-    | Used for monitoring and administrative functions.
-    |
-    */
-    Route::prefix('system')->name('system.')->group(function () {
-        
-        // Health check
-        Route::get('/health', [PocketExpenseController::class, 'healthCheck'])
-            ->name('health');
-            
-        // Get system configuration
-        Route::get('/config', [PocketExpenseController::class, 'getSystemConfig'])
-            ->name('config');
-            
-        // Get queue status
-        Route::get('/queue-status', [PocketExpenseUploadController::class, 'getQueueStatus'])
-            ->name('queue-status');
-            
-        // Get upload limits
-        Route::get('/upload-limits', [PocketExpenseUploadController::class, 'getUploadLimits'])
-            ->name('upload-limits');
-    });
-
-});
-
-/*
-|--------------------------------------------------------------------------
-| Public Routes (No Authentication Required)
-|--------------------------------------------------------------------------
-|
-| Routes that can be accessed without authentication.
-| Limited to basic system information and health checks.
-|
-*/
-
-// Basic health check endpoint
-Route::get('/health', function () {
-    return response()->json([
-        'status' => 'ok',
-        'service' => 'pocket-expense-api',
-        'version' => '1.0.0',
-        'timestamp' => now()->toISOString(),
-    ]);
-})->name('health');
-
-// API version information
-Route::get('/version', function () {
-    return response()->json([
-        'version' => '1.0.0',
-        'api_name' => 'Pocket Expense API',
-        'laravel_version' => app()->version(),
-        'php_version' => phpversion(),
-        'environment' => app()->environment(),
-        'timestamp' => now()->toISOString(),
-    ]);
-})->name('version');
-
-/*
-|--------------------------------------------------------------------------
-| Fallback Routes
-|--------------------------------------------------------------------------
-|
-| Handle undefined API routes with proper error responses.
-|
-*/
-
-// Catch-all route for undefined endpoints
-Route::fallback(function () {
-    return response()->json([
-        'success
+        // File validation and processing
+        Route::post('/validate/csv', [PocketExpenseUploadController::class, 'validateCsvFile'])->name('validate.csv');
+        Route::post('/preview/csv

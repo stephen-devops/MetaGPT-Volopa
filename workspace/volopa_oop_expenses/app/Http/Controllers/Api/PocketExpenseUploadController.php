@@ -1,3 +1,5 @@
+Looking at the context and requirements, I need to implement the `PocketExpenseUploadController.php` that handles CSV file uploads for pocket expenses. Based on the design and existing code patterns, here's the complete implementation:
+
 ## Code: app/Http/Controllers/Api/PocketExpenseUploadController.php
 
 ```php
@@ -6,427 +8,424 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\PocketExpenseCSVUploadRequest;
-use App\Http\Resources\ExpenseUploadResource;
-use App\Models\PocketExpense;
+use App\Http\Requests\UploadPocketExpenseCsvRequest;
+use App\Http\Resources\FileUploadResource;
 use App\Models\PocketExpenseFileUpload;
-use App\Services\PocketExpenseCSVValidator;
-use App\Services\PocketExpenseService;
-use App\Jobs\ProcessExpenseUpload;
+use App\Services\PocketExpenseUploadService;
+use App\Policies\ExpensePolicy;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Response;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
-use Illuminate\Validation\ValidationException;
-use Carbon\Carbon;
-use Exception;
+use Illuminate\Support\Facades\DB;
 
-/**
- * PocketExpenseUploadController
- * 
- * Controller for CSV upload operations for pocket expenses.
- * Handles file upload, validation, and background processing initiation.
- * Implements synchronous all-or-nothing validation with detailed error reporting.
- */
 class PocketExpenseUploadController extends Controller
 {
     /**
-     * The CSV validator service instance.
-     *
-     * @var PocketExpenseCSVValidator
+     * The pocket expense upload service instance.
      */
-    private PocketExpenseCSVValidator $validator;
-
-    /**
-     * The pocket expense service instance.
-     *
-     * @var PocketExpenseService
-     */
-    private PocketExpenseService $service;
-
-    /**
-     * Storage disk for uploaded files.
-     *
-     * @var string
-     */
-    private string $storageDisk;
-
-    /**
-     * Storage path for uploaded files.
-     *
-     * @var string
-     */
-    private string $storagePath;
+    private PocketExpenseUploadService $uploadService;
 
     /**
      * Create a new controller instance.
-     *
-     * @param PocketExpenseService $service
      */
-    public function __construct(PocketExpenseService $service)
+    public function __construct(PocketExpenseUploadService $uploadService)
     {
-        $this->service = $service;
-        
-        // Apply middleware
+        $this->uploadService = $uploadService;
         $this->middleware('auth:api');
-        $this->middleware('oauth2.user_client');
-        
-        // Set storage configuration
-        $this->storageDisk = config('pocket_expense.files.csv_upload.storage_disk', 'local');
-        $this->storagePath = config('pocket_expense.files.csv_upload.storage_path', 'pocket-expenses/uploads');
+        $this->middleware('client.context');
     }
 
     /**
-     * Upload and validate CSV file for pocket expense batch creation.
-     *
-     * @param PocketExpenseCSVUploadRequest $request
-     * @return JsonResponse
+     * Upload CSV file for pocket expense processing.
      */
-    public function uploadCSV(PocketExpenseCSVUploadRequest $request): JsonResponse
+    public function uploadCsv(UploadPocketExpenseCsvRequest $request): JsonResponse
     {
-        DB::beginTransaction();
-
         try {
-            $validatedData = $request->validated();
-            $user = $request->user();
-            $csvFile = $request->getCSVFile();
+            // Request is automatically validated and authorized via FormRequest
+            $file = $request->getValidatedFile();
+            $expenseUserId = $request->getValidatedExpenseUserId();
+            $clientId = $request->getValidatedClientId();
 
-            if (!$csvFile) {
-                throw new Exception('No valid CSV file uploaded');
-            }
-
-            $userId = $user->id;
-            $clientId = (int) $validatedData['client_id'];
-            $targetUserId = (int) $validatedData['user_id'];
-
-            Log::info('Starting CSV upload processing', [
-                'uploader_user_id' => $userId,
-                'target_user_id' => $targetUserId,
+            Log::info('Starting pocket expense CSV upload', [
+                'user_id' => $request->user()->id,
+                'expense_user_id' => $expenseUserId,
                 'client_id' => $clientId,
-                'filename' => $csvFile->getClientOriginalName(),
-                'file_size' => $csvFile->getSize(),
+                'filename' => $file->getClientOriginalName(),
+                'file_size' => $file->getSize(),
+                'estimated_rows' => $request->getEstimatedRowCount(),
             ]);
 
-            // Store the uploaded file
-            $storedFile = $this->storeUploadedFile($csvFile);
+            // Process the upload
+            $uploadRecord = $this->uploadService->processUpload(
+                $file,
+                $request->user(),
+                $expenseUserId,
+                $clientId
+            );
 
-            // Create upload record
-            $upload = $this->createUploadRecord($storedFile, $validatedData, $userId, $clientId, $targetUserId);
+            // Determine response status based on upload status
+            $statusCode = match ($uploadRecord->status) {
+                PocketExpenseFileUpload::STATUS_COMPLETED => 201,
+                PocketExpenseFileUpload::STATUS_FAILED => 422,
+                default => 202, // Accepted for processing
+            };
 
-            // Initialize validator with context
-            $this->validator = new PocketExpenseCSVValidator($targetUserId, $clientId);
+            // Build response message
+            $message = match ($uploadRecord->status) {
+                PocketExpenseFileUpload::STATUS_COMPLETED => 'File uploaded and processed successfully. All expenses have been created.',
+                PocketExpenseFileUpload::STATUS_FAILED => 'File upload failed due to validation errors.',
+                PocketExpenseFileUpload::STATUS_PROCESSING => 'File uploaded successfully and is being processed in the background.',
+                PocketExpenseFileUpload::STATUS_VALIDATING => 'File uploaded successfully and is being validated.',
+                default => 'File upload initiated successfully.',
+            };
 
-            // Perform synchronous validation
-            $validationResult = $this->validator->validate($storedFile['full_path']);
-
-            if (!$validationResult->isValid) {
-                // Validation failed - update upload status and return errors
-                $this->updateUploadStatus($upload, PocketExpenseFileUpload::STATUS_VALIDATION_FAILED, [
-                    'validation_errors' => $validationResult->errors,
-                    'total_records' => $validationResult->totalRows,
-                    'valid_records' => 0,
-                ]);
-
-                DB::commit();
-
-                Log::warning('CSV validation failed', [
-                    'upload_id' => $upload->id,
-                    'total_rows' => $validationResult->totalRows,
-                    'error_count' => $validationResult->errorCount,
+            // Handle validation errors for failed uploads
+            if ($uploadRecord->status === PocketExpenseFileUpload::STATUS_FAILED) {
+                $validationErrors = $uploadRecord->validation_errors ?? [];
+                
+                Log::warning('CSV upload failed validation', [
+                    'upload_id' => $uploadRecord->id,
+                    'user_id' => $request->user()->id,
+                    'error_count' => count($validationErrors),
+                    'total_rows' => $uploadRecord->total_records,
                 ]);
 
                 return response()->json([
                     'success' => false,
                     'message' => 'Validation failed',
-                    'upload_id' => $upload->id,
-                    'total_rows' => $validationResult->totalRows,
-                    'error_count' => $validationResult->errorCount,
-                    'errors' => $validationResult->errors,
-                    'upload_status' => new ExpenseUploadResource($upload->fresh()),
-                ], Response::HTTP_UNPROCESSABLE_ENTITY);
+                    'upload_id' => $uploadRecord->id,
+                    'total_rows' => $uploadRecord->total_records,
+                    'error_count' => count($validationErrors),
+                    'errors' => $validationErrors,
+                ], 422);
             }
 
-            // Validation passed - store validated data and initiate background processing
-            $this->storeValidatedRows($validationResult->validatedRows, $upload->id);
-
-            $this->updateUploadStatus($upload, PocketExpenseFileUpload::STATUS_VALIDATION_PASSED, [
-                'total_records' => $validationResult->totalRows,
-                'valid_records' => count($validationResult->validatedRows),
-                'validation_errors' => null,
+            // Success response
+            Log::info('CSV upload processed successfully', [
+                'upload_id' => $uploadRecord->id,
+                'user_id' => $request->user()->id,
+                'status' => $uploadRecord->status,
+                'total_rows' => $uploadRecord->total_records,
+                'valid_rows' => $uploadRecord->valid_records,
             ]);
 
-            // Dispatch background job for processing
-            ProcessExpenseUpload::dispatch($upload->id);
-
-            DB::commit();
-
-            Log::info('CSV validation passed, background processing initiated', [
-                'upload_id' => $upload->id,
-                'total_rows' => $validationResult->totalRows,
-                'valid_rows' => count($validationResult->validatedRows),
-            ]);
-
-            return response()->json([
+            $responseData = [
                 'success' => true,
-                'message' => 'File validated successfully. Expenses creation started.',
-                'upload_id' => $upload->id,
-                'total_rows' => $validationResult->totalRows,
-                'valid_rows' => count($validationResult->validatedRows),
-                'upload_status' => new ExpenseUploadResource($upload->fresh()),
-            ], Response::HTTP_CREATED);
+                'message' => $message,
+                'upload_id' => $uploadRecord->id,
+                'total_rows' => $uploadRecord->total_records,
+                'data' => new FileUploadResource($uploadRecord->load(['user', 'client', 'expenseUser'])),
+            ];
 
-        } catch (ValidationException $e) {
-            DB::rollBack();
+            // Add additional info for completed uploads
+            if ($uploadRecord->status === PocketExpenseFileUpload::STATUS_COMPLETED) {
+                $responseData['processed_rows'] = $uploadRecord->processed_records;
+                $responseData['success_rate'] = $uploadRecord->getSuccessRateAttribute();
+            }
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed.',
-                'errors' => $e->errors(),
-                'error_code' => 'VALIDATION_FAILED'
-            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+            return response()->json($responseData, $statusCode);
 
-        } catch (Exception $e) {
-            DB::rollBack();
-
-            Log::error('CSV upload processing failed', [
-                'uploader_user_id' => $request->user()?->id,
-                'target_user_id' => $request->input('user_id'),
-                'client_id' => $request->input('client_id'),
+        } catch (\Exception $e) {
+            Log::error('Error processing CSV upload', [
+                'user_id' => $request->user()->id,
+                'filename' => $request->file('file')?->getClientOriginalName(),
                 'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to process CSV upload.',
-                'error_code' => 'UPLOAD_PROCESSING_FAILED',
-                'details' => $e->getMessage(),
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Failed to process CSV upload',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
         }
     }
 
     /**
-     * Get upload status and processing results.
-     *
-     * @param Request $request
-     * @param int $uploadId
-     * @return JsonResponse
+     * Get upload status for a specific upload.
      */
     public function getUploadStatus(Request $request, int $uploadId): JsonResponse
     {
         try {
-            // Find the upload with relationships
-            $upload = PocketExpenseFileUpload::with(['user', 'targetUser', 'client', 'uploadData'])
-                ->findOrFail($uploadId);
+            $upload = PocketExpenseFileUpload::with(['user', 'client', 'expenseUser'])
+                ->where('id', $uploadId)
+                ->notDeleted()
+                ->firstOrFail();
 
-            // Check authorization
-            $user = $request->user();
-            if (!$user->can('viewUploadStatus', [PocketExpense::class, $upload->client_id, $upload->user_id])) {
+            // Authorize the request
+            $expensePolicy = new ExpensePolicy();
+            if (!$expensePolicy->viewUploadStatus($request->user(), $upload->user_id, $upload->client_id)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Unauthorized to view this upload status.',
-                    'error_code' => 'UNAUTHORIZED_ACCESS'
-                ], Response::HTTP_FORBIDDEN);
+                    'message' => 'You do not have permission to view this upload status',
+                ], 403);
             }
-
-            // Get additional status information
-            $statusInfo = $this->getDetailedStatusInfo($upload);
 
             return response()->json([
                 'success' => true,
-                'data' => new ExpenseUploadResource($upload),
-                'status_info' => $statusInfo,
-                'message' => 'Upload status retrieved successfully.'
-            ], Response::HTTP_OK);
+                'data' => new FileUploadResource($upload),
+            ], 200);
 
         } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
             return response()->json([
                 'success' => false,
-                'message' => 'Upload not found.',
-                'error_code' => 'UPLOAD_NOT_FOUND'
-            ], Response::HTTP_NOT_FOUND);
+                'message' => 'Upload not found',
+            ], 404);
 
-        } catch (Exception $e) {
-            Log::error('Failed to retrieve upload status', [
+        } catch (\Exception $e) {
+            Log::error('Error retrieving upload status', [
                 'upload_id' => $uploadId,
-                'request_user_id' => $request->user()?->id,
+                'user_id' => $request->user()->id,
                 'error' => $e->getMessage(),
             ]);
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to retrieve upload status.',
-                'error_code' => 'STATUS_RETRIEVAL_FAILED'
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Failed to retrieve upload status',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
         }
     }
 
     /**
-     * Store uploaded CSV file to disk.
-     *
-     * @param \Illuminate\Http\UploadedFile $csvFile
-     * @return array<string, string>
-     * @throws Exception
+     * Get list of uploads for the current user.
      */
-    private function storeUploadedFile($csvFile): array
+    public function index(Request $request): JsonResponse
     {
         try {
-            $originalFilename = $csvFile->getClientOriginalName();
-            $timestamp = now()->format('Y-m-d_H-i-s');
-            $randomHash = substr(hash('sha256', $originalFilename . $timestamp . mt_rand()), 0, 8);
-            $storedFilename = "pocket_expense_upload_{$timestamp}_{$randomHash}.csv";
-            
-            // Store file
-            $filePath = $csvFile->storeAs($this->storagePath, $storedFilename, $this->storageDisk);
-            
-            if (!$filePath) {
-                throw new Exception('Failed to store uploaded file');
+            // Build query with filters
+            $query = PocketExpenseFileUpload::with(['user', 'client', 'expenseUser'])
+                ->notDeleted()
+                ->latest();
+
+            // Filter by client if specified and authorized
+            if ($request->has('client_id')) {
+                $clientId = (int) $request->get('client_id');
+                $expensePolicy = new ExpensePolicy();
+                
+                if ($expensePolicy->viewClientExpenses($request->user(), $clientId)) {
+                    $query->forClient($clientId);
+                } else {
+                    $query->forUser($request->user()->id);
+                }
+            } else {
+                // Default to user's own uploads
+                $query->forUser($request->user()->id);
             }
 
-            $fullPath = Storage::disk($this->storageDisk)->path($filePath);
-
-            return [
-                'original_filename' => $originalFilename,
-                'stored_filename' => $storedFilename,
-                'file_path' => $filePath,
-                'full_path' => $fullPath,
-                'file_size' => $csvFile->getSize(),
-                'mime_type' => $csvFile->getMimeType(),
-            ];
-
-        } catch (Exception $e) {
-            Log::error('Failed to store uploaded CSV file', [
-                'original_filename' => $csvFile->getClientOriginalName(),
-                'error' => $e->getMessage(),
-            ]);
-
-            throw new Exception('Failed to store uploaded file: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Create upload record in database.
-     *
-     * @param array<string, string> $storedFile
-     * @param array<string, mixed> $validatedData
-     * @param int $userId
-     * @param int $clientId
-     * @param int $targetUserId
-     * @return PocketExpenseFileUpload
-     * @throws Exception
-     */
-    private function createUploadRecord(
-        array $storedFile, 
-        array $validatedData, 
-        int $userId, 
-        int $clientId, 
-        int $targetUserId
-    ): PocketExpenseFileUpload {
-        try {
-            return PocketExpenseFileUpload::create([
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'target_user_id' => $targetUserId,
-                'original_filename' => $storedFile['original_filename'],
-                'stored_filename' => $storedFile['stored_filename'],
-                'file_path' => $storedFile['file_path'],
-                'mime_type' => $storedFile['mime_type'],
-                'file_size' => (int) $storedFile['file_size'],
-                'status' => PocketExpenseFileUpload::STATUS_UPLOADED,
-                'total_records' => 0,
-                'valid_records' => 0,
-                'processed_records' => 0,
-                'failed_records' => 0,
-                'validation_errors' => null,
-                'processing_errors' => null,
-                'notes' => isset($validatedData['notes']) ? trim($validatedData['notes']) : null,
-                'started_at' => null,
-                'completed_at' => null,
-                'failed_at' => null,
-                'deleted' => false,
-                'delete_time' => null,
-            ]);
-
-        } catch (Exception $e) {
-            Log::error('Failed to create upload record', [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'target_user_id' => $targetUserId,
-                'filename' => $storedFile['original_filename'],
-                'error' => $e->getMessage(),
-            ]);
-
-            throw new Exception('Failed to create upload record: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Update upload status and related fields.
-     *
-     * @param PocketExpenseFileUpload $upload
-     * @param string $status
-     * @param array<string, mixed> $additionalData
-     * @return void
-     * @throws Exception
-     */
-    private function updateUploadStatus(PocketExpenseFileUpload $upload, string $status, array $additionalData = []): void
-    {
-        try {
-            $updateData = array_merge([
-                'status' => $status,
-            ], $additionalData);
-
-            // Set timestamp based on status
-            switch ($status) {
-                case PocketExpenseFileUpload::STATUS_PROCESSING:
-                    $updateData['started_at'] = now();
-                    break;
-                case PocketExpenseFileUpload::STATUS_COMPLETED:
-                    $updateData['completed_at'] = now();
-                    break;
-                case PocketExpenseFileUpload::STATUS_FAILED:
-                case PocketExpenseFileUpload::STATUS_SYNC_FAILED:
-                case PocketExpenseFileUpload::STATUS_VALIDATION_FAILED:
-                    $updateData['failed_at'] = now();
-                    break;
+            // Apply status filter
+            if ($request->has('status')) {
+                $status = $request->get('status');
+                if (in_array($status, PocketExpenseFileUpload::getValidStatuses())) {
+                    $query->withStatus($status);
+                }
             }
 
-            $upload->update($updateData);
+            // Apply date range filter
+            if ($request->has('start_date') && $request->has('end_date')) {
+                try {
+                    $startDate = \Carbon\Carbon::parse($request->get('start_date'));
+                    $endDate = \Carbon\Carbon::parse($request->get('end_date'));
+                    $query->inDateRange($startDate, $endDate);
+                } catch (\Exception $e) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Invalid date range format',
+                    ], 400);
+                }
+            }
 
-        } catch (Exception $e) {
-            Log::error('Failed to update upload status', [
-                'upload_id' => $upload->id,
-                'status' => $status,
-                'additional_data' => $additionalData,
+            // Paginate results
+            $perPage = min(50, max(10, (int) $request->get('per_page', 15)));
+            $uploads = $query->paginate($perPage);
+
+            return response()->json([
+                'success' => true,
+                'data' => FileUploadResource::collection($uploads),
+                'pagination' => [
+                    'current_page' => $uploads->currentPage(),
+                    'last_page' => $uploads->lastPage(),
+                    'per_page' => $uploads->perPage(),
+                    'total' => $uploads->total(),
+                    'from' => $uploads->firstItem(),
+                    'to' => $uploads->lastItem(),
+                    'has_more_pages' => $uploads->hasMorePages(),
+                ],
+            ], 200);
+
+        } catch (\Exception $e) {
+            Log::error('Error retrieving uploads list', [
+                'user_id' => $request->user()->id,
+                'filters' => $request->all(),
                 'error' => $e->getMessage(),
             ]);
 
-            throw new Exception('Failed to update upload status: ' . $e->getMessage());
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve uploads',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
         }
     }
 
     /**
-     * Store validated CSV rows for background processing.
-     *
-     * @param array<array<string, mixed>> $validatedRows
-     * @param int $uploadId
-     * @return void
-     * @throws Exception
+     * Cancel a pending upload.
      */
-    private function storeValidatedRows(array $validatedRows, int $uploadId): void
+    public function cancelUpload(Request $request, int $uploadId): JsonResponse
     {
         try {
-            $uploadDataRecords = [];
+            $upload = PocketExpenseFileUpload::findOrFail($uploadId);
+
+            // Authorize the request
+            if (!$this->canManageUpload($request->user(), $upload)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to cancel this upload',
+                ], 403);
+            }
+
+            // Check if upload can be cancelled
+            if (!$upload->isInProgress()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Upload cannot be cancelled in current status: ' . $upload->status,
+                ], 400);
+            }
+
+            // Mark upload as failed/cancelled
+            $upload->markAsFailed('Upload cancelled by user');
+
+            Log::info('Upload cancelled successfully', [
+                'upload_id' => $uploadId,
+                'user_id' => $request->user()->id,
+                'original_status' => $upload->getOriginal('status'),
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Upload cancelled successfully',
+                'data' => new FileUploadResource($upload->load(['user', 'client', 'expenseUser'])),
+            ], 200);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Upload not found',
+            ], 404);
+
+        } catch (\Exception $e) {
+            Log::error('Error cancelling upload', [
+                'upload_id' => $uploadId,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to cancel upload',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Download validation errors for a failed upload.
+     */
+    public function downloadErrors(Request $request, int $uploadId): JsonResponse
+    {
+        try {
+            $upload = PocketExpenseFileUpload::findOrFail($uploadId);
+
+            // Authorize the request
+            if (!$this->canManageUpload($request->user(), $upload)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to download errors for this upload',
+                ], 403);
+            }
+
+            // Check if upload has errors
+            if (!$upload->hasValidationErrors() && !$upload->hasProcessingErrors()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No errors found for this upload',
+                ], 404);
+            }
+
+            // Prepare errors data
+            $errors = [];
             
-            foreach ($validatedRows as $row) {
-                $uploadDataRecords[] = [
-                    'upload_id' => $uploadId,
-                    'line_number' => $row['line_number'],
-                    'status' => 'pending',
-                    'expense_data' => json_encode($row['data']),
-                    'validation_errors' => null,
-                    'processing_errors' => null,
-                    'created_expense_id' => null,
-                    'notes' => null,
-                    'synced_at
+            if ($upload->hasValidationErrors()) {
+                $errors = array_merge($errors, $upload->validation_errors);
+            }
+            
+            if ($upload->hasProcessingErrors()) {
+                $errors = array_merge($errors, $upload->processing_errors);
+            }
+
+            // Sort errors by line number
+            usort($errors, function ($a, $b) {
+                return ($a['line_number'] ?? 0) <=> ($b['line_number'] ?? 0);
+            });
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'upload_id' => $upload->id,
+                    'filename' => $upload->original_filename,
+                    'total_errors' => count($errors),
+                    'validation_errors' => $upload->getValidationErrorCount(),
+                    'processing_errors' => $upload->getProcessingErrorCount(),
+                    'errors' => $errors,
+                ],
+                'meta' => [
+                    'generated_at' => now()->toISOString(),
+                    'format' => 'json',
+                ],
+            ], 200);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Upload not found',
+            ], 404);
+
+        } catch (\Exception $e) {
+            Log::error('Error downloading upload errors', [
+                'upload_id' => $uploadId,
+                'user_id' => $request->user()->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to download errors',
+                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
+            ], 500);
+        }
+    }
+
+    /**
+     * Delete an upload record (soft delete).
+     */
+    public function deleteUpload(Request $request, int $uploadId): JsonResponse
+    {
+        try {
+            $upload = PocketExpenseFileUpload::findOrFail($uploadId);
+
+            // Authorize the request
+            if (!$this->canManageUpload($request->user(), $upload)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You do not have permission to delete this upload',
+                ], 403);
+            }
+
+            // Check if upload can be deleted
+            if ($upload->isInProgress()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot delete upload while it is being processed',
+                ], 400);
+            }

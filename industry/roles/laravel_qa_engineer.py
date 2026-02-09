@@ -414,6 +414,8 @@ Your tests are the final validation that the Volopa OOP Expense system is:
             lines.append(f"Default permissions: {perms}")
             lines.append(f"Test scenarios:")
             for perm_key, perm_val in perms.items():
+                if perm_key == 'origin':
+                    continue
                 if perm_val:
                     lines.append(f"  - Test: {role} CAN {perm_key}: {perm_val}")
                 else:
@@ -422,6 +424,8 @@ Your tests are the final validation that the Volopa OOP Expense system is:
                 mgmt = m['with_management_rights']
                 lines.append(f"  With management rights:")
                 for mk, mv in mgmt.items():
+                    if mk == 'origin':
+                        continue
                     if mv:
                         lines.append(f"    - Test: {role} with mgmt rights CAN {mk}: {mv}")
                     else:
@@ -471,6 +475,8 @@ Your tests are the final validation that the Volopa OOP Expense system is:
         lines.append("\n### Request Validation Tests")
         validation = api.get('server_side_validation', {})
         for field, rule in validation.items():
+            if field.endswith('_origin'):
+                continue
             lines.append(f"  - Test: {field} validates with rule: {rule}")
             lines.append(f"  - Test: {field} rejects invalid input (422)")
 
@@ -587,6 +593,8 @@ Your tests are the final validation that the Volopa OOP Expense system is:
         fx = sdc.get('fx_conversion_flow', {})
         lines.append("\n## FX Conversion Tests")
         for step_key, step_val in fx.items():
+            if not isinstance(step_val, dict):
+                continue
             name = step_val.get('name', step_key)
             lines.append(f"\n  {name}:")
             for item in step_val.get('flow', []):

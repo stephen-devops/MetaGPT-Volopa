@@ -18,16 +18,11 @@ class LaravelEngineer(Engineer):
     Responsibilities:
     - Write Laravel controllers (thin, proper status codes)
     - Write FormRequests (validation + policy authorization)
-    - Write services (PocketExpenseCSVValidator, FX conversion, approval workflow)
-    - Write Eloquent models (PocketExpense, PocketExpenseMetadata, relationships, casts, fillable)
-    - Write migrations (pocket_expense, pocket_expense_metadata, user_feature_permission, etc.)
+    - Write services (business logic with transactions and approval workflow)
+    - Write Eloquent models (relationships, casts, fillable)
+    - Write migrations (schema with indexes, foreign keys, etc.)
     - Write API Resources (response transformers)
     - Write feature tests (assert JSON, status codes, DB state)
-
-    Domain Modules:
-    - User Management: permission CRUD, role delegation, access control
-    - Pocket Expense CSV Upload: upload endpoint, CSV parsing, validation, background sync
-    - Single Expense Capturing: CRUD, FX conversion, metadata management, source config
     """
 
     use_fixed_sop: bool = True
@@ -47,12 +42,12 @@ Keep each Incremental Change entry to ONE line with filename and brief descripti
 Example correct format:
 {
   "Development Plan": [
-    "app/Models/PocketExpense.php",
-    "app/Services/PocketExpenseCSVValidator.php"
+    "app/Models/MyModel.php",
+    "app/Services/MyValidator.php"
   ],
   "Incremental Change": [
-    "app/Models/PocketExpense.php: Eloquent model with UUID, relationships to metadata/user/client, soft deletes",
-    "app/Services/PocketExpenseCSVValidator.php: CSV validation with preloaded reference data, all-or-nothing"
+    "app/Models/MyModel.php: Eloquent model with UUID, relationships to metadata/user/client, soft deletes",
+    "app/Services/MyValidator.php: CSV validation with preloaded reference data, all-or-nothing"
   ]
 }
 
@@ -95,24 +90,13 @@ DON'TS - Never Do These:
 - Don't build query filters directly from user input (SQL injection risk)
 - Don't create N+1 queries (use eager loading: ->with(['relation']))
 - Don't return unbounded lists (always paginate)
-- Don't forget DB::transaction() for multi-write operations (especially all-or-nothing CSV)
+- Don't forget DB::transaction() for multi-write operations
 - Don't hardcode timestamps or timezones (use Carbon, database defaults)
-- Don't ignore caching opportunities (especially for expense types, currencies, countries, sources)
-- Don't let file uploads bloat the API process (use queues for background sync)
+- Don't ignore caching opportunities (especially for reference data)
+- Don't let file uploads bloat the API process (use queues for large files or background sync)
 - Don't respond with inconsistent JSON shapes or casing (use Resources)
 - Don't leak environment variables or config in responses
 - Don't forget observability (logging, monitoring, error tracking)
-- Don't create expenses partially on CSV failure (all-or-nothing validation)
-
-DOMAIN-SPECIFIC IMPLEMENTATION NOTES:
-- PocketExpense status enum: draft, submitted, approved, rejected
-- PocketExpenseFileUpload status: uploaded, validation_failed, validation_passed, processing, completed, failed, sync_failed
-- opt_pocket_expense_type: ATM Withdrawal (-), Point of Sale (-), Fee & Charges (-), Refund from Merchant (+)
-- pocket_expense_metadata types: category, tracking_code_type_1, tracking_code_type_2, project, additional_field, file, expense_source
-- Permission hierarchy: Primary Admin > Admin > Business User / Card User
-- user_feature_permission: grants feature access per (user_id, client_id, feature_id) with optional manager_user_id
-- CSV validation: synchronous, all-or-nothing, max 200 rows, errors array with line_number/field/error/value
-- Background sync: validated rows stored in pocket_expense_uploads_data, ProcessExpenseUpload job syncs in batches of 100
 """
 
     def __init__(self, **kwargs):
@@ -139,18 +123,6 @@ DOMAIN-SPECIFIC IMPLEMENTATION NOTES:
         # Engineer needs multiple loops to write all files
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=50)
-
-        # File processing order:
-        # 1. Migrations (pocket_expense, pocket_expense_metadata, user_feature_permission, etc.)
-        # 2. Models (PocketExpense, PocketExpenseMetadata, PocketExpenseFileUpload, etc.)
-        # 3. Policies (PocketExpensePolicy, UserFeaturePermissionPolicy)
-        # 4. FormRequests (UploadPocketExpenseCSVRequest, StorePocketExpenseRequest, etc.)
-        # 5. Services (PocketExpenseCSVValidator, FXConversionService, etc.)
-        # 6. Controllers (PocketExpenseUploadController, PocketExpenseController, etc.)
-        # 7. Routes (routes/api.php)
-        # 8. Resources (PocketExpenseResource, ValidationErrorResource, etc.)
-        # 9. Jobs (ProcessExpenseUpload)
-        # 10. Tests
 
     def _load_requirements(self) -> dict:
         """Load all three OOP Expense requirement JSON files"""
@@ -278,6 +250,8 @@ LOADED IMPLEMENTATION REQUIREMENTS FROM JSON:
     def _format_fx_flow(self, fx: dict) -> str:
         lines = []
         for step_key, step_val in fx.items():
+            if not isinstance(step_val, dict):
+                continue
             name = step_val.get('name', step_key)
             flow_items = step_val.get('flow', [])
             lines.append(f"  {name}: {' → '.join(flow_items[:4])}{'...' if len(flow_items) > 4 else ''}")

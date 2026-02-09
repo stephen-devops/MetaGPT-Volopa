@@ -42,7 +42,7 @@ class LaravelArchitect(Architect):
     ARCHITECTURE DESIGN DOS - Always Design These Patterns:
 
     1. Controller-Service Separation:
-       - Design thin controllers (routing, validation, authorization only)
+       - Design thin controllers (routing, validation, authorization)
        - Design service layer for all business logic
        - Controllers delegate to services, services contain domain logic
 
@@ -59,25 +59,21 @@ class LaravelArchitect(Architect):
        - Design proper HTTP status codes (201 Created, 200 OK, 204 No Content, 422 Validation, 403 Forbidden, 404 Not Found)
 
     4. Async Processing:
-       - Design async processing (queue jobs) for CSV bulk upload (max 200 rows)
+       - Design async processing (queue jobs) for large file operations
        - Design immediate response + background sync pattern (batch of 100)
-       - pocket_expense_uploads_data stores validated rows locally, background job syncs to main service
 
     5. Validation & Authorization:
        - Design FormRequests for ALL validation (not in controllers)
        - Design Policies for ALL authorization checks
        - FormRequests check "can this be done", Policies check "can this user do it"
-       - Design PocketExpenseCSVValidator service for row-level CSV validation
 
     6. Caching Strategy:
        - Design caching for reference data (currencies, expense types, countries, sources)
        - Design cache invalidation strategy
-       - PocketExpenseCSVValidator should preload and cache reference data
 
     7. API Versioning & Security:
        - Design routes under /api with Oauth2UserClient middleware
        - Design client data isolation (all queries filtered by client_id)
-       - Design permission checks via user_feature_permission table
 
     ARCHITECTURE DESIGN DONTS - Never Design These Anti-Patterns:
 
@@ -104,27 +100,19 @@ class LaravelArchitect(Architect):
     5. Security Anti-Patterns:
        - Don't design endpoints without authentication
        - Don't design data access without client_id filtering (tenant isolation)
-       - Don't design authorization without permission checks via user_feature_permission
+       - Don't design authorization without Policies or permission checks
 
     LARAVEL FILE STRUCTURE (Design Specifications):
-    - routes/api.php: All API routes with Oauth2UserClient middleware
+    - routes/api.php: All API routes under /api/v1 prefix
     - app/Http/Controllers/Api/: Thin controllers (routing only)
     - app/Http/Requests/: FormRequests (validation + authorization)
-    - app/Services/: Business logic services (PocketExpenseCSVValidator, FX, etc.)
-    - app/Models/: Eloquent models (PocketExpense, PocketExpenseMetadata, etc.)
+    - app/Services/: Business logic services (domain operations)
+    - app/Models/: Eloquent models (data access + relationships)
     - database/migrations/: Schema with indexes, foreign keys, constraints
     - app/Http/Resources/: API Resources (response transformers)
     - app/Policies/: Authorization policies (permission checks)
-    - app/Jobs/: Async jobs (ProcessExpenseUpload, etc.)
-    - app/Notifications/: User notifications (upload completion)
-
-    VOLOPA OOP-SPECIFIC REQUIREMENTS:
-    - Oauth2UserClient authentication middleware
-    - Client data isolation (client_id on all tables)
-    - Permission delegation hierarchy (Primary Admin → Admin → managed users)
-    - user_feature_permission table for RBAC
-    - Multi-tenant architecture (client_id scoping)
-    - All-or-nothing CSV validation (no partial creates)
+    - app/Jobs/: Async jobs (queue processing)
+    - app/Notifications/: User notifications
 
     DESIGN DOCUMENTATION FORMAT:
     - Keep design documentation concise
@@ -217,7 +205,8 @@ LOADED ARCHITECTURAL REQUIREMENTS FROM JSON:
     def _format_er_diagram(self, er: dict) -> str:
         lines = []
         entities = er.get('entities', [])
-        lines.append(f"Entities: {', '.join(entities)}")
+        entity_names = [e['name'] if isinstance(e, dict) else e for e in entities]
+        lines.append(f"Entities: {', '.join(entity_names)}")
         lines.append("Relationships:")
         for rel in er.get('relationships', []):
             lines.append(f"  {rel['from']} --[{rel['type']}]--> {rel['to']} : {rel['label']}")
@@ -284,9 +273,13 @@ LOADED ARCHITECTURAL REQUIREMENTS FROM JSON:
         lines = []
         for step in fp.get('steps', []):
             lines.append(f"\nStep {step.get('step', '?')}: {step.get('name', '')}")
-            for detail in step.get('details', []):
-                if isinstance(detail, str):
-                    lines.append(f"  - {detail}")
+            details = step.get('details', [])
+            if isinstance(details, str):
+                lines.append(f"  - {details}")
+            elif isinstance(details, list):
+                for detail in details:
+                    if isinstance(detail, str):
+                        lines.append(f"  - {detail}")
             if 'on_error' in step:
                 lines.append(f"  On Error: {step['on_error'].get('actions', [])}")
             if 'on_success' in step:

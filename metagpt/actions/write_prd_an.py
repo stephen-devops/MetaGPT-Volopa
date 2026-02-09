@@ -48,7 +48,7 @@ PROJECT_NAME = ActionNode(
 PRODUCT_GOALS = ActionNode(
     key="Product Goals",
     expected_type=List[str],
-    instruction="Provide up to three clear, orthogonal product goals.",
+    instruction="Provide up to ten clear, orthogonal product goals.",
     example=["Create an engaging user experience", "Improve accessibility, be responsive", "More beautiful UI"],
 )
 
@@ -67,7 +67,7 @@ REFINED_PRODUCT_GOALS = ActionNode(
 USER_STORIES = ActionNode(
     key="User Stories",
     expected_type=List[str],
-    instruction="Provide up to 3 to 5 scenario-based user stories.",
+    instruction="Provide ALL possible scenario-based user stories.",
     example=[
         "As a player, I want to be able to choose difficulty levels",
         "As a player, I want to see my score after each game",

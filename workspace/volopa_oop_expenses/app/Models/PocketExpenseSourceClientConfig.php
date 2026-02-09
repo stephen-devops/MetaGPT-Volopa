@@ -8,89 +8,47 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
 
-/**
- * PocketExpenseSourceClientConfig Model
- * 
- * Manages expense source configurations for clients.
- * Supports global sources (client_id = null) and client-specific sources.
- * Includes soft delete functionality with custom delete_time field.
- * 
- * @property int $id
- * @property string $uuid
- * @property int|null $client_id
- * @property string $name
- * @property bool $is_default
- * @property bool $deleted
- * @property Carbon|null $delete_time
- * @property Carbon $create_time
- * @property Carbon $update_time
- * 
- * @property-read Client|null $client
- * @property-read Collection|PocketExpenseMetadata[] $expenseMetadata
- */
 class PocketExpenseSourceClientConfig extends Model
 {
     use HasFactory;
 
     /**
      * The table associated with the model.
-     *
-     * @var string
      */
     protected $table = 'pocket_expense_source_client_config';
 
     /**
-     * Indicates if the model should be timestamped.
-     *
-     * @var bool
-     */
-    public $timestamps = false;
-
-    /**
-     * The name of the "created at" column.
-     *
-     * @var string|null
-     */
-    const CREATED_AT = 'create_time';
-
-    /**
-     * The name of the "updated at" column.
-     *
-     * @var string|null
-     */
-    const UPDATED_AT = 'update_time';
-
-    /**
      * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
      */
     protected $fillable = [
-        'uuid',
         'client_id',
         'name',
         'is_default',
-        'deleted',
-        'delete_time',
+        'is_other',
+        'is_system',
+        'sort_order',
+    ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     */
+    protected $hidden = [
+        // No hidden attributes for this model
     ];
 
     /**
      * The attributes that should be cast.
-     *
-     * @var array<string, string>
      */
     protected $casts = [
-        'id' => 'integer',
-        'uuid' => 'string',
         'client_id' => 'integer',
-        'name' => 'string',
         'is_default' => 'boolean',
+        'is_other' => 'boolean',
+        'is_system' => 'boolean',
+        'sort_order' => 'integer',
         'deleted' => 'boolean',
         'delete_time' => 'datetime',
         'create_time' => 'datetime',
@@ -98,53 +56,55 @@ class PocketExpenseSourceClientConfig extends Model
     ];
 
     /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
+     * The attributes that are not mass assignable.
      */
-    protected $hidden = [];
+    protected $guarded = [
+        'id',
+        'uuid',
+        'deleted',
+        'delete_time',
+        'create_time',
+        'update_time',
+    ];
 
     /**
      * The model's default values for attributes.
-     *
-     * @var array<string, mixed>
      */
     protected $attributes = [
         'is_default' => false,
+        'is_other' => false,
+        'is_system' => false,
+        'sort_order' => 100,
         'deleted' => false,
     ];
 
     /**
-     * Global source names that cannot be deleted.
+     * Indicates if the model should use timestamps.
      */
-    public const GLOBAL_SOURCES = [
+    public $timestamps = false;
+
+    /**
+     * Default expense sources that are created when a client enables the feature.
+     */
+    const DEFAULT_SOURCES = [
         'Cash',
         'Corporate Card',
         'Personal Card',
-        'Other',
     ];
 
     /**
-     * The "Other" source name constant.
+     * Maximum number of active sources allowed per client.
      */
-    public const OTHER_SOURCE_NAME = 'Other';
+    const MAX_ACTIVE_SOURCES_PER_CLIENT = 20;
 
     /**
-     * Maximum number of active sources per client (excluding global).
+     * Boot the model.
      */
-    public const MAX_ACTIVE_PER_CLIENT = 20;
-
-    /**
-     * Bootstrap the model and its traits.
-     *
-     * @return void
-     */
-    protected static function boot(): void
+    protected static function boot()
     {
         parent::boot();
 
-        // Automatically generate UUID when creating
-        static::creating(function (self $model) {
+        static::creating(function ($model) {
             if (empty($model->uuid)) {
                 $model->uuid = (string) Str::uuid();
             }
@@ -158,25 +118,13 @@ class PocketExpenseSourceClientConfig extends Model
             }
         });
 
-        // Update the update_time when saving
-        static::updating(function (self $model) {
+        static::updating(function ($model) {
             $model->update_time = now();
-        });
-
-        // Clear cache when sources are modified
-        static::saved(function () {
-            static::clearCache();
-        });
-
-        static::deleted(function () {
-            static::clearCache();
         });
     }
 
     /**
-     * Get the client that owns this expense source configuration.
-     *
-     * @return BelongsTo
+     * Get the client that owns the source configuration.
      */
     public function client(): BelongsTo
     {
@@ -184,54 +132,7 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Get all expense metadata records that use this source.
-     *
-     * @return HasMany
-     */
-    public function expenseMetadata(): HasMany
-    {
-        return $this->hasMany(PocketExpenseMetadata::class, 'expense_source_id', 'id');
-    }
-
-    /**
-     * Scope a query to only include non-deleted records.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeActive(Builder $query): Builder
-    {
-        return $query->where('deleted', false);
-    }
-
-    /**
-     * Scope a query to only include deleted records.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeDeleted(Builder $query): Builder
-    {
-        return $query->where('deleted', true);
-    }
-
-    /**
-     * Scope a query to only include global sources.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeGlobal(Builder $query): Builder
-    {
-        return $query->whereNull('client_id');
-    }
-
-    /**
-     * Scope a query to filter by client.
-     *
-     * @param Builder $query
-     * @param int $clientId
-     * @return Builder
+     * Scope a query to only include sources for a specific client.
      */
     public function scopeForClient(Builder $query, int $clientId): Builder
     {
@@ -239,25 +140,23 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Scope a query to include sources available for a client (global + client-specific).
-     *
-     * @param Builder $query
-     * @param int $clientId
-     * @return Builder
+     * Scope a query to exclude soft deleted records.
      */
-    public function scopeAvailableForClient(Builder $query, int $clientId): Builder
+    public function scopeNotDeleted(Builder $query): Builder
     {
-        return $query->where(function (Builder $subQuery) use ($clientId) {
-            $subQuery->whereNull('client_id')
-                ->orWhere('client_id', $clientId);
-        });
+        return $query->where('deleted', false);
+    }
+
+    /**
+     * Scope a query to include only soft deleted records.
+     */
+    public function scopeDeleted(Builder $query): Builder
+    {
+        return $query->where('deleted', true);
     }
 
     /**
      * Scope a query to only include default sources.
-     *
-     * @param Builder $query
-     * @return Builder
      */
     public function scopeDefault(Builder $query): Builder
     {
@@ -266,9 +165,6 @@ class PocketExpenseSourceClientConfig extends Model
 
     /**
      * Scope a query to only include non-default sources.
-     *
-     * @param Builder $query
-     * @return Builder
      */
     public function scopeNonDefault(Builder $query): Builder
     {
@@ -276,45 +172,111 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Scope a query to search by name.
-     *
-     * @param Builder $query
-     * @param string $name
-     * @return Builder
+     * Scope a query to only include "Other" sources.
      */
-    public function scopeByName(Builder $query, string $name): Builder
+    public function scopeOther(Builder $query): Builder
     {
-        return $query->where('name', $name);
+        return $query->where('is_other', true);
     }
 
     /**
-     * Scope a query to search by name (case insensitive).
-     *
-     * @param Builder $query
-     * @param string $name
-     * @return Builder
+     * Scope a query to exclude "Other" sources.
      */
-    public function scopeByNameInsensitive(Builder $query, string $name): Builder
+    public function scopeNonOther(Builder $query): Builder
     {
-        return $query->whereRaw('LOWER(name) = LOWER(?)', [$name]);
+        return $query->where('is_other', false);
     }
 
     /**
-     * Scope a query to search by UUID.
-     *
-     * @param Builder $query
-     * @param string $uuid
-     * @return Builder
+     * Scope a query to only include system sources.
      */
-    public function scopeByUuid(Builder $query, string $uuid): Builder
+    public function scopeSystem(Builder $query): Builder
     {
-        return $query->where('uuid', $uuid);
+        return $query->where('is_system', true);
     }
 
     /**
-     * Check if this source is global (not client-specific).
-     *
-     * @return bool
+     * Scope a query to exclude system sources.
+     */
+    public function scopeNonSystem(Builder $query): Builder
+    {
+        return $query->where('is_system', false);
+    }
+
+    /**
+     * Scope a query to only include global sources (client_id is null).
+     */
+    public function scopeGlobal(Builder $query): Builder
+    {
+        return $query->whereNull('client_id');
+    }
+
+    /**
+     * Scope a query to exclude global sources.
+     */
+    public function scopeClientSpecific(Builder $query): Builder
+    {
+        return $query->whereNotNull('client_id');
+    }
+
+    /**
+     * Scope a query to order sources by sort order.
+     */
+    public function scopeOrderBySortOrder(Builder $query, string $direction = 'asc'): Builder
+    {
+        return $query->orderBy('sort_order', $direction);
+    }
+
+    /**
+     * Scope a query to order sources by name.
+     */
+    public function scopeOrderByName(Builder $query, string $direction = 'asc'): Builder
+    {
+        return $query->orderBy('name', $direction);
+    }
+
+    /**
+     * Scope a query to search sources by name.
+     */
+    public function scopeSearchByName(Builder $query, string $search): Builder
+    {
+        return $query->where('name', 'LIKE', '%' . $search . '%');
+    }
+
+    /**
+     * Scope a query to get active sources (not deleted, ordered by sort_order).
+     */
+    public function scopeActive(Builder $query): Builder
+    {
+        return $query->notDeleted()->orderBySortOrder();
+    }
+
+    /**
+     * Check if the source is default.
+     */
+    public function isDefault(): bool
+    {
+        return $this->is_default === true;
+    }
+
+    /**
+     * Check if the source is "Other".
+     */
+    public function isOther(): bool
+    {
+        return $this->is_other === true;
+    }
+
+    /**
+     * Check if the source is system-managed.
+     */
+    public function isSystem(): bool
+    {
+        return $this->is_system === true;
+    }
+
+    /**
+     * Check if the source is global (applies to all clients).
      */
     public function isGlobal(): bool
     {
@@ -322,9 +284,7 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Check if this source is client-specific.
-     *
-     * @return bool
+     * Check if the source is client-specific.
      */
     public function isClientSpecific(): bool
     {
@@ -332,69 +292,31 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Check if this source is the "Other" source.
-     *
-     * @return bool
-     */
-    public function isOtherSource(): bool
-    {
-        return $this->name === self::OTHER_SOURCE_NAME;
-    }
-
-    /**
-     * Check if this source is a default source.
-     *
-     * @return bool
-     */
-    public function isDefault(): bool
-    {
-        return $this->is_default;
-    }
-
-    /**
-     * Check if this source is deleted (soft deleted).
-     *
-     * @return bool
+     * Check if the source is soft deleted.
      */
     public function isDeleted(): bool
     {
-        return $this->deleted;
+        return $this->deleted === true;
     }
 
     /**
-     * Check if this source is active (not deleted).
-     *
-     * @return bool
-     */
-    public function isActive(): bool
-    {
-        return !$this->deleted;
-    }
-
-    /**
-     * Check if this source can be deleted.
-     *
-     * @return bool
+     * Check if the source can be deleted.
      */
     public function canBeDeleted(): bool
     {
-        // Global sources cannot be deleted
-        if ($this->isGlobal()) {
-            return false;
-        }
-
-        // Already deleted sources cannot be deleted again
-        if ($this->isDeleted()) {
-            return false;
-        }
-
-        return true;
+        return !$this->isSystem() && !$this->isOther();
     }
 
     /**
-     * Soft delete this source.
-     *
-     * @return bool
+     * Check if the source can be edited.
+     */
+    public function canBeEdited(): bool
+    {
+        return !$this->isSystem() && !$this->isOther();
+    }
+
+    /**
+     * Soft delete the source.
      */
     public function softDelete(): bool
     {
@@ -404,201 +326,201 @@ class PocketExpenseSourceClientConfig extends Model
 
         $this->deleted = true;
         $this->delete_time = now();
-        
         return $this->save();
     }
 
     /**
-     * Restore this soft deleted source.
-     *
-     * @return bool
+     * Restore the soft deleted source.
      */
     public function restore(): bool
     {
-        if (!$this->isDeleted()) {
-            return false;
-        }
-
         $this->deleted = false;
         $this->delete_time = null;
-        
         return $this->save();
     }
 
     /**
-     * Get the display name for this source.
-     *
-     * @return string
+     * Mark the source as default.
      */
-    public function getDisplayName(): string
+    public function markAsDefault(): bool
     {
-        return $this->name;
-    }
-
-    /**
-     * Get the full description including client context.
-     *
-     * @return string
-     */
-    public function getFullDescription(): string
-    {
-        if ($this->isGlobal()) {
-            return sprintf('%s (Global)', $this->name);
+        if ($this->isSystem() || $this->isOther()) {
+            return false;
         }
 
-        return sprintf('%s (Client: %d)', $this->name, $this->client_id);
+        // Remove default flag from other sources for the same client
+        if ($this->client_id) {
+            static::forClient($this->client_id)
+                ->where('id', '!=', $this->id)
+                ->update(['is_default' => false]);
+        }
+
+        $this->is_default = true;
+        return $this->save();
     }
 
     /**
-     * Get all sources available for a client (active only).
-     *
-     * @param int $clientId
-     * @return Collection
+     * Remove the default flag from this source.
      */
-    public static function getAvailableForClient(int $clientId): Collection
+    public function removeDefault(): bool
     {
-        return static::active()
-            ->availableForClient($clientId)
-            ->orderBy('is_default', 'desc')
-            ->orderBy('name')
-            ->get();
+        $this->is_default = false;
+        return $this->save();
     }
 
     /**
-     * Get all global sources (active only).
-     *
-     * @return Collection
+     * Update the sort order.
      */
-    public static function getGlobalSources(): Collection
+    public function updateSortOrder(int $sortOrder): bool
     {
-        return static::active()
-            ->global()
-            ->orderBy('is_default', 'desc')
-            ->orderBy('name')
-            ->get();
+        $this->sort_order = $sortOrder;
+        return $this->save();
     }
 
     /**
-     * Get all client-specific sources (active only).
-     *
-     * @param int $clientId
-     * @return Collection
+     * Check if the source belongs to a specific client.
      */
-    public static function getClientSources(int $clientId): Collection
+    public function belongsToClient(int $clientId): bool
     {
-        return static::active()
-            ->forClient($clientId)
-            ->orderBy('is_default', 'desc')
-            ->orderBy('name')
-            ->get();
+        return $this->client_id === $clientId;
     }
 
     /**
-     * Find a source by name for a specific client (includes global sources).
-     *
-     * @param string $name
-     * @param int $clientId
-     * @return static|null
+     * Get the age of the source in days.
      */
-    public static function findByNameForClient(string $name, int $clientId): ?static
+    public function getAgeInDaysAttribute(): int
     {
-        return static::active()
-            ->availableForClient($clientId)
-            ->byName($name)
-            ->first();
+        return now()->diffInDays($this->create_time);
     }
 
     /**
-     * Find a source by name for a specific client (case insensitive).
-     *
-     * @param string $name
-     * @param int $clientId
-     * @return static|null
+     * Check if the source is older than the specified number of days.
      */
-    public static function findByNameForClientInsensitive(string $name, int $clientId): ?static
+    public function isOlderThan(int $days): bool
     {
-        return static::active()
-            ->availableForClient($clientId)
-            ->byNameInsensitive($name)
-            ->first();
+        return $this->getAgeInDaysAttribute() > $days;
     }
 
     /**
-     * Find a source by UUID.
-     *
-     * @param string $uuid
-     * @return static|null
+     * Get all active sources for a client (including global "Other").
      */
-    public static function findByUuid(string $uuid): ?static
+    public static function getActiveSourcesForClient(int $clientId): \Illuminate\Database\Eloquent\Collection
     {
-        return static::active()->byUuid($uuid)->first();
+        // Get client-specific sources
+        $clientSources = static::forClient($clientId)
+                            ->active()
+                            ->get();
+
+        // Get global "Other" source
+        $otherSource = static::global()
+                         ->other()
+                         ->active()
+                         ->first();
+
+        $sources = $clientSources;
+        if ($otherSource) {
+            $sources->push($otherSource);
+        }
+
+        return $sources->sortBy('sort_order')->values();
     }
 
     /**
-     * Get the "Other" source (global).
-     *
-     * @return static|null
+     * Get the default source for a client.
      */
-    public static function getOtherSource(): ?static
+    public static function getDefaultSourceForClient(int $clientId): ?self
     {
-        return static::active()
-            ->global()
-            ->byName(self::OTHER_SOURCE_NAME)
-            ->first();
+        return static::forClient($clientId)
+                    ->default()
+                    ->active()
+                    ->first();
     }
 
     /**
-     * Get default sources for a client.
-     *
-     * @param int $clientId
-     * @return Collection
+     * Get the global "Other" source.
      */
-    public static function getDefaultSourcesForClient(int $clientId): Collection
+    public static function getGlobalOtherSource(): ?self
     {
-        return static::active()
-            ->availableForClient($clientId)
-            ->default()
-            ->orderBy('name')
-            ->get();
+        return static::global()
+                    ->other()
+                    ->active()
+                    ->first();
     }
 
     /**
-     * Count active sources for a client (excluding global).
-     *
-     * @param int $clientId
-     * @return int
+     * Create default sources for a client when they enable the feature.
      */
-    public static function countClientSources(int $clientId): int
+    public static function createDefaultSourcesForClient(int $clientId): \Illuminate\Database\Eloquent\Collection
     {
-        return static::active()
-            ->forClient($clientId)
-            ->count();
+        $sources = collect();
+        $sortOrder = 10;
+
+        foreach (static::DEFAULT_SOURCES as $index => $sourceName) {
+            $source = static::create([
+                'client_id' => $clientId,
+                'name' => $sourceName,
+                'is_default' => $index === 0, // First source is default
+                'is_other' => false,
+                'is_system' => false,
+                'sort_order' => $sortOrder,
+            ]);
+
+            $sources->push($source);
+            $sortOrder += 10;
+        }
+
+        return $sources;
     }
 
     /**
-     * Check if a client can add more sources.
-     *
-     * @param int $clientId
-     * @return bool
+     * Find a source by name for a client.
      */
-    public static function canAddMoreSources(int $clientId): bool
+    public static function findByNameForClient(string $name, int $clientId): ?self
     {
-        return static::countClientSources($clientId) < self::MAX_ACTIVE_PER_CLIENT;
+        // First try client-specific sources
+        $source = static::forClient($clientId)
+                        ->where('name', $name)
+                        ->active()
+                        ->first();
+
+        // If not found and name is "Other", try global source
+        if (!$source && strtolower($name) === 'other') {
+            $source = static::getGlobalOtherSource();
+        }
+
+        return $source;
     }
 
     /**
-     * Validate if a source name is available for a client.
-     *
-     * @param string $name
-     * @param int $clientId
-     * @param int|null $excludeId
-     * @return bool
+     * Check if a client has reached the maximum number of sources.
      */
-    public static function isNameAvailableForClient(string $name, int $clientId, ?int $excludeId = null): bool
+    public static function hasReachedMaxSourcesForClient(int $clientId): bool
     {
-        $query = static::active()
-            ->availableForClient($clientId)
-            ->byNameInsensitive($name);
+        $activeCount = static::forClient($clientId)
+                            ->active()
+                            ->count();
+
+        return $activeCount >= static::MAX_ACTIVE_SOURCES_PER_CLIENT;
+    }
+
+    /**
+     * Get the count of active sources for a client.
+     */
+    public static function getActiveSourceCountForClient(int $clientId): int
+    {
+        return static::forClient($clientId)
+                    ->active()
+                    ->count();
+    }
+
+    /**
+     * Validate if a source name is unique for a client.
+     */
+    public static function isNameUniqueForClient(string $name, int $clientId, int $excludeId = null): bool
+    {
+        $query = static::forClient($clientId)
+                      ->where('name', $name)
+                      ->active();
 
         if ($excludeId) {
             $query->where('id', '!=', $excludeId);
@@ -608,12 +530,57 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Get sources as key-value pairs for dropdowns.
-     *
-     * @param int $clientId
-     * @return array<int, string>
+     * Get the next available sort order for a client.
      */
-    public static function getOptionsForDropdown(int $clientId): array
+    public static function getNextSortOrderForClient(int $clientId): int
     {
-        return static::getAvailableForClient($clientId)
-            
+        $maxSortOrder = static::forClient($clientId)
+                             ->active()
+                             ->max('sort_order');
+
+        return ($maxSortOrder ?? 0) + 10;
+    }
+
+    /**
+     * Reorder sources for a client.
+     */
+    public static function reorderSourcesForClient(int $clientId, array $sourceIds): bool
+    {
+        $sortOrder = 10;
+        
+        foreach ($sourceIds as $sourceId) {
+            $source = static::where('id', $sourceId)
+                           ->where('client_id', $clientId)
+                           ->first();
+
+            if ($source && $source->canBeEdited()) {
+                $source->updateSortOrder($sortOrder);
+                $sortOrder += 10;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Get sources with statistics for a client.
+     */
+    public static function getSourcesWithStatsForClient(int $clientId): array
+    {
+        $sources = static::getActiveSourcesForClient($clientId);
+        
+        return [
+            'sources' => $sources,
+            'total_count' => $sources->count(),
+            'client_specific_count' => $sources->where('client_id', $clientId)->count(),
+            'default_source' => $sources->where('is_default', true)->first(),
+            'has_other' => $sources->where('is_other', true)->isNotEmpty(),
+            'can_add_more' => !static::hasReachedMaxSourcesForClient($clientId),
+            'max_allowed' => static::MAX_ACTIVE_SOURCES_PER_CLIENT,
+        ];
+    }
+
+    /**
+     * Duplicate a source (create a copy with a new name).
+     */
+    public function duplicate(string $newName): ?self

@@ -8,7 +8,6 @@
 
 import json
 from pathlib import Path
-from typing import Dict, Any
 from metagpt.roles.product_manager import ProductManager
 
 
@@ -21,17 +20,12 @@ class LaravelProductManager(ProductManager):
     - Create PRDs with Laravel-specific technical specifications
     - Specify API endpoints, validation rules, and business logic
     - Define user stories and acceptance criteria
-
-    Domain Modules:
-    - User Management: Role hierarchy, permission metrics, access control flows
-    - Pocket Expense (CSV Upload): Bulk upload, CSV validation, error handling
-    - Expense Single Data Capturing: Single entry, FX conversion, metadata, source config
     """
 
     use_fixed_sop: bool = True
     name: str = "Joshua"
     profile: str = "Laravel Product Manager"
-    goal: str = "Create comprehensive PRD for Volopa OOP Expense system (User Management, Pocket Expense CSV Upload, Single Expense Capturing)"
+    goal: str = "Create comprehensive PRD for Laravel PHP system from constraints and loaded JSON input"
 
     constraints: str = """
     - Use same language as user requirements
@@ -44,27 +38,6 @@ class LaravelProductManager(ProductManager):
       * Authentication requirements (OAuth2 via Oauth2UserClient)
       * Validation rules for FormRequests
       * Business logic separation (controllers vs services)
-    - Prioritize requirements clearly (P0: Must-have, P1: Should-have, P2: Nice-to-have)
-    - Include Laravel composer package requirements
-
-    DOMAIN ENTITIES:
-    - Users (Primary Administrator, Administrator, Business User, Card User)
-    - Clients (multi-tenant, all data scoped by client_id)
-    - Features & user_feature_permission (RBAC via feature flags)
-    - pocket_expense (single expense records with status workflow: draft → submitted → approved → rejected)
-    - pocket_expense_metadata (flexible metadata: category, tracking codes, project, file, expense_source)
-    - opt_pocket_expense_type (ATM Withdrawal, Point of Sale, Fee & Charges, Refund from Merchant)
-    - pocket_expense_source_client_config (client-specific + global "Other" source)
-    - pocket_expense_file_uploads (CSV batch upload tracking with status lifecycle)
-    - pocket_expense_uploads_data (local storage for background sync)
-    - oop_expenses (expenses with approval workflow)
-
-    KEY BUSINESS RULES:
-    - All-or-nothing CSV validation: if any row fails, no expenses are created
-    - Permission delegation: Primary Admin → Admin → managed users
-    - Expense sources: 3 defaults (Cash, Corporate Card, Personal Card) + global "Other" + max 20 active per client
-    - FX conversion: debounced API call, 30-day lookback, client commission adjustment
-    - Managing rights revocation: user loses access, base user falls back to Primary Admin management
     """
 
     def __init__(self, **kwargs):
@@ -165,6 +138,8 @@ EXPECTED PRD OUTPUT SECTIONS:
             perms = m.get('default_permissions', {})
             lines.append(f"  {role}:")
             for perm_key, perm_val in perms.items():
+                if perm_key == 'origin':
+                    continue
                 lines.append(f"    {perm_key}: {perm_val}")
             if 'with_management_rights' in m:
                 lines.append(f"    with_management_rights: {m['with_management_rights']}")
@@ -191,7 +166,9 @@ EXPECTED PRD OUTPUT SECTIONS:
             lines.append(f"  - {cap}")
 
         lines.append("\nEnd-to-End Flow:")
-        for step in pe.get('end_to_end_flow', []):
+        e2e = pe.get('end_to_end_flow', [])
+        e2e_steps = e2e.get('steps', []) if isinstance(e2e, dict) else e2e
+        for step in e2e_steps:
             if isinstance(step, str):
                 lines.append(f"  - {step}")
             elif isinstance(step, dict):
@@ -234,6 +211,8 @@ EXPECTED PRD OUTPUT SECTIONS:
     def _format_fx_flow(self, fx: dict) -> str:
         lines = []
         for step_key, step_val in fx.items():
+            if not isinstance(step_val, dict):
+                continue
             name = step_val.get('name', step_key)
             lines.append(f"  {name}:")
             for item in step_val.get('flow', []):

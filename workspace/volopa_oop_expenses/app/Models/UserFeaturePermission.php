@@ -1,3 +1,6 @@
+## Code: app/Models/UserFeaturePermission.php
+
+```php
 <?php
 
 namespace App\Models;
@@ -8,43 +11,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Builder;
 use Carbon\Carbon;
 
-/**
- * UserFeaturePermission Model
- * 
- * Manages user permissions for features within client contexts.
- * Implements role-based access control (RBAC) with hierarchical permissions.
- * 
- * @property int $id
- * @property int $user_id
- * @property int $client_id
- * @property int $feature_id
- * @property int|null $grantor_id
- * @property int|null $manager_user_id
- * @property bool $is_enabled
- * @property Carbon $created_at
- * @property Carbon $updated_at
- * 
- * @property-read User $user
- * @property-read Client $client
- * @property-read Feature $feature
- * @property-read User|null $grantor
- * @property-read User|null $manager
- */
 class UserFeaturePermission extends Model
 {
     use HasFactory;
 
     /**
      * The table associated with the model.
-     *
-     * @var string
      */
-    protected $table = 'user_feature_permission';
+    protected $table = 'user_feature_permissions';
 
     /**
      * The attributes that are mass assignable.
-     *
-     * @var array<int, string>
      */
     protected $fillable = [
         'user_id',
@@ -56,9 +33,14 @@ class UserFeaturePermission extends Model
     ];
 
     /**
+     * The attributes that should be hidden for serialization.
+     */
+    protected $hidden = [
+        // No hidden attributes for this model
+    ];
+
+    /**
      * The attributes that should be cast.
-     *
-     * @var array<string, string>
      */
     protected $casts = [
         'user_id' => 'integer',
@@ -72,25 +54,23 @@ class UserFeaturePermission extends Model
     ];
 
     /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
+     * The attributes that are not mass assignable.
      */
-    protected $hidden = [];
+    protected $guarded = [
+        'id',
+        'created_at',
+        'updated_at',
+    ];
 
     /**
      * The model's default values for attributes.
-     *
-     * @var array<string, mixed>
      */
     protected $attributes = [
         'is_enabled' => true,
     ];
 
     /**
-     * Get the user that owns this permission.
-     *
-     * @return BelongsTo
+     * Get the user that owns the permission.
      */
     public function user(): BelongsTo
     {
@@ -98,9 +78,7 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the client associated with this permission.
-     *
-     * @return BelongsTo
+     * Get the client associated with the permission.
      */
     public function client(): BelongsTo
     {
@@ -108,9 +86,7 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the feature associated with this permission.
-     *
-     * @return BelongsTo
+     * Get the feature associated with the permission.
      */
     public function feature(): BelongsTo
     {
@@ -118,9 +94,7 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the user who granted this permission.
-     *
-     * @return BelongsTo
+     * Get the user who granted the permission.
      */
     public function grantor(): BelongsTo
     {
@@ -128,9 +102,7 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the manager user associated with this permission.
-     *
-     * @return BelongsTo
+     * Get the manager user associated with the permission.
      */
     public function manager(): BelongsTo
     {
@@ -138,10 +110,47 @@ class UserFeaturePermission extends Model
     }
 
     /**
+     * Scope a query to only include permissions for a specific user.
+     */
+    public function scopeForUser(Builder $query, int $userId): Builder
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    /**
+     * Scope a query to only include permissions for a specific client.
+     */
+    public function scopeForClient(Builder $query, int $clientId): Builder
+    {
+        return $query->where('client_id', $clientId);
+    }
+
+    /**
+     * Scope a query to only include permissions for a specific feature.
+     */
+    public function scopeForFeature(Builder $query, int $featureId): Builder
+    {
+        return $query->where('feature_id', $featureId);
+    }
+
+    /**
+     * Scope a query to only include permissions granted by a specific user.
+     */
+    public function scopeGrantedBy(Builder $query, int $grantorId): Builder
+    {
+        return $query->where('grantor_id', $grantorId);
+    }
+
+    /**
+     * Scope a query to only include permissions managed by a specific user.
+     */
+    public function scopeManagedBy(Builder $query, int $managerId): Builder
+    {
+        return $query->where('manager_user_id', $managerId);
+    }
+
+    /**
      * Scope a query to only include enabled permissions.
-     *
-     * @param Builder $query
-     * @return Builder
      */
     public function scopeEnabled(Builder $query): Builder
     {
@@ -150,9 +159,6 @@ class UserFeaturePermission extends Model
 
     /**
      * Scope a query to only include disabled permissions.
-     *
-     * @param Builder $query
-     * @return Builder
      */
     public function scopeDisabled(Builder $query): Builder
     {
@@ -160,107 +166,74 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Scope a query to filter by user.
-     *
-     * @param Builder $query
-     * @param int $userId
-     * @return Builder
+     * Scope a query to include permissions for a specific user and client.
      */
-    public function scopeForUser(Builder $query, int $userId): Builder
+    public function scopeForUserAndClient(Builder $query, int $userId, int $clientId): Builder
     {
-        return $query->where('user_id', $userId);
+        return $query->where('user_id', $userId)
+                    ->where('client_id', $clientId);
     }
 
     /**
-     * Scope a query to filter by client.
-     *
-     * @param Builder $query
-     * @param int $clientId
-     * @return Builder
+     * Scope a query to include permissions for a specific user, client, and feature.
      */
-    public function scopeForClient(Builder $query, int $clientId): Builder
+    public function scopeForUserClientAndFeature(Builder $query, int $userId, int $clientId, int $featureId): Builder
     {
-        return $query->where('client_id', $clientId);
+        return $query->where('user_id', $userId)
+                    ->where('client_id', $clientId)
+                    ->where('feature_id', $featureId);
     }
 
     /**
-     * Scope a query to filter by feature.
-     *
-     * @param Builder $query
-     * @param int $featureId
-     * @return Builder
+     * Scope a query to order permissions by most recent first.
      */
-    public function scopeForFeature(Builder $query, int $featureId): Builder
+    public function scopeLatest(Builder $query): Builder
     {
-        return $query->where('feature_id', $featureId);
+        return $query->orderBy('created_at', 'desc');
     }
 
     /**
-     * Scope a query to filter by user, client, and feature.
-     *
-     * @param Builder $query
-     * @param int $userId
-     * @param int $clientId
-     * @param int $featureId
-     * @return Builder
+     * Scope a query to include permissions within a date range.
      */
-    public function scopeForUserClientFeature(Builder $query, int $userId, int $clientId, int $featureId): Builder
+    public function scopeInDateRange(Builder $query, Carbon $startDate, Carbon $endDate): Builder
     {
-        return $query->where([
-            'user_id' => $userId,
-            'client_id' => $clientId,
-            'feature_id' => $featureId,
-        ]);
+        return $query->whereBetween('created_at', [$startDate, $endDate]);
     }
 
     /**
-     * Scope a query to filter by manager user.
-     *
-     * @param Builder $query
-     * @param int $managerUserId
-     * @return Builder
+     * Scope a query to include permissions with manager assigned.
      */
-    public function scopeForManager(Builder $query, int $managerUserId): Builder
+    public function scopeWithManager(Builder $query): Builder
     {
-        return $query->where('manager_user_id', $managerUserId);
+        return $query->whereNotNull('manager_user_id');
     }
 
     /**
-     * Scope a query to filter by grantor.
-     *
-     * @param Builder $query
-     * @param int $grantorId
-     * @return Builder
+     * Scope a query to include permissions without manager assigned.
      */
-    public function scopeForGrantor(Builder $query, int $grantorId): Builder
+    public function scopeWithoutManager(Builder $query): Builder
     {
-        return $query->where('grantor_id', $grantorId);
+        return $query->whereNull('manager_user_id');
     }
 
     /**
      * Check if the permission is enabled.
-     *
-     * @return bool
      */
     public function isEnabled(): bool
     {
-        return $this->is_enabled;
+        return $this->is_enabled === true;
     }
 
     /**
      * Check if the permission is disabled.
-     *
-     * @return bool
      */
     public function isDisabled(): bool
     {
-        return !$this->is_enabled;
+        return $this->is_enabled === false;
     }
 
     /**
-     * Enable this permission.
-     *
-     * @return bool
+     * Enable the permission.
      */
     public function enable(): bool
     {
@@ -269,9 +242,7 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Disable this permission.
-     *
-     * @return bool
+     * Disable the permission.
      */
     public function disable(): bool
     {
@@ -280,9 +251,34 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Check if this permission has a manager assigned.
-     *
-     * @return bool
+     * Toggle the permission enabled status.
+     */
+    public function toggle(): bool
+    {
+        $this->is_enabled = !$this->is_enabled;
+        return $this->save();
+    }
+
+    /**
+     * Set the manager for this permission.
+     */
+    public function setManager(int $managerId): bool
+    {
+        $this->manager_user_id = $managerId;
+        return $this->save();
+    }
+
+    /**
+     * Remove the manager from this permission.
+     */
+    public function removeManager(): bool
+    {
+        $this->manager_user_id = null;
+        return $this->save();
+    }
+
+    /**
+     * Check if the permission has a manager assigned.
      */
     public function hasManager(): bool
     {
@@ -290,121 +286,222 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Check if this permission was granted by someone.
-     *
-     * @return bool
+     * Check if the permission belongs to a specific user.
      */
-    public function hasGrantor(): bool
+    public function belongsToUser(int $userId): bool
     {
-        return !is_null($this->grantor_id);
+        return $this->user_id === $userId;
     }
 
     /**
-     * Get a unique identifier for this permission combination.
-     *
-     * @return string
+     * Check if the permission belongs to a specific client.
      */
-    public function getPermissionKey(): string
+    public function belongsToClient(int $clientId): bool
     {
-        return sprintf(
-            'user:%d:client:%d:feature:%d',
-            $this->user_id,
-            $this->client_id,
-            $this->feature_id
-        );
+        return $this->client_id === $clientId;
     }
 
     /**
-     * Create or update a permission for the given parameters.
-     *
-     * @param array $attributes
-     * @return static
+     * Check if the permission is for a specific feature.
      */
-    public static function createOrUpdate(array $attributes): static
+    public function isForFeature(int $featureId): bool
     {
-        $permission = static::where([
-            'user_id' => $attributes['user_id'],
-            'client_id' => $attributes['client_id'],
-            'feature_id' => $attributes['feature_id'],
-        ])->first();
+        return $this->feature_id === $featureId;
+    }
 
+    /**
+     * Check if the permission was granted by a specific user.
+     */
+    public function wasGrantedBy(int $grantorId): bool
+    {
+        return $this->grantor_id === $grantorId;
+    }
+
+    /**
+     * Check if the permission is managed by a specific user.
+     */
+    public function isManagedBy(int $managerId): bool
+    {
+        return $this->manager_user_id === $managerId;
+    }
+
+    /**
+     * Get the age of the permission in days.
+     */
+    public function getAgeInDaysAttribute(): int
+    {
+        return now()->diffInDays($this->created_at);
+    }
+
+    /**
+     * Check if the permission is older than the specified number of days.
+     */
+    public function isOlderThan(int $days): bool
+    {
+        return $this->getAgeInDaysAttribute() > $days;
+    }
+
+    /**
+     * Check if a permission exists for the given user, client, and feature.
+     */
+    public static function exists(int $userId, int $clientId, int $featureId): bool
+    {
+        return static::forUserClientAndFeature($userId, $clientId, $featureId)->exists();
+    }
+
+    /**
+     * Find a permission for the given user, client, and feature.
+     */
+    public static function findForUserClientAndFeature(int $userId, int $clientId, int $featureId): ?self
+    {
+        return static::forUserClientAndFeature($userId, $clientId, $featureId)->first();
+    }
+
+    /**
+     * Create or update a permission for the given user, client, and feature.
+     */
+    public static function createOrUpdate(int $userId, int $clientId, int $featureId, int $grantorId, int $managerId = null, bool $isEnabled = true): self
+    {
+        $permission = static::findForUserClientAndFeature($userId, $clientId, $featureId);
+        
         if ($permission) {
-            $permission->fill($attributes);
-            $permission->save();
+            $permission->update([
+                'grantor_id' => $grantorId,
+                'manager_user_id' => $managerId,
+                'is_enabled' => $isEnabled,
+            ]);
             return $permission;
         }
-
-        return static::create($attributes);
+        
+        return static::create([
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'feature_id' => $featureId,
+            'grantor_id' => $grantorId,
+            'manager_user_id' => $managerId,
+            'is_enabled' => $isEnabled,
+        ]);
     }
 
     /**
-     * Check if a user has permission for a feature within a client context.
-     *
-     * @param int $userId
-     * @param int $clientId
-     * @param int $featureId
-     * @return bool
+     * Grant permission for the given user, client, and feature.
+     */
+    public static function grant(int $userId, int $clientId, int $featureId, int $grantorId, int $managerId = null): self
+    {
+        return static::createOrUpdate($userId, $clientId, $featureId, $grantorId, $managerId, true);
+    }
+
+    /**
+     * Revoke permission for the given user, client, and feature.
+     */
+    public static function revoke(int $userId, int $clientId, int $featureId): bool
+    {
+        $permission = static::findForUserClientAndFeature($userId, $clientId, $featureId);
+        
+        if ($permission) {
+            return $permission->delete();
+        }
+        
+        return true; // Permission doesn't exist, so consider it revoked
+    }
+
+    /**
+     * Check if a user has permission for a specific feature and client.
      */
     public static function hasPermission(int $userId, int $clientId, int $featureId): bool
     {
-        return static::enabled()
-            ->forUserClientFeature($userId, $clientId, $featureId)
-            ->exists();
+        return static::forUserClientAndFeature($userId, $clientId, $featureId)
+                    ->enabled()
+                    ->exists();
     }
 
     /**
-     * Get all enabled permissions for a user within a client context.
-     *
-     * @param int $userId
-     * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Collection
+     * Get all enabled permissions for a user and client.
      */
     public static function getUserPermissions(int $userId, int $clientId): \Illuminate\Database\Eloquent\Collection
     {
-        return static::enabled()
-            ->forUser($userId)
-            ->forClient($clientId)
-            ->with(['feature', 'manager', 'grantor'])
-            ->get();
+        return static::forUserAndClient($userId, $clientId)
+                    ->enabled()
+                    ->with(['feature'])
+                    ->get();
     }
 
     /**
-     * Get all permissions managed by a specific user.
-     *
-     * @param int $managerUserId
-     * @param int|null $clientId
-     * @return \Illuminate\Database\Eloquent\Collection
+     * Get all users who have permission for a specific feature and client.
      */
-    public static function getManagedPermissions(int $managerUserId, ?int $clientId = null): \Illuminate\Database\Eloquent\Collection
+    public static function getUsersWithPermission(int $clientId, int $featureId): \Illuminate\Database\Eloquent\Collection
     {
-        $query = static::enabled()
-            ->forManager($managerUserId)
-            ->with(['user', 'feature', 'client']);
-
-        if ($clientId) {
-            $query->forClient($clientId);
-        }
-
-        return $query->get();
+        return static::forClient($clientId)
+                    ->forFeature($featureId)
+                    ->enabled()
+                    ->with(['user'])
+                    ->get();
     }
 
     /**
-     * Bulk enable/disable permissions for multiple users.
-     *
-     * @param array $userIds
-     * @param int $clientId
-     * @param int $featureId
-     * @param bool $isEnabled
-     * @return int Number of affected rows
+     * Get permission statistics for a client.
      */
-    public static function bulkUpdatePermissions(array $userIds, int $clientId, int $featureId, bool $isEnabled): int
+    public static function getClientPermissionStats(int $clientId): array
     {
-        return static::whereIn('user_id', $userIds)
-            ->forClient($clientId)
-            ->forFeature($featureId)
-            ->update([
-                'is_enabled' => $isEnabled,
-                'updated_at' => now(),
-            ]);
+        $totalPermissions = static::forClient($clientId)->count();
+        $enabledPermissions = static::forClient($clientId)->enabled()->count();
+        $disabledPermissions = static::forClient($clientId)->disabled()->count();
+        $uniqueUsers = static::forClient($clientId)->distinct('user_id')->count('user_id');
+        $uniqueFeatures = static::forClient($clientId)->distinct('feature_id')->count('feature_id');
+        
+        return [
+            'total_permissions' => $totalPermissions,
+            'enabled_permissions' => $enabledPermissions,
+            'disabled_permissions' => $disabledPermissions,
+            'unique_users' => $uniqueUsers,
+            'unique_features' => $uniqueFeatures,
+            'enabled_percentage' => $totalPermissions > 0 ? round(($enabledPermissions / $totalPermissions) * 100, 2) : 0,
+        ];
     }
-}
+
+    /**
+     * Get permission statistics for a user.
+     */
+    public static function getUserPermissionStats(int $userId): array
+    {
+        $totalPermissions = static::forUser($userId)->count();
+        $enabledPermissions = static::forUser($userId)->enabled()->count();
+        $disabledPermissions = static::forUser($userId)->disabled()->count();
+        $uniqueClients = static::forUser($userId)->distinct('client_id')->count('client_id');
+        $uniqueFeatures = static::forUser($userId)->distinct('feature_id')->count('feature_id');
+        
+        return [
+            'total_permissions' => $totalPermissions,
+            'enabled_permissions' => $enabledPermissions,
+            'disabled_permissions' => $disabledPermissions,
+            'unique_clients' => $uniqueClients,
+            'unique_features' => $uniqueFeatures,
+            'enabled_percentage' => $totalPermissions > 0 ? round(($enabledPermissions / $totalPermissions) * 100, 2) : 0,
+        ];
+    }
+
+    /**
+     * Get permissions that need review (old permissions without recent updates).
+     */
+    public static function getNeedsReview(int $daysSinceUpdate = 90): \Illuminate\Database\Eloquent\Collection
+    {
+        return static::where('updated_at', '<', now()->subDays($daysSinceUpdate))
+                    ->enabled()
+                    ->with(['user', 'client', 'feature'])
+                    ->orderBy('updated_at', 'asc')
+                    ->get();
+    }
+
+    /**
+     * Get permissions granted by a specific user (hierarchical permissions).
+     */
+    public static function getGrantedByUser(int $grantorId): \Illuminate\Database\Eloquent\Collection
+    {
+        return static::grantedBy($grantorId)
+                    ->with(['user', 'client', 'feature'])
+                    ->orderBy('created_at', 'desc')
+                    ->get();
+    }
+
+    /**
+     * Get permissions managed by a specific user.
