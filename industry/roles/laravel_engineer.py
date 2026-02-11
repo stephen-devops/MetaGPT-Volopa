@@ -32,9 +32,9 @@ class LaravelEngineer(Engineer):
 
     constraints: str = """
 CRITICAL OUTPUT FORMAT REQUIREMENT:
-- Development Plan: List ONLY filenames to be created (e.g., "app/Models/PocketExpense.php")
+- Development Plan: List ONLY filenames to be created (e.g., "app/Models/{ModelName}.php")
 - Incremental Change: For EACH file, provide ONLY this simple format:
-  "app/Models/PocketExpense.php: Create Eloquent model with relationships"
+  "app/Models/{ModelName}.php: Create Eloquent model with relationships"
 
 DO NOT generate actual code, diff blocks, or full file contents in the Incremental Change section.
 Keep each Incremental Change entry to ONE line with filename and brief description only.
@@ -42,12 +42,12 @@ Keep each Incremental Change entry to ONE line with filename and brief descripti
 Example correct format:
 {
   "Development Plan": [
-    "app/Models/MyModel.php",
-    "app/Services/MyValidator.php"
+    "app/Models/{ModelName}.php",
+    "app/Services/{ServiceName}.php"
   ],
   "Incremental Change": [
-    "app/Models/MyModel.php: Eloquent model with UUID, relationships to metadata/user/client, soft deletes",
-    "app/Services/MyValidator.php: CSV validation with preloaded reference data, all-or-nothing"
+    "app/Models/{ModelName}.php: Eloquent model with UUID, relationships to metadata/user/client, soft deletes",
+    "app/Services/{ServiceName}.php: CSV validation with preloaded reference data, all-or-nothing"
   ]
 }
 
@@ -58,11 +58,11 @@ API Resource (shape output) → JSON with correct status codes and error format
 
 DOS - Always Follow These Practices:
 - Add routes to routes/api.php with Oauth2UserClient middleware
-- Keep route names consistent (e.g., uploads.pocket-expense.csv)
+- Keep route names consistent (derive from API contract route paths in JSON)
 - Write migrations with proper indexes, unique constraints, and foreign keys
 - Add Eloquent model relationships (hasMany, belongsTo, etc.)
 - Validate all request content in FormRequests (not controllers)
-- Use Policies or Gates for authorization checks via user_feature_permission
+- Use Policies or Gates for authorization checks via the permission table defined in JSON
 - Keep controllers thin - push business logic into services or models
 - Use DB::transaction() when touching multiple tables
 - Return proper HTTP status codes:
@@ -142,133 +142,94 @@ DON'TS - Never Do These:
         return loaded
 
     def _update_constraints_from_requirements(self):
-        """Inject loaded requirements into role constraints"""
+        """Inject CONCISE requirements into constraints — only what's NOT already in the system design doc.
+
+        The Engineer receives PRD + system design + task breakdown as context from the pipeline.
+        Those documents already contain full table schemas, API contracts, CSV column definitions,
+        response structures, etc. Repeating all that here causes the prompt to exceed the 200K
+        token limit. Instead, we inject only:
+        - Table disambiguation warnings (prevent merging similar tables across modules)
+        - Table name/origin quick reference (so the LLM knows what's new vs existing)
+        - Critical behavioral rules that might be buried in the docs
+        - User ID mapping warning (common source of bugs)
+        """
 
         um = self.requirements['user_management']
         pe = self.requirements['pocket_expense']
         sdc = self.requirements['single_data_capturing']
 
-        # Extract key implementation details
-        db_tables_um = self._format_table_summary(um.get('database_schema', {}).get('tables', []))
-        db_tables_sdc = self._format_table_summary(sdc.get('database_schema', {}).get('tables', []))
-        csv_columns = self._format_csv_columns(pe.get('csv_file_definition', {}).get('columns', []))
-        api_route = self._format_api_route(pe.get('api_contract', {}))
-        error_response = self._format_error_response(pe.get('error_response', {}))
-        success_response = self._format_success_response(pe.get('success_response', {}))
-        validation_rules = self._format_validation_rules(pe.get('validation_service', {}))
-        security = self._format_security(pe.get('security_and_permissions', {}))
-        fx_flow = self._format_fx_flow(sdc.get('fx_conversion_flow', {}))
-        expense_sources = self._format_expense_sources(sdc.get('oop_expense_source', {}))
-
-        self.constraints += f"""
-
-LOADED IMPLEMENTATION REQUIREMENTS FROM JSON:
-
-=== DATABASE TABLES: User Management ===
-{db_tables_um}
-
-=== DATABASE TABLES: Expense Single Data Capturing ===
-{db_tables_sdc}
-
-=== CSV COLUMN MAPPING (Pocket Expense Upload) ===
-{csv_columns}
-
-=== API ROUTE ===
-{api_route}
-
-=== ERROR RESPONSE FORMAT (HTTP 422) ===
-{error_response}
-
-=== SUCCESS RESPONSE FORMAT ===
-{success_response}
-
-=== CSV VALIDATION RULES (PocketExpenseCSVValidator) ===
-{validation_rules}
-
-=== SECURITY & PERMISSIONS ===
-{security}
-
-=== FX CONVERSION FLOW ===
-{fx_flow}
-
-=== EXPENSE SOURCE CONFIG ===
-{expense_sources}
-"""
-
-    def _format_table_summary(self, tables: list) -> str:
         lines = []
+
+        lines.append("")
+        lines.append("IMPLEMENTATION GUARDRAILS (the full specs are in the System Design document above):")
+
+        # ── Table disambiguation ──
+        lines.append("")
+        lines.append("TABLE DISAMBIGUATION:")
+        lines.append("  The JSON defines SEPARATE tables across modules. Tables with similar columns")
+        lines.append("  (e.g. expense-related tables in different modules) are DISTINCT entities with")
+        lines.append("  different column types, status enums, and relationships. Each MUST have its own")
+        lines.append("  Model and Migration. Do NOT merge or conflate tables from different modules.")
+        lines.append("  Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).")
+
+        # ── Quick reference: all tables with origin markers ──
+        lines.append("")
+        lines.append("TABLE QUICK REFERENCE (origin: new = build, existing = already in platform):")
+        self._append_table_names(lines, "User Management", um.get('database_schema', {}).get('tables', []))
+        self._append_table_names(lines, "Pocket Expense CSV Upload", [pe.get('data_model', {}).get('new_table', {})])
+        ls_schema = pe.get('storing_pocket_expenses_from_file_upload', {}).get('local_storage_schema', {})
+        if ls_schema:
+            lines.append(f"    {ls_schema.get('table_name', '?')} (origin: new)")
+        self._append_table_names(lines, "Single Expense Data Capturing", sdc.get('database_schema', {}).get('tables', []))
+
+        # ── Critical behavioral rules ──
+        lines.append("")
+        lines.append("CRITICAL BEHAVIORAL RULES:")
+        vb = pe.get('overview', {}).get('validation_behavior', {})
+        if vb:
+            lines.append(f"  CSV Validation: {vb.get('description', '?')} | on_failure: {vb.get('on_failure', '?')}")
+        vs = pe.get('validation_service', {})
+        if vs:
+            lines.append(f"  Validator Service: {vs.get('name', '?')}")
+            rfb = vs.get('row_failure_behavior', '')
+            if rfb:
+                lines.append(f"  Row Failure Behavior: {rfb}")
+        cc = sdc.get('currency_conversion', {})
+        if cc:
+            lines.append(f"  Currency Conversion: origin={cc.get('origin', '?')} — use existing platform infrastructure, do NOT build external API calls")
+            ref_tables = cc.get('referenced_tables', [])
+            if ref_tables:
+                existing = [f"{t['name']}" for t in ref_tables]
+                lines.append(f"  FX Referenced Tables (ALL existing — do NOT recreate): {existing}")
+        src_config = sdc.get('oop_expense_source', {}).get('client_config_behaviour', {})
+        if src_config:
+            lines.append(f"  Max active expense sources per client: {src_config.get('max_active_sources_per_client', '?')}")
+
+        # ── User ID mapping note ──
+        upload_table_name = pe.get('data_model', {}).get('new_table', {}).get('name', 'upload_tracking_table')
+        lines.append("")
+        lines.append(f"CRITICAL USER ID MAPPING for {upload_table_name}:")
+        lines.append("  DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)")
+        lines.append("  DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)")
+        lines.append("  Do NOT swap these. The API field names differ from DB column names.")
+
+        self.constraints += '\n'.join(lines)
+
+    # ── Helper methods ──
+
+    def _append_table_names(self, lines: list, module: str, tables: list):
+        """Output just table names and origins for quick reference."""
+        if not tables:
+            return
+        lines.append(f"  {module}:")
         for table in tables:
-            name = table.get('name', 'unknown')
-            cols = [c['name'] for c in table.get('columns', [])]
-            fks = table.get('foreign_keys', [])
-            lines.append(f"  {name}: columns=[{', '.join(cols)}] FKs={len(fks)}")
-        return '\n'.join(lines)
-
-    def _format_csv_columns(self, columns: list) -> str:
-        lines = []
-        for col in columns:
-            csv_col = col.get('csv_column')
-            if csv_col:
-                db_field = col.get('target_db_field', 'N/A')
-                required = "REQ" if col.get('required') else "OPT"
-                rules = col.get('validation_rules', [])
-                rules_str = '; '.join(rules) if rules else 'none'
-                lines.append(f"  [{required}] {csv_col} -> {db_field} | rules: {rules_str}")
-            else:
-                db_field = col.get('target_db_field', 'N/A')
-                source = col.get('source', col.get('default_value', 'system'))
-                lines.append(f"  [SYS] {db_field} <- {source}")
-        return '\n'.join(lines)
-
-    def _format_api_route(self, api: dict) -> str:
-        route = api.get('route', {})
-        return f"  {route.get('method', 'POST')} {route.get('path', '/api/uploads/pocket-expense/csv')} | middleware: {route.get('middleware', 'Oauth2UserClient')} | content: {api.get('content_type', 'multipart/form-data')}"
-
-    def _format_error_response(self, er: dict) -> str:
-        structure = er.get('structure', {})
-        return json.dumps(structure, indent=2) if structure else '  (see JSON file)'
-
-    def _format_success_response(self, sr: dict) -> str:
-        structure = sr.get('structure', {})
-        return json.dumps(structure, indent=2) if structure else '  (see JSON file)'
-
-    def _format_validation_rules(self, vs: dict) -> str:
-        lines = []
-        rules = vs.get('key_rules_per_row', {})
-        for field, rule in rules.items():
-            req = "REQ" if rule.get('required') else "OPT"
-            details = {k: v for k, v in rule.items() if k != 'required'}
-            lines.append(f"  [{req}] {field}: {details}")
-        return '\n'.join(lines)
-
-    def _format_security(self, sec: dict) -> str:
-        lines = [f"  Middleware: {sec.get('endpoint_protection', 'Oauth2UserClient')}"]
-        for check in sec.get('server_side_checks', []):
-            lines.append(f"  - {check}")
-        return '\n'.join(lines)
-
-    def _format_fx_flow(self, fx: dict) -> str:
-        lines = []
-        for step_key, step_val in fx.items():
-            if not isinstance(step_val, dict):
+            if not table:
                 continue
-            name = step_val.get('name', step_key)
-            flow_items = step_val.get('flow', [])
-            lines.append(f"  {name}: {' → '.join(flow_items[:4])}{'...' if len(flow_items) > 4 else ''}")
-        return '\n'.join(lines)
-
-    def _format_expense_sources(self, src: dict) -> str:
-        lines = []
-        setup = src.get('default_and_global_source_setup', {})
-        defaults = setup.get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])
-        lines.append(f"  Defaults on enable: {defaults}")
-        lines.append(f"  Global 'Other': client_id=NULL, not deletable")
-        config = src.get('client_config_behaviour', {})
-        lines.append(f"  Max active per client: {config.get('max_active_sources_per_client', 20)}")
-        submission = src.get('expense_submission', {})
-        lines.append(f"  Non-Other: save expense_source_id only")
-        lines.append(f"  Other: save expense_source_id (global Other ID) + custom_source_text")
-        return '\n'.join(lines)
+            name = table.get('name', '?')
+            origin = table.get('origin', '?')
+            col_count = len(table.get('columns', []))
+            fk_count = len(table.get('foreign_keys', []))
+            lines.append(f"    {name} (origin: {origin}, {col_count} cols, {fk_count} FKs)")
 
     async def _think(self) -> bool:
         """Override _think to ensure correct src_path before code generation."""

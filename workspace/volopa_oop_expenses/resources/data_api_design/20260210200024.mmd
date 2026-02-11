@@ -1,0 +1,151 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class UserFeaturePermissionController {
+        +grant(GrantUserFeaturePermissionRequest): JsonResponse
+        +revoke(RevokeUserFeaturePermissionRequest): JsonResponse
+        +index(Request): JsonResponse
+    }
+    class OopExpenseController {
+        +index(Request): JsonResponse
+        +store(StoreOopExpenseRequest): JsonResponse
+        +show(int id): JsonResponse
+        +update(UpdateOopExpenseRequest, int id): JsonResponse
+        +destroy(int id): JsonResponse
+        +approve(int id): JsonResponse
+    }
+    class PocketExpenseController {
+        +index(Request): JsonResponse
+        +store(StorePocketExpenseRequest): JsonResponse
+        +show(int id): JsonResponse
+        +update(UpdatePocketExpenseRequest, int id): JsonResponse
+        +destroy(int id): JsonResponse
+        +approve(int id): JsonResponse
+        +getFxRate(Request): JsonResponse
+    }
+    class PocketExpenseUploadController {
+        +uploadCsv(PocketExpenseCSVUploadRequest): JsonResponse
+        +getUploadStatus(int uploadId): JsonResponse
+        +downloadErrors(int uploadId): Response
+    }
+    class UserPermissionService {
+        +grantPermission(int userId, int clientId, int featureId, int grantorId, int managerId): UserFeaturePermission
+        +revokePermission(int userId, int clientId, int featureId): bool
+        +getUserPermissions(int userId, int clientId): Collection
+        +canManageUser(int managerId, int targetUserId): bool
+    }
+    class OopExpenseService {
+        +createExpense(array data, int userId, int clientId): OopExpense
+        +updateExpense(int id, array data, int userId): OopExpense
+        +deleteExpense(int id, int userId): bool
+        +approveExpense(int id, int approverId): OopExpense
+        +getUserExpenses(int userId, int clientId, array filters): LengthAwarePaginator
+    }
+    class PocketExpenseService {
+        +createExpense(array data, int userId, int clientId): PocketExpense
+        +updateExpense(int id, array data, int userId): PocketExpense
+        +deleteExpense(int id, int userId): bool
+        +approveExpense(int id, int approverId): PocketExpense
+        +getUserExpenses(int userId, int clientId, array filters): LengthAwarePaginator
+        +createExpenseWithMetadata(array data, int userId, int clientId): PocketExpense
+    }
+    class PocketExpenseCSVValidator {
+        -array referenceData
+        -int targetUserId
+        -int clientId
+        +__construct(int targetUserId, int clientId)
+        +validateCsv(string filePath): array
+        +validateRow(array row, int lineNumber): array
+        +loadReferenceData(): void
+        +validateDate(string date): bool
+        +validateCurrency(string currency): bool
+        +validateExpenseType(string type): bool
+        +validateSource(string source): bool
+    }
+    class FXConversionService {
+        +getWalletBaseCurrency(int clientId): string
+        +getFXRate(string fromCurrency, string toCurrency, string date): float
+        +calculateConvertedAmount(float amount, float rate, float commission): float
+        +getClientCommission(int clientId): float
+    }
+    class UserFeaturePermission {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +feature_id: int
+        +grantor_id: int
+        +manager_user_id: int
+        +is_enabled: bool
+        +user(): BelongsTo
+        +client(): BelongsTo
+        +feature(): BelongsTo
+        +grantor(): BelongsTo
+        +manager(): BelongsTo
+    }
+    class OopExpense {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +date: string
+        +merchant_name: string
+        +amount: decimal
+        +currency: string
+        +status: string
+        +user(): BelongsTo
+        +client(): BelongsTo
+        +approver(): BelongsTo
+    }
+    class PocketExpense {
+        +id: int
+        +user_id: int
+        +client_id: int
+        +date: string
+        +merchant_name: string
+        +amount: decimal
+        +currency: string
+        +status: string
+        +user(): BelongsTo
+        +client(): BelongsTo
+        +expenseType(): BelongsTo
+        +metadata(): HasMany
+    }
+    class PocketExpenseMetadata {
+        +id: int
+        +pocket_expense_id: int
+        +metadata_type: string
+        +details_json: array
+        +expense(): BelongsTo
+        +category(): BelongsTo
+        +source(): BelongsTo
+    }
+    class PocketExpenseFileUpload {
+        +id: int
+        +uuid: string
+        +user_id: int
+        +client_id: int
+        +created_by_user_id: int
+        +status: string
+        +validation_errors: array
+        +user(): BelongsTo
+        +client(): BelongsTo
+        +creator(): BelongsTo
+    }
+    class ProcessPocketExpenseUpload {
+        -int uploadId
+        +__construct(int uploadId)
+        +handle(): void
+        +failed(Throwable exception): void
+    }
+    UserFeaturePermissionController --> UserPermissionService
+    OopExpenseController --> OopExpenseService
+    PocketExpenseController --> PocketExpenseService
+    PocketExpenseController --> FXConversionService
+    PocketExpenseUploadController --> PocketExpenseCSVValidator
+    PocketExpenseService --> PocketExpenseMetadata
+    PocketExpenseCSVValidator --> PocketExpenseFileUpload
+    ProcessPocketExpenseUpload --> PocketExpenseService
+    UserFeaturePermission --> User
+    OopExpense --> User
+    PocketExpense --> User
+    PocketExpense --> PocketExpenseMetadata
+    PocketExpenseFileUpload --> User

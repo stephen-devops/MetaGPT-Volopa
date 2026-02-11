@@ -107,6 +107,10 @@ class LaravelProjectManager(ProjectManager):
         # Update constraints with task breakdown data
         self._update_constraints_from_requirements()
 
+        # Increase max output tokens
+        if self.context and self.context.config and self.context.config.llm:
+            self.context.config.llm.max_token = 8192
+
         # With use_fixed_sop=True, set max_react_loop to 1 to execute actions once
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=1)
@@ -141,123 +145,203 @@ class LaravelProjectManager(ProjectManager):
 
         self.constraints += f"""
 
-LOADED REQUIREMENTS FROM JSON:
+LOADED REQUIREMENTS FROM JSON (authoritative source — derive all entity names from this data):
 
 Task Breakdown Statistics:
 {stats}
 
-Task Mapping Guide (Module -> Implementation Tasks):
+Module Specifications (derive Migration, Model, Service, Controller, Resource names from tables and contracts below):
 {task_mapping}
 
 Expected Output:
-Task breakdown mapping all OOP Expense modules to implementation tasks with dependencies,
-covering User Management (permissions, role hierarchy), Pocket Expense CSV Upload
-(upload pipeline, validation, background sync), and Single Expense Capturing
-(CRUD, FX conversion, metadata, source config).
+Task breakdown with dependency-ordered implementation tasks derived from the JSON tables,
+API contracts, and behavioral rules above. Use Laravel naming conventions to convert
+JSON table names to Model/Migration/Controller/Resource names. Do NOT invent entity names
+that are not backed by a JSON table or API contract.
 """
 
     def _compute_stats(self, um: dict, pe: dict, sdc: dict) -> str:
-        um_tables = len(um.get('database_schema', {}).get('tables', []))
-        sdc_tables = len(sdc.get('database_schema', {}).get('tables', []))
-        pe_new_tables = 1 if pe.get('data_model', {}).get('new_table') else 0
-        pe_local_tables = 1 if pe.get('storing_pocket_expenses_from_file_upload', {}).get('local_storage_schema') else 0
-        total_tables = um_tables + sdc_tables + pe_new_tables + pe_local_tables
+        """Derive task statistics from JSON structure."""
+        um_tables = um.get('database_schema', {}).get('tables', [])
+        sdc_tables = sdc.get('database_schema', {}).get('tables', [])
+        pe_upload_table = pe.get('data_model', {}).get('new_table', {})
+        pe_local_table = pe.get('storing_pocket_expenses_from_file_upload', {}).get('local_storage_schema', {})
 
-        csv_columns = len(pe.get('csv_file_definition', {}).get('columns', []))
-        roles = len(um.get('permission_metrics', []))
-        expense_types = len(sdc.get('database_schema', {}).get('tables', [{}])[0].get('seed_data', []))
+        csv_columns = pe.get('csv_file_definition', {}).get('columns', [])
+        csv_in_file = [c for c in csv_columns if c.get('csv_column')]
+        csv_system = [c for c in csv_columns if not c.get('csv_column')]
+        roles = um.get('permission_metrics', [])
+
+        all_new_tables = (
+            [t['name'] for t in um_tables if t.get('origin') == 'new']
+            + [t['name'] for t in sdc_tables if t.get('origin') == 'new']
+            + ([pe_upload_table['name']] if pe_upload_table.get('name') else [])
+            + ([pe_local_table['table_name']] if pe_local_table.get('table_name') else [])
+        )
 
         lines = [
-            f"- Total DB Tables: {total_tables}",
-            f"  - User Management: {um_tables} (user_feature_permission, oop_expenses)",
-            f"  - Single Data Capturing: {sdc_tables} (opt_pocket_expense_type, source_client_config, pocket_expense, pocket_expense_metadata)",
-            f"  - Pocket Expense Upload: {pe_new_tables + pe_local_tables} (file_uploads, uploads_data)",
-            f"- CSV Columns: {csv_columns}",
-            f"- User Roles: {roles}",
-            f"- Expense Types: {expense_types}",
-            f"- Estimated Models: ~8 (PocketExpense, PocketExpenseMetadata, PocketExpenseFileUpload, PocketExpenseUploadsData, OptPocketExpenseType, PocketExpenseSourceClientConfig, UserFeaturePermission, OopExpenses)",
-            f"- Estimated Controllers: ~3 (PocketExpenseUploadController, PocketExpenseController, UserPermissionController)",
-            f"- Estimated Services: ~5 (PocketExpenseCSVValidator, FXConversionService, ExpenseSourceService, PermissionService, PocketExpenseService)",
-            f"- Estimated Migrations: ~7",
-            f"- Estimated Total Files: ~35-40",
+            f"- New DB tables (from JSON): {len(all_new_tables)}",
+            f"  Tables: {all_new_tables}",
+            f"- CSV columns: {len(csv_in_file)} in-file + {len(csv_system)} system-generated",
+            f"- User roles defined: {len(roles)}",
+            "",
+            "DERIVATION RULES (do NOT hardcode entity names — derive from JSON tables above):",
+            "  - Create ONE Migration per new table",
+            "  - Create ONE Eloquent Model per new table (snake_case table → PascalCase model)",
+            "  - Create ONE Policy per module that needs authorization",
+            "  - Create ONE FormRequest per API endpoint",
+            "  - Create ONE Service per domain operation (CRUD, validation, FX conversion, source config)",
+            "  - Create ONE API Resource per model returned in responses",
+            "  - Create ONE Controller per API resource group (thin, delegates to services)",
+            "  - Create Queue Jobs only where JSON specifies background processing",
+            "",
+            "TABLE DISAMBIGUATION:",
+            "  The JSON defines SEPARATE tables across modules. Tables with similar columns",
+            "  (e.g. expense-related tables in different modules) are DISTINCT entities with",
+            "  different column types, status enums, and relationships. Each MUST have its own",
+            "  Model and Migration. Do NOT merge tables from different modules.",
         ]
         return '\n'.join(lines)
 
     def _build_task_mapping(self, um: dict, pe: dict, sdc: dict) -> str:
+        """Build CONCISE task mapping for file/dependency ordering only.
+
+        The ProjectManager only needs table names, FK dependencies, API endpoints,
+        and service names to produce a dependency-ordered file list. Full column
+        definitions, seed data, validation rules, and response structures belong
+        in the Architect/Engineer prompts — NOT here. Keeping this concise prevents
+        LLM output truncation (JSONDecodeError from hitting max_token limit).
+        """
         lines = []
 
-        # Module 1: User Management
+        # ── Module 1: User Management ──
         lines.append("\n=== Module 1: User Management ===")
-        lines.append("  Tables: user_feature_permission, oop_expenses")
-        er = um.get('er_diagram', {})
-        for rel in er.get('relationships', []):
-            lines.append(f"  Relationship: {rel['from']} --{rel['label']}--> {rel['to']}")
-        acf = um.get('access_control_flow', {})
-        enablement = acf.get('service_enablement_flow', [])
-        if enablement:
-            lines.append("  Service Enablement Flow:")
-            for step in enablement:
-                lines.append(f"    - {step}")
-        lines.append("  Tasks:")
-        lines.append("    - Migration: create_user_feature_permission_table")
-        lines.append("    - Migration: create_oop_expenses_table")
-        lines.append("    - Model: UserFeaturePermission (relationships, unique constraints)")
-        lines.append("    - Model: OopExpense (status enum, relationships)")
-        lines.append("    - Policy: OopExpensePolicy (role-based CRUD + approve)")
-        lines.append("    - Service: PermissionService (grant, revoke, check management rights)")
-        lines.append("    - Controller: UserPermissionController")
-        lines.append("    - Resource: UserFeaturePermissionResource")
+        self._append_table_summary(lines, um.get('database_schema', {}).get('tables', []))
+        self._append_er_relationships(lines, um.get('er_diagram', {}))
+        self._append_roles_summary(lines, um.get('permission_metrics', []))
 
-        # Module 2: Pocket Expense CSV Upload
+        # ── Module 2: Pocket Expense CSV Upload ──
         lines.append("\n=== Module 2: Pocket Expense - CSV Batch Upload ===")
-        api = pe.get('api_contract', {}).get('route', {})
-        lines.append(f"  Endpoint: {api.get('method', 'POST')} {api.get('path', '/api/uploads/pocket-expense/csv')}")
-        lines.append(f"  Max Rows: 200")
-        lines.append(f"  Validation: All-or-nothing (synchronous)")
-        lines.append(f"  Background Sync: ProcessExpenseUpload job, batches of 100")
-        fp = pe.get('file_processing', {})
-        for step in fp.get('steps', []):
-            lines.append(f"  Processing Step {step.get('step', '?')}: {step.get('name', '')}")
-        lines.append("  Tasks:")
-        lines.append("    - Migration: create_pocket_expense_file_uploads_table")
-        lines.append("    - Migration: create_pocket_expense_uploads_data_table")
-        lines.append("    - Model: PocketExpenseFileUpload (status lifecycle, soft deletes)")
-        lines.append("    - Model: PocketExpenseUploadsData (FK to file_uploads)")
-        lines.append("    - FormRequest: UploadPocketExpenseCSVRequest (file, user_id, expense_user_id, client_id)")
-        lines.append("    - Service: PocketExpenseCSVValidator (preload reference data, row-level validation)")
-        lines.append("    - Controller: PocketExpenseUploadController@uploadPocketExpenseCSV")
-        lines.append("    - Resource: ValidationErrorResource (line_number, field, error, value)")
-        lines.append("    - Job: ProcessExpenseUpload (background sync in batches)")
-        lines.append("    - Notification: ExpenseUploadCompleted")
+        self._append_api_endpoint(lines, pe.get('api_contract', {}))
+        self._append_validation_behavior(lines, pe.get('overview', {}).get('validation_behavior', {}))
+        self._append_upload_table_name(lines, pe.get('data_model', {}).get('new_table', {}))
+        self._append_local_storage_name(lines, pe.get('storing_pocket_expenses_from_file_upload', {}))
+        self._append_processing_steps(lines, pe.get('file_processing', {}))
+        self._append_validator_name(lines, pe.get('validation_service', {}))
+        csv_cols = pe.get('csv_file_definition', {}).get('columns', [])
+        in_file = [c.get('csv_column') for c in csv_cols if c.get('csv_column')]
+        lines.append(f"  CSV columns ({len(in_file)} in-file): {in_file}")
 
-        # Module 3: Single Expense Data Capturing
+        # ── Module 3: Single Expense Data Capturing ──
         lines.append("\n=== Module 3: Single Expense Data Capturing ===")
-        db_tables = sdc.get('database_schema', {}).get('tables', [])
-        for t in db_tables:
-            lines.append(f"  Table: {t.get('name', '?')} ({len(t.get('columns', []))} cols)")
-        fx = sdc.get('fx_conversion_flow', {})
-        for step_key, step_val in fx.items():
-            if not isinstance(step_val, dict):
-                continue
-            lines.append(f"  FX Step: {step_val.get('name', step_key)}")
-        src = sdc.get('oop_expense_source', {})
-        defaults = src.get('default_and_global_source_setup', {}).get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])
-        lines.append(f"  Default Sources: {defaults}")
-        lines.append("  Tasks:")
-        lines.append("    - Migration: create_opt_pocket_expense_type_table (+ seed data)")
-        lines.append("    - Migration: create_pocket_expense_source_client_config_table (+ global Other)")
-        lines.append("    - Migration: create_pocket_expense_table")
-        lines.append("    - Migration: create_pocket_expense_metadata_table")
-        lines.append("    - Model: OptPocketExpenseType")
-        lines.append("    - Model: PocketExpenseSourceClientConfig (unique name per client)")
-        lines.append("    - Model: PocketExpense (status enum, relationships to metadata/user/client/type)")
-        lines.append("    - Model: PocketExpenseMetadata (polymorphic metadata_type enum, FKs)")
-        lines.append("    - FormRequest: StorePocketExpenseRequest")
-        lines.append("    - Service: PocketExpenseService (CRUD with transactions)")
-        lines.append("    - Service: FXConversionService (dated rate, 30-day lookback, commission)")
-        lines.append("    - Service: ExpenseSourceService (defaults, Other handling, max 20 limit)")
-        lines.append("    - Policy: PocketExpensePolicy (based on user_feature_permission)")
-        lines.append("    - Controller: PocketExpenseController (thin CRUD)")
-        lines.append("    - Resource: PocketExpenseResource (with metadata, whenLoaded)")
+        sdc_tables = sdc.get('database_schema', {}).get('tables', [])
+        self._append_table_summary(lines, sdc_tables)
+        self._append_services_needed(lines, sdc)
 
         return '\n'.join(lines)
+
+    # ── Helper methods: concise extractions for task ordering ──
+
+    def _append_table_summary(self, lines: list, tables: list):
+        """List table names, origin, column count, and FK targets — no column details."""
+        if not tables:
+            return
+        lines.append("  Tables (each requires Migration + Model):")
+        for table in tables:
+            name = table.get('name', '?')
+            origin = table.get('origin', '?')
+            cols = table.get('columns', [])
+            fks = table.get('foreign_keys', [])
+            seed = table.get('seed_data', [])
+            fk_targets = [fk.get('references', '?') for fk in fks]
+            parts = [f"    {name} (origin: {origin}, {len(cols)} cols)"]
+            if fk_targets:
+                parts.append(f"FKs -> {fk_targets}")
+            if seed:
+                parts.append(f"seed: {len(seed)} rows")
+            lines.append(' | '.join(parts))
+
+    def _append_er_relationships(self, lines: list, er: dict):
+        """Output ER relationships from JSON."""
+        relationships = er.get('relationships', [])
+        if not relationships:
+            return
+        lines.append("  ER Relationships:")
+        for rel in relationships:
+            lines.append(f"    {rel['from']} --[{rel['type']}]--> {rel['to']}")
+
+    def _append_roles_summary(self, lines: list, metrics: list):
+        """List role names and whether they have management rights."""
+        if not metrics:
+            return
+        lines.append("  Roles (for Policy/authorization):")
+        for m in metrics:
+            role = m.get('role', '?')
+            has_mgmt = 'with_management_rights' in m
+            lines.append(f"    {role}{' (has management_rights)' if has_mgmt else ''}")
+
+    def _append_api_endpoint(self, lines: list, api: dict):
+        """Output just the endpoint path, method, controller, and middleware."""
+        if not api:
+            return
+        route = api.get('route', {})
+        lines.append(f"  Endpoint: {route.get('method', '?')} {route.get('path', '?')}")
+        lines.append(f"  Controller: {route.get('controller', '?')} (origin: {route.get('controller_origin', '?')})")
+        lines.append(f"  Middleware: {route.get('middleware', '?')}")
+
+    def _append_validation_behavior(self, lines: list, vb: dict):
+        """Output validation behavior summary."""
+        if not vb:
+            return
+        lines.append(f"  Validation: {vb.get('description', '?')} | on_failure: {vb.get('on_failure', '?')}")
+
+    def _append_upload_table_name(self, lines: list, new_table: dict):
+        """Output upload tracking table name and model."""
+        if not new_table:
+            return
+        lines.append(f"  Upload Table: {new_table.get('name', '?')} (Model: {new_table.get('model', '?')}, {len(new_table.get('columns', []))} cols)")
+
+    def _append_local_storage_name(self, lines: list, ls: dict):
+        """Output local storage table name."""
+        schema = ls.get('local_storage_schema', {}) if ls else {}
+        if not schema:
+            return
+        lines.append(f"  Local Storage Table: {schema.get('table_name', '?')} (requires Migration + Model)")
+
+    def _append_processing_steps(self, lines: list, fp: dict):
+        """Output processing step names only."""
+        steps = fp.get('steps', [])
+        if not steps:
+            return
+        step_names = [f"Step {s.get('step', '?')}: {s.get('name', '?')}" for s in steps]
+        lines.append(f"  Processing Pipeline: {step_names}")
+
+    def _append_validator_name(self, lines: list, vs: dict):
+        """Output validator service name."""
+        if not vs:
+            return
+        lines.append(f"  Validator Service: {vs.get('name', '?')}")
+
+    def _append_services_needed(self, lines: list, sdc: dict):
+        """Summarize services needed for single expense module."""
+        services = []
+        if sdc.get('oop_expense_source', {}):
+            src = sdc['oop_expense_source']
+            config = src.get('client_config_behaviour', {})
+            max_sources = config.get('max_active_sources_per_client', '?')
+            services.append(f"ExpenseSourceConfig (max {max_sources} per client)")
+        if sdc.get('currency_conversion', {}):
+            services.append("FxConversion (uses existing tables)")
+        if sdc.get('fx_conversion_flow', {}):
+            fx = sdc['fx_conversion_flow']
+            step_names = [v.get('name', k) for k, v in fx.items() if isinstance(v, dict)]
+            services.append(f"FX flow steps: {step_names}")
+        # Metadata table
+        meta_examples = sdc.get('database_schema', {}).get('metadata_json_examples', {})
+        if meta_examples:
+            meta_types = [k for k in meta_examples if k != 'origin']
+            services.append(f"Metadata types: {meta_types}")
+        if services:
+            lines.append("  Services needed:")
+            for s in services:
+                lines.append(f"    - {s}")

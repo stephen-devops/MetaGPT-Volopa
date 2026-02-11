@@ -8,9 +8,7 @@
 
 import json
 from pathlib import Path
-from typing import Dict, Any
 from metagpt.roles.qa_engineer import QaEngineer
-from metagpt.actions import WriteTest
 
 
 class LaravelQaEngineer(QaEngineer):
@@ -20,25 +18,22 @@ class LaravelQaEngineer(QaEngineer):
     Responsibilities:
     - Write feature tests for all API endpoints
     - Test validation rules in FormRequests
-    - Test authorization via user_feature_permission and Policies
-    - Test database transactions and rollbacks (all-or-nothing CSV)
+    - Test authorization via Policies and permission checks
+    - Test database transactions and rollbacks (all-or-nothing batch operations)
     - Test N+1 query prevention (eager loading)
     - Test pagination on list endpoints
     - Test API Resource transformations
     - Test multi-tenant isolation (client_id filtering)
-    - Test expense status workflow transitions (draft -> submitted -> approved -> rejected)
-    - Test queue job processing (ProcessExpenseUpload)
+    - Test status workflow transitions
+    - Test queue job processing
     - Test error handling and status codes
 
-    Domain Modules:
-    - User Management: permission grant/revoke, role hierarchy, management rights
-    - Pocket Expense CSV Upload: file upload, CSV validation, background sync
-    - Single Expense Capturing: CRUD, FX conversion, metadata, source config
+    Domain modules are loaded from JSON specifications at runtime.
 
     Test Coverage Requirements:
     - Unit tests: 0% (focus on feature/integration tests for APIs)
     - Feature tests: 100% coverage of all endpoints
-    - Policy tests: 100% coverage of authorization rules via user_feature_permission
+    - Policy tests: 100% coverage of authorization rules
     - Validation tests: 100% coverage of FormRequest and CSV validation rules
     """
 
@@ -46,7 +41,7 @@ class LaravelQaEngineer(QaEngineer):
     name: str = "Darius"
     profile: str = "Laravel QA Engineer"
     goal: str = (
-        "Write comprehensive PHPUnit tests ensuring Laravel OOP Expense code follows specifications as input. "
+        "Write comprehensive PHPUnit tests ensuring Laravel code follows specifications loaded from JSON. "
         "Use same language as user requirement"
     )
 
@@ -78,339 +73,169 @@ class LaravelQaEngineer(QaEngineer):
 
     def _build_test_constraints(self):
         """
-        Build comprehensive test constraints from:
-        1. User Management requirements (role hierarchy, permissions, access control)
-        2. Pocket Expense requirements (CSV upload, validation, error handling)
-        3. Single Data Capturing requirements (CRUD, FX, metadata, sources)
+        Build comprehensive test constraints derived entirely from JSON.
+        All table names, route paths, column names, and model names come from JSON specs.
         """
 
         um = self.requirements['user_management']
         pe = self.requirements['pocket_expense']
         sdc = self.requirements['single_data_capturing']
 
-        # Build test requirement summaries
-        permission_tests = self._format_permission_tests(um)
-        csv_upload_tests = self._format_csv_upload_tests(pe)
-        single_expense_tests = self._format_single_expense_tests(sdc)
-
-        self.constraints = f"""
-You are a Laravel QA Engineer writing PHPUnit/Pest feature tests for the Volopa OOP Expense API.
-
-========================================
-CRITICAL TEST OUTPUT FORMAT
-========================================
-
-Generate PHP test files in this format:
-
-File: tests/Feature/{{Resource}}Test.php
-
-```php
-<?php
-
-namespace Tests\\Feature;
-
-use Tests\\TestCase;
-use Illuminate\\Foundation\\Testing\\RefreshDatabase;
-use App\\Models\\{{Model}};
-use App\\Models\\User;
-
-class {{Resource}}Test extends TestCase
-{{
-    use RefreshDatabase;
-
-    /** @test */
-    public function test_method_name()
-    {{
-        // Arrange
-        $user = User::factory()->create(['client_id' => 1]);
-
-        // Act
-        $response = $this->actingAs($user)->getJson('/api/endpoint');
-
-        // Assert
-        $response->assertOk();
-        $response->assertJsonStructure(['data' => ['id', 'name']]);
-    }}
-}}
-```
-
-========================================
-TESTING MENTAL MODEL
-========================================
-
-Test the complete flow:
-Client -> route (Oauth2UserClient middleware) -> controller -> FormRequest
-(validation + policy) -> service/model (domain logic, transactions) ->
-API Resource (shape output) -> JSON with correct status codes and error format
-
-For EVERY endpoint, test:
-1. Route exists and is accessible
-2. Authentication required (401 if not authenticated via Oauth2UserClient)
-3. Authorization enforced (403 if user_feature_permission check fails)
-4. Validation rules work (422 with proper errors)
-5. Business logic executes correctly
-6. Response structure matches API Resource
-7. Database state changes are correct
-8. Status codes are appropriate
-
-========================================
-MODULE 1: USER MANAGEMENT TESTS
-========================================
-
-{permission_tests}
-
-========================================
-MODULE 2: POCKET EXPENSE CSV UPLOAD TESTS
-========================================
-
-{csv_upload_tests}
-
-========================================
-MODULE 3: SINGLE EXPENSE DATA CAPTURING TESTS
-========================================
-
-{single_expense_tests}
-
-========================================
-ARCHITECTURAL PATTERNS TO TEST
-========================================
-
-## 1. Transaction Integrity - All-or-Nothing CSV
-
-```php
-/** @test */
-public function test_csv_upload_rolls_back_on_any_validation_failure()
-{{
-    $user = User::factory()->create();
-
-    // CSV with 5 valid rows and 1 invalid row
-    $csv = $this->createCsvWithInvalidRow();
-
-    $response = $this->actingAs($user)->postJson('/api/uploads/pocket-expense/csv', [
-        'file' => $csv,
-        'user_id' => $user->id,
-        'expense_user_id' => $user->id,
-        'client_id' => $user->client_id,
-    ]);
-
-    $response->assertStatus(422);
-
-    // Assert ROLLBACK: zero expenses created (all-or-nothing)
-    $this->assertDatabaseCount('pocket_expense', 0);
-    $response->assertJsonStructure([
-        'success', 'message', 'upload_id', 'total_rows', 'error_count',
-        'errors' => [['line_number', 'field', 'error', 'value']]
-    ]);
-}}
-```
-
-## 2. N+1 Query Prevention
-
-```php
-/** @test */
-public function test_expense_list_eager_loads_relationships()
-{{
-    $user = User::factory()->create();
-    PocketExpense::factory()->count(5)->create(['client_id' => $user->client_id]);
-
-    \\DB::enableQueryLog();
-    $response = $this->actingAs($user)->getJson('/api/pocket-expenses');
-    $queries = \\DB::getQueryLog();
-
-    $this->assertLessThanOrEqual(4, count($queries), 'N+1 query detected!');
-    $response->assertOk();
-}}
-```
-
-## 3. Pagination Required
-
-```php
-/** @test */
-public function test_expense_list_returns_paginated_results()
-{{
-    $user = User::factory()->create();
-    PocketExpense::factory()->count(50)->create(['client_id' => $user->client_id]);
-
-    $response = $this->actingAs($user)->getJson('/api/pocket-expenses');
-
-    $response->assertOk();
-    $response->assertJsonStructure([
-        'data',
-        'links' => ['first', 'last', 'prev', 'next'],
-        'meta' => ['current_page', 'total', 'per_page']
-    ]);
-}}
-```
-
-## 4. Multi-Tenant Isolation
-
-```php
-/** @test */
-public function test_user_cannot_access_other_client_expenses()
-{{
-    $user = User::factory()->create(['client_id' => 1]);
-    $otherExpense = PocketExpense::factory()->create(['client_id' => 999]);
-
-    $response = $this->actingAs($user)->getJson("/api/pocket-expenses/{{$otherExpense->id}}");
-
-    $this->assertTrue(in_array($response->status(), [403, 404]));
-}}
-
-/** @test */
-public function test_list_only_returns_own_client_expenses()
-{{
-    $user = User::factory()->create(['client_id' => 1]);
-    PocketExpense::factory()->count(3)->create(['client_id' => 1]);
-    PocketExpense::factory()->count(10)->create(['client_id' => 999]);
-
-    $response = $this->actingAs($user)->getJson('/api/pocket-expenses');
-
-    $response->assertOk();
-    $this->assertCount(3, $response->json('data'));
-}}
-```
-
-## 5. Async Processing - Background Sync
-
-```php
-/** @test */
-public function test_csv_upload_dispatches_background_job_on_success()
-{{
-    Queue::fake();
-    $user = User::factory()->create();
-    $csv = $this->createValidCsv();
-
-    $response = $this->actingAs($user)->postJson('/api/uploads/pocket-expense/csv', [
-        'file' => $csv,
-        'user_id' => $user->id,
-        'expense_user_id' => $user->id,
-        'client_id' => $user->client_id,
-    ]);
-
-    $response->assertOk();
-    Queue::assertPushed(ProcessExpenseUpload::class);
-}}
-```
-
-## 6. API Resources (Not Raw Models)
-
-```php
-/** @test */
-public function test_expense_response_uses_api_resource_structure()
-{{
-    $user = User::factory()->create();
-    $expense = PocketExpense::factory()->create(['client_id' => $user->client_id]);
-
-    $response = $this->actingAs($user)->getJson("/api/pocket-expenses/{{$expense->id}}");
-
-    $response->assertOk();
-    $response->assertJsonStructure([
-        'data' => [
-            'id', 'date', 'merchant_name', 'currency', 'amount',
-            'status', 'expense_type', 'created_at', 'updated_at'
-        ]
-    ]);
-    $response->assertJsonMissing(['password', 'remember_token']);
-}}
-```
-
-========================================
-STATUS CODES TESTING
-========================================
-
-```php
-/** @test */
-public function test_endpoints_return_correct_status_codes()
-{{
-    $user = User::factory()->create();
-
-    // 200 OK - Successful GET
-    $this->actingAs($user)->getJson('/api/pocket-expenses')->assertOk();
-
-    // 201 Created - Successful POST
-    $response = $this->actingAs($user)->postJson('/api/pocket-expenses', [/* valid data */]);
-    $response->assertCreated();
-
-    // 401 Unauthorized - No authentication
-    $this->getJson('/api/pocket-expenses')->assertUnauthorized();
-
-    // 422 Unprocessable Entity - Validation failed
-    $this->actingAs($user)->postJson('/api/pocket-expenses', [/* invalid data */])->assertUnprocessable();
-
-    // 422 CSV validation failure
-    $this->actingAs($user)->postJson('/api/uploads/pocket-expense/csv', [
-        'file' => $this->createCsvWithInvalidRow()
-    ])->assertStatus(422);
-}}
-```
-
-========================================
-TEST ORGANIZATION
-========================================
-
-Organize tests by module and concern:
-
-tests/Feature/
-├── UserPermissionTest.php              (grant/revoke, role hierarchy, management rights)
-├── PocketExpenseUploadTest.php         (CSV upload, validation, error response, background sync)
-├── PocketExpenseTest.php               (CRUD, status workflow, approval)
-├── PocketExpenseMetadataTest.php       (metadata types, source handling)
-├── ExpenseSourceConfigTest.php         (defaults, Other handling, max 20 limit)
-├── FXConversionTest.php                (dated rates, commission, lookback)
-├── MultiTenantIsolationTest.php        (client_id filtering across all endpoints)
-├── TransactionIntegrityTest.php        (all-or-nothing CSV, rollback scenarios)
-└── CSVValidationRulesTest.php          (per-field validation: date, type, currency, amount, etc.)
-
-Each test file should test ONE resource or ONE concern.
-
-========================================
-CRITICAL TEST REQUIREMENTS
-========================================
-
-1. Use RefreshDatabase trait (reset DB for each test)
-2. Use factories for test data (NOT manual creation)
-3. Test happy path AND error scenarios
-4. Assert JSON structure AND database state
-5. Test authorization via user_feature_permission (403 if not authorized)
-6. Test CSV validation (422) with all-or-nothing behavior
-7. Test multi-tenant isolation for EVERY endpoint
-8. Test N+1 queries using query log
-9. Test pagination structure (links + meta)
-10. Test proper status codes (200, 201, 204, 401, 403, 404, 422)
-
-========================================
-SUMMARY
-========================================
-
-Write feature tests that ensure:
-1. All user management flows work (permission grant/revoke, role hierarchy)
-2. CSV upload validates all-or-nothing with correct error structure
-3. Single expense CRUD follows status workflow (draft -> submitted -> approved -> rejected)
-4. FX conversion uses dated rates with 30-day lookback and commission
-5. Expense sources enforce max 20 limit, global Other handling
-6. Multi-tenant isolation enforced everywhere (client_id scoping)
-7. All architectural patterns implemented (transactions, N+1, pagination, Resources)
-8. All security requirements enforced (Oauth2UserClient, user_feature_permission)
-
-Your tests are the final validation that the Volopa OOP Expense system is:
-- Functionally correct
-- Architecturally sound
-- Secure and isolated
-- Performance-optimized
-- Following all DOS/DONTS patterns
-"""
-
-    def _format_permission_tests(self, um: dict) -> str:
-        """Format user management requirements as test scenarios"""
         lines = []
+        lines.append("You are a Laravel QA Engineer writing PHPUnit/Pest feature tests.")
+        lines.append("")
+        lines.append("========================================")
+        lines.append("CRITICAL TEST OUTPUT FORMAT")
+        lines.append("========================================")
+        lines.append("")
+        lines.append("Generate PHP test files in this format:")
+        lines.append("")
+        lines.append("File: tests/Feature/{Resource}Test.php")
+        lines.append("")
+        lines.append("```php")
+        lines.append("<?php")
+        lines.append("")
+        lines.append("namespace Tests\\Feature;")
+        lines.append("")
+        lines.append("use Tests\\TestCase;")
+        lines.append("use Illuminate\\Foundation\\Testing\\RefreshDatabase;")
+        lines.append("use App\\Models\\{Model};")
+        lines.append("use App\\Models\\User;")
+        lines.append("")
+        lines.append("class {Resource}Test extends TestCase")
+        lines.append("{")
+        lines.append("    use RefreshDatabase;")
+        lines.append("")
+        lines.append("    /** @test */")
+        lines.append("    public function test_method_name()")
+        lines.append("    {")
+        lines.append("        // Arrange")
+        lines.append("        $user = User::factory()->create(['client_id' => 1]);")
+        lines.append("")
+        lines.append("        // Act")
+        lines.append("        $response = $this->actingAs($user)->getJson('/api/endpoint');")
+        lines.append("")
+        lines.append("        // Assert")
+        lines.append("        $response->assertOk();")
+        lines.append("        $response->assertJsonStructure(['data' => ['id', 'name']]);")
+        lines.append("    }")
+        lines.append("}")
+        lines.append("```")
+        lines.append("")
+        lines.append("========================================")
+        lines.append("TESTING MENTAL MODEL")
+        lines.append("========================================")
+        lines.append("")
+        lines.append("Test the complete flow:")
+        lines.append("Client -> route (Oauth2UserClient middleware) -> controller -> FormRequest")
+        lines.append("(validation + policy) -> service/model (domain logic, transactions) ->")
+        lines.append("API Resource (shape output) -> JSON with correct status codes and error format")
+        lines.append("")
+        lines.append("For EVERY endpoint, test:")
+        lines.append("1. Route exists and is accessible")
+        lines.append("2. Authentication required (401 if not authenticated via Oauth2UserClient)")
+        lines.append("3. Authorization enforced (403 if permission check fails)")
+        lines.append("4. Validation rules work (422 with proper errors)")
+        lines.append("5. Business logic executes correctly")
+        lines.append("6. Response structure matches API Resource")
+        lines.append("7. Database state changes are correct")
+        lines.append("8. Status codes are appropriate")
 
-        # Permission metrics tests
+        # === MODULE 1: User Management Tests ===
+        lines.append("")
+        lines.append("========================================")
+        lines.append("MODULE 1: USER MANAGEMENT TESTS")
+        lines.append("========================================")
+        self._append_permission_tests(lines, um)
+
+        # === MODULE 2: Pocket Expense CSV Upload Tests ===
+        lines.append("")
+        lines.append("========================================")
+        lines.append("MODULE 2: CSV BATCH UPLOAD TESTS")
+        lines.append("========================================")
+        self._append_csv_upload_tests(lines, pe)
+
+        # === MODULE 3: Single Expense Data Capturing Tests ===
+        lines.append("")
+        lines.append("========================================")
+        lines.append("MODULE 3: SINGLE EXPENSE DATA CAPTURING TESTS")
+        lines.append("========================================")
+        self._append_single_expense_tests(lines, sdc)
+
+        # === Architectural Pattern Tests (generic, JSON-derived) ===
+        lines.append("")
+        lines.append("========================================")
+        lines.append("ARCHITECTURAL PATTERNS TO TEST")
+        lines.append("========================================")
+        self._append_architectural_pattern_tests(lines, pe, sdc)
+
+        # === Test Organization ===
+        lines.append("")
+        lines.append("========================================")
+        lines.append("TEST ORGANIZATION")
+        lines.append("========================================")
+        lines.append("")
+        lines.append("Organize tests by module and concern:")
+        lines.append("- One test file per resource or per concern")
+        lines.append("- Derive test file names from JSON table names and API routes")
+        lines.append("- Example: table 'some_table' -> tests/Feature/SomeTableTest.php")
+        lines.append("")
+
+        # Derive test file list from JSON tables
+        all_tables = []
+        for t in um.get('database_schema', {}).get('tables', []):
+            all_tables.append(t.get('name', ''))
+        upload_table = pe.get('data_model', {}).get('new_table', {}).get('name', '')
+        if upload_table:
+            all_tables.append(upload_table)
+        for t in sdc.get('database_schema', {}).get('tables', []):
+            all_tables.append(t.get('name', ''))
+        local_table = pe.get('storing_pocket_expenses_from_file_upload', {}).get('local_storage_schema', {}).get('table_name', '')
+        if local_table and local_table not in all_tables:
+            all_tables.append(local_table)
+
+        lines.append("Tables from JSON (each needs test coverage):")
+        for tname in all_tables:
+            if tname:
+                lines.append(f"  - {tname}")
+
+        lines.append("")
+        lines.append("Additional cross-cutting test files:")
+        lines.append("  - MultiTenantIsolationTest.php (client_id filtering across all endpoints)")
+        lines.append("  - TransactionIntegrityTest.php (all-or-nothing batch operations, rollback scenarios)")
+        lines.append("  - CSVValidationRulesTest.php (per-field validation from validation_service)")
+
+        # === Critical Test Requirements ===
+        lines.append("")
+        lines.append("========================================")
+        lines.append("CRITICAL TEST REQUIREMENTS")
+        lines.append("========================================")
+        lines.append("")
+        lines.append("1. Use RefreshDatabase trait (reset DB for each test)")
+        lines.append("2. Use factories for test data (NOT manual creation)")
+        lines.append("3. Test happy path AND error scenarios")
+        lines.append("4. Assert JSON structure AND database state")
+        lines.append("5. Test authorization via permission table (403 if not authorized)")
+        lines.append("6. Test CSV validation (422) with all-or-nothing behavior")
+        lines.append("7. Test multi-tenant isolation for EVERY endpoint")
+        lines.append("8. Test N+1 queries using query log")
+        lines.append("9. Test pagination structure (links + meta)")
+        lines.append("10. Test proper status codes (200, 201, 204, 401, 403, 404, 422)")
+
+        self.constraints = '\n'.join(lines)
+
+    # ── Helper methods: each extracts one JSON section as test scenarios ──
+
+    def _append_permission_tests(self, lines: list, um: dict):
+        """Format user management requirements as test scenarios — all from JSON"""
         metrics = um.get('permission_metrics', [])
+        lines.append("")
         lines.append("## Role-Permission Matrix Tests")
         for m in metrics:
             role = m.get('role', 'Unknown')
+            origin = m.get('origin', 'new')
             perms = m.get('default_permissions', {})
-            lines.append(f"\n### {role}")
+            lines.append(f"\n### {role} (origin: {origin})")
             lines.append(f"Default permissions: {perms}")
             lines.append(f"Test scenarios:")
             for perm_key, perm_val in perms.items():
@@ -423,13 +248,26 @@ Your tests are the final validation that the Volopa OOP Expense system is:
             if 'with_management_rights' in m:
                 mgmt = m['with_management_rights']
                 lines.append(f"  With management rights:")
-                for mk, mv in mgmt.items():
-                    if mk == 'origin':
-                        continue
-                    if mv:
-                        lines.append(f"    - Test: {role} with mgmt rights CAN {mk}: {mv}")
-                    else:
-                        lines.append(f"    - Test: {role} with mgmt rights CANNOT {mk}")
+                if isinstance(mgmt, dict):
+                    for mk, mv in mgmt.items():
+                        if mk == 'origin':
+                            continue
+                        if mv:
+                            lines.append(f"    - Test: {role} with mgmt rights CAN {mk}: {mv}")
+                        else:
+                            lines.append(f"    - Test: {role} with mgmt rights CANNOT {mk}")
+
+        # Hierarchy
+        hierarchy = um.get('hierarchy', {})
+        if hierarchy:
+            lines.append(f"\n## Hierarchy Tests")
+            lines.append(f"  Description: {hierarchy.get('description', '')}")
+            tree = hierarchy.get('tree', {})
+            if tree:
+                lines.append(f"  - Test: {tree.get('role', '?')} capabilities: {tree.get('capabilities', [])}")
+                delegated = tree.get('delegated', {})
+                if delegated:
+                    lines.append(f"  - Test: {delegated.get('role', '?')} capabilities: {delegated.get('capabilities', [])}")
 
         # Access control flow tests
         acf = um.get('access_control_flow', {})
@@ -451,26 +289,59 @@ Your tests are the final validation that the Volopa OOP Expense system is:
 
         # Grant/revoke tests
         granting = acf.get('granting_managing_rights', {})
-        lines.append("\n## Grant/Revoke Managing Rights Tests")
-        for who in granting.get('who_can_grant', []):
-            lines.append(f"  - Test: {who['role']} can grant via {who['method']}")
+        if granting:
+            lines.append("\n## Grant/Revoke Managing Rights Tests")
+            for who in granting.get('who_can_grant', []):
+                lines.append(f"  - Test: {who.get('role', '?')} can grant via {who.get('method', '?')}")
 
         revoking = acf.get('revoking_managing_rights', {})
-        effect = revoking.get('revocation_effect', '')
-        if effect:
-            lines.append(f"  - Test: Revocation effect: {effect}")
+        if revoking:
+            effect = revoking.get('revocation_effect', '')
+            if effect:
+                lines.append(f"  - Test: Revocation effect: {effect}")
 
-        return '\n'.join(lines)
+        # UM database tables
+        um_tables = um.get('database_schema', {}).get('tables', [])
+        if um_tables:
+            lines.append("\n## User Management Table Tests")
+            for table in um_tables:
+                name = table.get('name', '?')
+                origin = table.get('origin', 'new')
+                cols = table.get('columns', [])
+                lines.append(f"\n  Table: {name} (origin: {origin}, {len(cols)} columns)")
+                lines.append(f"  - Test: Table has correct columns: {[c['name'] for c in cols]}")
+                fks = table.get('foreign_keys', [])
+                for fk in fks:
+                    lines.append(f"  - Test: FK {fk.get('column', '?')} -> {fk.get('references', '?')}")
 
-    def _format_csv_upload_tests(self, pe: dict) -> str:
-        """Format pocket expense CSV upload requirements as test scenarios"""
-        lines = []
+    def _append_csv_upload_tests(self, lines: list, pe: dict):
+        """Format CSV upload requirements as test scenarios — all from JSON"""
+
+        # Overview + validation behavior
+        overview = pe.get('overview', {})
+        vb = overview.get('validation_behavior', {})
+        if vb:
+            lines.append(f"\n## Validation Behavior (from JSON)")
+            lines.append(f"  - Test: {vb.get('description', '')}")
+            lines.append(f"  - Test on_failure: {vb.get('on_failure', '')}")
+            lines.append(f"  - Test on_success: {vb.get('on_success', '')}")
 
         # API contract tests
         api = pe.get('api_contract', {})
         route = api.get('route', {})
-        lines.append(f"## API Endpoint: {route.get('method', 'POST')} {route.get('path', '/api/uploads/pocket-expense/csv')}")
-        lines.append(f"Middleware: {route.get('middleware', 'Oauth2UserClient')}")
+        route_path = route.get('path', '?')
+        route_method = route.get('method', 'POST')
+        lines.append(f"\n## API Endpoint: {route_method} {route_path}")
+        lines.append(f"Middleware: {route.get('middleware', '?')}")
+        lines.append(f"Controller: {route.get('controller', '?')}")
+
+        # Form fields
+        fields = api.get('form_fields', [])
+        if fields:
+            lines.append(f"\n### Form Field Tests")
+            for field in fields:
+                req = "required" if field.get('required') else "optional"
+                lines.append(f"  - Test: {field['name']} ({req}): {field.get('description', '')}")
 
         lines.append("\n### Request Validation Tests")
         validation = api.get('server_side_validation', {})
@@ -484,6 +355,15 @@ Your tests are the final validation that the Volopa OOP Expense system is:
         for check in api.get('additional_checks', []):
             lines.append(f"  - Test: {check}")
 
+        # File constraints
+        fc = pe.get('csv_file_definition', {}).get('file_constraints', {})
+        if fc:
+            lines.append(f"\n### File Constraint Tests")
+            for k, v in fc.items():
+                if k == 'origin':
+                    continue
+                lines.append(f"  - Test: {k} enforced: {v}")
+
         # CSV column validation tests
         lines.append("\n### CSV Column Validation Tests")
         vs = pe.get('validation_service', {})
@@ -495,115 +375,264 @@ Your tests are the final validation that the Volopa OOP Expense system is:
                 if k != 'required':
                     lines.append(f"    - Test: {k} = {v}")
 
+        # Row failure behavior (JSON value may be a string or dict)
+        rfb = vs.get('row_failure_behavior', '')
+        if rfb:
+            lines.append(f"\n### Row Failure Behavior Tests")
+            if isinstance(rfb, dict):
+                for k, v in rfb.items():
+                    if k == 'origin':
+                        continue
+                    lines.append(f"  - Test: {k}: {v}")
+            else:
+                lines.append(f"  - Test: {rfb}")
+
+        # File processing pipeline
+        fp = pe.get('file_processing', {})
+        fp_steps = fp.get('steps', [])
+        if fp_steps:
+            lines.append(f"\n### File Processing Pipeline Tests")
+            for step in fp_steps:
+                lines.append(f"  Step {step.get('step', '?')}: {step.get('name', '')}")
+                details = step.get('details', [])
+                if isinstance(details, list):
+                    for detail in details:
+                        if isinstance(detail, str):
+                            lines.append(f"    - Test: {detail}")
+                if 'on_error' in step:
+                    err = step['on_error']
+                    for action in err.get('actions', []):
+                        lines.append(f"    - Test on_error: {action}")
+                if 'on_success' in step:
+                    suc = step['on_success']
+                    for action in suc.get('actions', []):
+                        lines.append(f"    - Test on_success: {action}")
+
+        # Upload tracking table
+        dm = pe.get('data_model', {}).get('new_table', {})
+        if dm:
+            upload_table = dm.get('name', '?')
+            lines.append(f"\n### Upload Tracking Table Tests ({upload_table})")
+            for col in dm.get('columns', []):
+                comment = f" — {col['comment']}" if 'comment' in col else ''
+                lines.append(f"  - Test: column {col['name']} {col['type']}{comment}")
+
         # Error response tests
-        lines.append("\n### Error Response Tests (HTTP 422)")
+        lines.append("\n### Error Response Tests")
         er = pe.get('error_response', {})
-        lines.append(f"  - Test: Response has success=false, message, upload_id, total_rows, error_count")
-        lines.append(f"  - Test: errors array contains line_number, field, error, value per error")
-        lines.append(f"  - Test: line_number corresponds to CSV line (header = line 1)")
-        lines.append(f"  - Test: errors stored in pocket_expense_file_uploads.validation_errors")
+        lines.append(f"  HTTP Status: {er.get('http_status', '?')}")
+        structure = er.get('structure', {})
+        if structure:
+            lines.append(f"  - Test: Response matches structure: {json.dumps(structure)}")
+        notes = er.get('notes', [])
+        for note in notes:
+            lines.append(f"  - Test: {note}")
+        fe_req = er.get('frontend_requirements', [])
+        if fe_req:
+            lines.append(f"  Frontend Requirements:")
+            for req in fe_req:
+                lines.append(f"    - Test: {req}")
 
         # Success response tests
         lines.append("\n### Success Response Tests")
-        lines.append(f"  - Test: Response has success=true, message, upload_id, total_rows")
-        lines.append(f"  - Test: All pocket_expense records created")
-        lines.append(f"  - Test: PocketExpenseFileUpload status = 'completed', processed_at set")
-        lines.append(f"  - Test: Notification issued to target user")
+        sr = pe.get('success_response', {})
+        sr_structure = sr.get('structure', {})
+        if sr_structure:
+            lines.append(f"  - Test: Response matches structure: {json.dumps(sr_structure)}")
 
-        # All-or-nothing tests
-        lines.append("\n### All-or-Nothing Validation Tests")
-        lines.append(f"  - Test: If 1 row invalid out of 200, zero expenses created")
-        lines.append(f"  - Test: If all rows valid, all expenses created")
-        lines.append(f"  - Test: Max 200 rows enforced")
-
-        # Background sync tests
+        # Local storage & background sync
         ls = pe.get('storing_pocket_expenses_from_file_upload', {})
         flow = ls.get('flow', [])
         if flow:
-            lines.append("\n### Background Sync Tests")
+            lines.append("\n### Local Storage & Background Sync Tests")
             for step in flow:
                 lines.append(f"  - Test: {step}")
+        local_schema = ls.get('local_storage_schema', {})
+        if local_schema:
+            lines.append(f"  Local Table: {local_schema.get('table_name', '?')}")
+            for col in local_schema.get('columns', []):
+                lines.append(f"    - Test: column {col['name']} {col['type']}")
+        bulk = ls.get('bulk_insert_pattern', {})
+        if bulk:
+            lines.append(f"  Bulk Insert Pattern:")
+            for k, v in bulk.items():
+                if k == 'origin':
+                    continue
+                lines.append(f"    - Test: {k}: {v}")
 
         # Security tests
         sec = pe.get('security_and_permissions', {})
-        lines.append("\n### Security Tests")
-        for check in sec.get('server_side_checks', []):
-            lines.append(f"  - Test: {check}")
+        if sec:
+            lines.append("\n### Security Tests")
+            ep = sec.get('endpoint_protection', '')
+            if ep:
+                lines.append(f"  - Test: Endpoint protected by: {ep}")
+            for check in sec.get('server_side_checks', []):
+                lines.append(f"  - Test: {check}")
 
-        return '\n'.join(lines)
+    def _append_single_expense_tests(self, lines: list, sdc: dict):
+        """Format single expense data capturing requirements as test scenarios — all from JSON"""
 
-    def _format_single_expense_tests(self, sdc: dict) -> str:
-        """Format single expense data capturing requirements as test scenarios"""
-        lines = []
-
-        # Expense type tests
+        # All SDC database tables
         tables = sdc.get('database_schema', {}).get('tables', [])
         for table in tables:
-            if table.get('name') == 'opt_pocket_expense_type':
-                lines.append("## Expense Type Tests")
-                for seed in table.get('seed_data', []):
-                    sign = seed.get('amount_sign', 'negative')
-                    lines.append(f"  - Test: {seed['option']} has amount_sign={sign}")
-                lines.append(f"  - Test: Amount sign applied correctly (+ve for Refund, -ve for others)")
+            name = table.get('name', '?')
+            origin = table.get('origin', 'new')
+            cols = table.get('columns', [])
+            lines.append(f"\n## Table Tests: {name} (origin: {origin})")
+            lines.append(f"  - Test: Table has {len(cols)} columns: {[c['name'] for c in cols]}")
+            # Seed data
+            for seed in table.get('seed_data', []):
+                if isinstance(seed, dict):
+                    lines.append(f"  - Test seed: {seed}")
+                else:
+                    lines.append(f"  - Test seed: {seed}")
+            # Unique keys
+            for uk in table.get('unique_keys', []):
+                lines.append(f"  - Test unique key: {uk.get('name', '?')} on {uk.get('columns', [])}")
+            # Foreign keys
+            for fk in table.get('foreign_keys', []):
+                ref_origin = fk.get('referenced_table_origin', 'unknown')
+                lines.append(f"  - Test FK: {fk.get('column', '?')} -> {fk.get('references', '?')} (ref origin: {ref_origin})")
+
+        # Metadata JSON examples (JSON value is a dict keyed by type name, not a list)
+        examples = sdc.get('database_schema', {}).get('metadata_json_examples', {})
+        if examples:
+            lines.append(f"\n## Metadata JSON Tests")
+            for meta_type, example in examples.items():
+                if meta_type == 'origin':
+                    continue
+                lines.append(f"  - Test: type={meta_type}, details_json={json.dumps(example) if isinstance(example, dict) else example}")
 
         # Expense source tests
         src = sdc.get('oop_expense_source', {})
-        lines.append("\n## Expense Source Config Tests")
-        setup = src.get('default_and_global_source_setup', {})
-        defaults = setup.get('on_client_oop_feature_enable', {}).get('auto_create_defaults', [])
-        lines.append(f"  - Test: On OOP feature enable, 3 defaults created: {defaults}")
-        lines.append(f"  - Test: Global 'Other' record exists with client_id=NULL")
-        lines.append(f"  - Test: 'Other' is not deletable or editable by clients")
+        if src:
+            lines.append("\n## Expense Source Config Tests")
+            setup = src.get('default_and_global_source_setup', {})
+            on_enable = setup.get('on_client_oop_feature_enable', {})
+            defaults = on_enable.get('auto_create_defaults', [])
+            if defaults:
+                lines.append(f"  - Test: On feature enable, defaults created: {defaults}")
+            global_other = on_enable.get('global_other', {})
+            if global_other:
+                lines.append(f"  - Test: Global Other record: {global_other}")
 
-        dropdown = src.get('dropdown_display', {})
-        lines.append(f"  - Test: Dropdown lists active client-specific sources (deleted=0)")
-        lines.append(f"  - Test: Dropdown includes global 'Other' (client_id IS NULL)")
+            dropdown = src.get('dropdown_display', {})
+            if dropdown:
+                lines.append(f"  Dropdown Display Tests:")
+                for k, v in dropdown.items():
+                    if k == 'origin':
+                        continue
+                    lines.append(f"    - Test: {k}: {v}")
 
-        submission = src.get('expense_submission', {})
-        lines.append(f"  - Test: Non-Other source saves expense_source_id only")
-        lines.append(f"  - Test: 'Other' source saves global Other ID + custom_source_text")
+            submission = src.get('expense_submission', {})
+            if submission:
+                lines.append(f"  Expense Submission Tests:")
+                for k, v in submission.items():
+                    if k == 'origin':
+                        continue
+                    lines.append(f"    - Test: {k}: {v}")
 
-        config = src.get('client_config_behaviour', {})
-        lines.append(f"  - Test: Max {config.get('max_active_sources_per_client', 20)} active sources per client enforced")
-        lines.append(f"  - Test: Unique source names per client (client_id, name)")
-        lines.append(f"  - Test: Soft-deleted sources remain on historical expenses")
-        lines.append(f"  - Test: Soft-deleted sources excluded from future dropdowns")
+            config = src.get('client_config_behaviour', {})
+            if config:
+                lines.append(f"  Client Config Behaviour Tests:")
+                for k, v in config.items():
+                    if k == 'origin':
+                        continue
+                    lines.append(f"    - Test: {k}: {v}")
 
-        # Pocket expense CRUD tests
-        lines.append("\n## Pocket Expense CRUD Tests")
-        lines.append(f"  - Test: Create expense with status='draft'")
-        lines.append(f"  - Test: Update expense (edit own)")
-        lines.append(f"  - Test: View own expense")
-        lines.append(f"  - Test: Delete own expense")
-        lines.append(f"  - Test: Status workflow: draft -> submitted -> approved")
-        lines.append(f"  - Test: Status workflow: draft -> submitted -> rejected")
-        lines.append(f"  - Test: Only authorized users can approve (via user_feature_permission)")
+        # Currency conversion
+        cc = sdc.get('currency_conversion', {})
+        if cc:
+            lines.append(f"\n## Currency Conversion Tests")
+            lines.append(f"  - Test: {cc.get('description', '')}")
+            lines.append(f"  - Test query: {cc.get('query_description', '')}")
+            refs = cc.get('referenced_tables', [])
+            if refs:
+                lines.append(f"  Referenced Tables (origin: existing):")
+                for ref in refs:
+                    lines.append(f"    - Test: uses existing table: {ref}")
+            fields = cc.get('returned_fields', [])
+            if fields:
+                lines.append(f"  Returned Fields:")
+                for f in fields:
+                    lines.append(f"    - Test: returns {f}")
+            filters = cc.get('filter_conditions', [])
+            if filters:
+                lines.append(f"  Filter Conditions:")
+                for fc in filters:
+                    lines.append(f"    - Test: {fc}")
 
-        # Metadata tests
-        lines.append("\n## Pocket Expense Metadata Tests")
-        lines.append(f"  - Test: Category metadata with details_json")
-        lines.append(f"  - Test: Tracking code metadata (type_1 and type_2)")
-        lines.append(f"  - Test: Project metadata")
-        lines.append(f"  - Test: File metadata")
-        lines.append(f"  - Test: Expense source metadata (including custom 'Other' value)")
-        lines.append(f"  - Test: Additional field metadata")
-        lines.append(f"  - Test: One metadata record per type per expense (unique constraint)")
-
-        # FX conversion tests
+        # FX conversion flow (ALL steps, no truncation)
         fx = sdc.get('fx_conversion_flow', {})
-        lines.append("\n## FX Conversion Tests")
-        for step_key, step_val in fx.items():
-            if not isinstance(step_val, dict):
-                continue
-            name = step_val.get('name', step_key)
-            lines.append(f"\n  {name}:")
-            for item in step_val.get('flow', []):
-                lines.append(f"    - Test: {item}")
+        if fx:
+            lines.append("\n## FX Conversion Flow Tests")
+            for step_key, step_val in fx.items():
+                if not isinstance(step_val, dict):
+                    continue
+                name = step_val.get('name', step_key)
+                lines.append(f"\n  {name}:")
+                for item in step_val.get('flow', []):
+                    lines.append(f"    - Test: {item}")
 
-        lines.append(f"  - Test: FX rate with 30-day lookback (returns rate if within 30 days)")
-        lines.append(f"  - Test: FX rate returns 'No FX Available' if no rate in 30 days")
-        lines.append(f"  - Test: Adjusted rate = BaseRate x (1 - Commission%)")
-        lines.append(f"  - Test: User can override converted amount (user_converted_amount stored)")
-        lines.append(f"  - Test: Backend recalculates FX on form submit")
+    def _append_architectural_pattern_tests(self, lines: list, pe: dict, sdc: dict):
+        """Generate architectural pattern test guidance derived from JSON structures, not hardcoded names."""
 
-        return '\n'.join(lines)
+        # Derive key names from JSON for use in test examples
+        api = pe.get('api_contract', {})
+        route = api.get('route', {})
+        upload_route = route.get('path', '/api/uploads/csv')
+        upload_table = pe.get('data_model', {}).get('new_table', {}).get('name', 'upload_table')
+
+        # Local storage table for batch records
+        local_table = pe.get('storing_pocket_expenses_from_file_upload', {}).get(
+            'local_storage_schema', {}).get('table_name', 'local_expense_table')
+
+        # Error response structure from JSON
+        er_structure = pe.get('error_response', {}).get('structure', {})
+        er_keys = list(er_structure.keys()) if er_structure else ['success', 'message', 'errors']
+
+        lines.append("")
+        lines.append("## 1. Transaction Integrity - All-or-Nothing Batch")
+        lines.append(f"  Route: {upload_route}")
+        lines.append(f"  Target table for created records: {local_table}")
+        lines.append(f"  Upload tracking table: {upload_table}")
+        lines.append(f"  Error response keys: {er_keys}")
+        lines.append("  Tests:")
+        lines.append("  - Upload CSV with N valid rows and 1 invalid row -> assert 422, assert 0 records in target table (rollback)")
+        lines.append("  - Upload CSV with all valid rows -> assert 200, assert N records created")
+        lines.append("  - Assert error response matches JSON error_response.structure")
+        lines.append("")
+        lines.append("## 2. N+1 Query Prevention")
+        lines.append("  - For EVERY list endpoint, enable query log, fetch list, assert query count <= threshold")
+        lines.append("  - Threshold: number of eager-loaded relations + base query (typically <= 4)")
+        lines.append("")
+        lines.append("## 3. Pagination Required")
+        lines.append("  - For EVERY list endpoint, assert response has: data, links (first/last/prev/next), meta (current_page/total/per_page)")
+        lines.append("")
+        lines.append("## 4. Multi-Tenant Isolation")
+        lines.append("  - For EVERY endpoint: create records with client_id=1 and client_id=999")
+        lines.append("  - Assert user with client_id=1 cannot access client_id=999 records (403 or 404)")
+        lines.append("  - Assert list endpoints only return own-client records")
+        lines.append("")
+        lines.append("## 5. Async Processing - Background Sync")
+
+        sync_flow = pe.get('storing_pocket_expenses_from_file_upload', {}).get('flow', [])
+        if sync_flow:
+            lines.append("  Background sync flow from JSON:")
+            for step in sync_flow:
+                lines.append(f"    - Test: {step}")
+        lines.append("  - Assert Queue::fake() + Queue::assertPushed() for background jobs")
+        lines.append("")
+        lines.append("## 6. API Resources (Not Raw Models)")
+        lines.append("  - For EVERY endpoint: assert response uses API Resource structure (data wrapper)")
+        lines.append("  - Assert sensitive fields excluded (password, remember_token, etc.)")
+        lines.append("")
+        lines.append("## 7. Status Codes")
+        lines.append("  - 200 OK: Successful GET and successful batch upload")
+        lines.append("  - 201 Created: Successful POST (single record creation)")
+        lines.append("  - 204 No Content: Successful DELETE")
+        lines.append("  - 401 Unauthorized: No authentication token")
+        lines.append("  - 403 Forbidden: Permission check fails")
+        lines.append("  - 404 Not Found: Record does not exist or belongs to different client")
+        lines.append("  - 422 Unprocessable: Validation failure (form fields or CSV content)")

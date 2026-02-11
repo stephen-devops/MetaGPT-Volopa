@@ -1,6 +1,3 @@
-## Code: app/Models/OopExpense.php
-
-```php
 <?php
 
 namespace App\Models;
@@ -8,13 +5,11 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Casts\Attribute;
-use Carbon\Carbon;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class OopExpense extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     /**
      * The table associated with the model.
@@ -29,100 +24,85 @@ class OopExpense extends Model
         'client_id',
         'date',
         'merchant_name',
-        'description',
-        'transaction_type',
-        'currency',
         'amount',
-        'merchant_address',
-        'country',
-        'source',
-        'category',
-        'custom_fields',
-        'tracking_code_i',
-        'tracking_code_ii',
-        'project_id',
-        'vat',
+        'currency',
         'status',
-        'receipt_path',
-        'notes',
-    ];
-
-    /**
-     * The attributes that should be hidden for serialization.
-     */
-    protected $hidden = [
-        'custom_fields',
+        'description',
+        'receipt_url',
+        'category',
+        'converted_amount',
+        'converted_currency',
+        'fx_rate',
+        'fx_commission',
+        'approved_by',
+        'approved_at',
+        'rejection_reason',
+        'metadata',
+        'is_reimbursable',
+        'reimbursed_amount',
+        'reimbursed_at',
+        'expense_code',
+        'project_code',
+        'cost_center',
     ];
 
     /**
      * The attributes that should be cast.
      */
     protected $casts = [
+        'id' => 'integer',
+        'user_id' => 'integer',
+        'client_id' => 'integer',
         'date' => 'date',
         'amount' => 'decimal:2',
-        'vat' => 'decimal:2',
-        'custom_fields' => 'array',
+        'converted_amount' => 'decimal:2',
+        'fx_rate' => 'decimal:6',
+        'fx_commission' => 'decimal:4',
+        'approved_by' => 'integer',
         'approved_at' => 'datetime',
+        'metadata' => 'array',
+        'is_reimbursable' => 'boolean',
+        'reimbursed_amount' => 'decimal:2',
+        'reimbursed_at' => 'datetime',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
+        'deleted_at' => 'datetime',
     ];
 
     /**
-     * The attributes that are not mass assignable.
+     * The attributes that should be hidden for serialization.
      */
-    protected $guarded = [
-        'id',
-        'approved_by',
-        'approved_at',
-        'created_at',
-        'updated_at',
+    protected $hidden = [
+        'deleted_at',
     ];
 
     /**
-     * The model's default values for attributes.
+     * Default attribute values.
      */
     protected $attributes = [
-        'transaction_type' => 'Point of Sale',
         'status' => 'pending',
+        'fx_commission' => 0.0000,
+        'is_reimbursable' => true,
     ];
 
     /**
-     * Valid status values for the expense.
+     * The possible status values.
      */
     const STATUS_PENDING = 'pending';
     const STATUS_APPROVED = 'approved';
     const STATUS_REJECTED = 'rejected';
+    const STATUS_PROCESSING = 'processing';
 
     /**
-     * Valid transaction types for the expense.
+     * Get all possible status values.
      */
-    const TRANSACTION_TYPE_POINT_OF_SALE = 'Point of Sale';
-    const TRANSACTION_TYPE_ATM_WITHDRAWAL = 'ATM Withdrawal';
-    const TRANSACTION_TYPE_FEE_CHARGES = 'Fee & Charges';
-    const TRANSACTION_TYPE_REFUND = 'Refund from Merchant';
-
-    /**
-     * Get all valid status values.
-     */
-    public static function getValidStatuses(): array
+    public static function getStatusOptions(): array
     {
         return [
             self::STATUS_PENDING,
             self::STATUS_APPROVED,
             self::STATUS_REJECTED,
-        ];
-    }
-
-    /**
-     * Get all valid transaction types.
-     */
-    public static function getValidTransactionTypes(): array
-    {
-        return [
-            self::TRANSACTION_TYPE_POINT_OF_SALE,
-            self::TRANSACTION_TYPE_ATM_WITHDRAWAL,
-            self::TRANSACTION_TYPE_FEE_CHARGES,
-            self::TRANSACTION_TYPE_REFUND,
+            self::STATUS_PROCESSING,
         ];
     }
 
@@ -135,7 +115,7 @@ class OopExpense extends Model
     }
 
     /**
-     * Get the client that owns the expense.
+     * Get the client associated with the expense.
      */
     public function client(): BelongsTo
     {
@@ -143,25 +123,17 @@ class OopExpense extends Model
     }
 
     /**
-     * Get the user who approved the expense.
+     * Get the user who approved this expense.
      */
-    public function approvedBy(): BelongsTo
+    public function approver(): BelongsTo
     {
         return $this->belongsTo(User::class, 'approved_by');
     }
 
     /**
-     * Get the project associated with the expense.
-     */
-    public function project(): BelongsTo
-    {
-        return $this->belongsTo(Project::class, 'project_id');
-    }
-
-    /**
      * Scope a query to only include expenses for a specific client.
      */
-    public function scopeForClient(Builder $query, int $clientId): Builder
+    public function scopeForClient($query, int $clientId)
     {
         return $query->where('client_id', $clientId);
     }
@@ -169,7 +141,7 @@ class OopExpense extends Model
     /**
      * Scope a query to only include expenses for a specific user.
      */
-    public function scopeForUser(Builder $query, int $userId): Builder
+    public function scopeForUser($query, int $userId)
     {
         return $query->where('user_id', $userId);
     }
@@ -177,7 +149,7 @@ class OopExpense extends Model
     /**
      * Scope a query to only include expenses with a specific status.
      */
-    public function scopeWithStatus(Builder $query, string $status): Builder
+    public function scopeWithStatus($query, string $status)
     {
         return $query->where('status', $status);
     }
@@ -185,7 +157,7 @@ class OopExpense extends Model
     /**
      * Scope a query to only include pending expenses.
      */
-    public function scopePending(Builder $query): Builder
+    public function scopePending($query)
     {
         return $query->where('status', self::STATUS_PENDING);
     }
@@ -193,7 +165,7 @@ class OopExpense extends Model
     /**
      * Scope a query to only include approved expenses.
      */
-    public function scopeApproved(Builder $query): Builder
+    public function scopeApproved($query)
     {
         return $query->where('status', self::STATUS_APPROVED);
     }
@@ -201,81 +173,49 @@ class OopExpense extends Model
     /**
      * Scope a query to only include rejected expenses.
      */
-    public function scopeRejected(Builder $query): Builder
+    public function scopeRejected($query)
     {
         return $query->where('status', self::STATUS_REJECTED);
     }
 
     /**
-     * Scope a query to include expenses within a date range.
+     * Scope a query to only include processing expenses.
      */
-    public function scopeInDateRange(Builder $query, Carbon $startDate, Carbon $endDate): Builder
+    public function scopeProcessing($query)
     {
-        return $query->whereBetween('date', [$startDate->format('Y-m-d'), $endDate->format('Y-m-d')]);
+        return $query->where('status', self::STATUS_PROCESSING);
     }
 
     /**
-     * Scope a query to include expenses with a specific currency.
+     * Scope a query to filter by date range.
      */
-    public function scopeWithCurrency(Builder $query, string $currency): Builder
+    public function scopeDateRange($query, string $startDate, string $endDate)
+    {
+        return $query->whereBetween('date', [$startDate, $endDate]);
+    }
+
+    /**
+     * Scope a query to filter by currency.
+     */
+    public function scopeByCurrency($query, string $currency)
     {
         return $query->where('currency', $currency);
     }
 
     /**
-     * Scope a query to include expenses with amount greater than or equal to a value.
+     * Scope a query to only include reimbursable expenses.
      */
-    public function scopeMinAmount(Builder $query, float $amount): Builder
+    public function scopeReimbursable($query)
     {
-        return $query->where('amount', '>=', $amount);
+        return $query->where('is_reimbursable', true);
     }
 
     /**
-     * Scope a query to include expenses with amount less than or equal to a value.
+     * Scope a query to only include non-reimbursable expenses.
      */
-    public function scopeMaxAmount(Builder $query, float $amount): Builder
+    public function scopeNonReimbursable($query)
     {
-        return $query->where('amount', '<=', $amount);
-    }
-
-    /**
-     * Scope a query to search by merchant name.
-     */
-    public function scopeSearchMerchant(Builder $query, string $search): Builder
-    {
-        return $query->where('merchant_name', 'LIKE', '%' . $search . '%');
-    }
-
-    /**
-     * Scope a query to include expenses with a specific transaction type.
-     */
-    public function scopeWithTransactionType(Builder $query, string $transactionType): Builder
-    {
-        return $query->where('transaction_type', $transactionType);
-    }
-
-    /**
-     * Scope a query to order expenses by most recent first.
-     */
-    public function scopeLatest(Builder $query): Builder
-    {
-        return $query->orderBy('created_at', 'desc');
-    }
-
-    /**
-     * Scope a query to order expenses by date (most recent first).
-     */
-    public function scopeOrderByDate(Builder $query, string $direction = 'desc'): Builder
-    {
-        return $query->orderBy('date', $direction);
-    }
-
-    /**
-     * Scope a query to order expenses by amount.
-     */
-    public function scopeOrderByAmount(Builder $query, string $direction = 'desc'): Builder
-    {
-        return $query->orderBy('amount', $direction);
+        return $query->where('is_reimbursable', false);
     }
 
     /**
@@ -303,284 +243,128 @@ class OopExpense extends Model
     }
 
     /**
-     * Check if the expense can be approved.
+     * Check if the expense is processing.
      */
-    public function canBeApproved(): bool
+    public function isProcessing(): bool
     {
-        return $this->isPending();
+        return $this->status === self::STATUS_PROCESSING;
     }
 
     /**
-     * Check if the expense can be rejected.
+     * Check if the expense is reimbursable.
      */
-    public function canBeRejected(): bool
+    public function isReimbursable(): bool
     {
-        return $this->isPending();
+        return $this->is_reimbursable;
     }
 
     /**
-     * Check if the expense can be updated.
+     * Check if the expense has been reimbursed.
      */
-    public function canBeUpdated(): bool
+    public function isReimbursed(): bool
     {
-        return $this->isPending();
+        return !is_null($this->reimbursed_at) && !is_null($this->reimbursed_amount);
     }
 
     /**
-     * Check if the expense can be deleted.
+     * Check if the expense has FX conversion applied.
      */
-    public function canBeDeleted(): bool
+    public function hasFxConversion(): bool
     {
-        return $this->isPending();
+        return !is_null($this->converted_amount) && !is_null($this->converted_currency) && !is_null($this->fx_rate);
     }
 
     /**
      * Mark the expense as approved.
      */
-    public function markAsApproved(int $approvedByUserId): bool
+    public function approve(int $approverId): bool
     {
-        if (!$this->canBeApproved()) {
-            return false;
-        }
-
-        $this->status = self::STATUS_APPROVED;
-        $this->approved_by = $approvedByUserId;
-        $this->approved_at = now();
-
-        return $this->save();
+        return $this->update([
+            'status' => self::STATUS_APPROVED,
+            'approved_by' => $approverId,
+            'approved_at' => now(),
+            'rejection_reason' => null,
+        ]);
     }
 
     /**
      * Mark the expense as rejected.
      */
-    public function markAsRejected(int $approvedByUserId): bool
+    public function reject(int $approverId, string $reason): bool
     {
-        if (!$this->canBeRejected()) {
-            return false;
-        }
-
-        $this->status = self::STATUS_REJECTED;
-        $this->approved_by = $approvedByUserId;
-        $this->approved_at = now();
-
-        return $this->save();
+        return $this->update([
+            'status' => self::STATUS_REJECTED,
+            'approved_by' => $approverId,
+            'approved_at' => now(),
+            'rejection_reason' => $reason,
+        ]);
     }
 
     /**
-     * Get the formatted amount with currency symbol.
+     * Mark the expense as processing.
      */
-    public function getFormattedAmountAttribute(): string
+    public function markAsProcessing(): bool
+    {
+        return $this->update(['status' => self::STATUS_PROCESSING]);
+    }
+
+    /**
+     * Mark the expense as reimbursed.
+     */
+    public function markAsReimbursed(float $amount): bool
+    {
+        return $this->update([
+            'reimbursed_amount' => $amount,
+            'reimbursed_at' => now(),
+        ]);
+    }
+
+    /**
+     * Apply FX conversion to the expense.
+     */
+    public function applyFxConversion(float $convertedAmount, string $convertedCurrency, float $fxRate, float $fxCommission = 0.0000): bool
+    {
+        return $this->update([
+            'converted_amount' => $convertedAmount,
+            'converted_currency' => $convertedCurrency,
+            'fx_rate' => $fxRate,
+            'fx_commission' => $fxCommission,
+        ]);
+    }
+
+    /**
+     * Get the effective amount (converted or original).
+     */
+    public function getEffectiveAmount(): float
+    {
+        return $this->converted_amount ?? $this->amount;
+    }
+
+    /**
+     * Get the effective currency (converted or original).
+     */
+    public function getEffectiveCurrency(): string
+    {
+        return $this->converted_currency ?? $this->currency;
+    }
+
+    /**
+     * Get formatted amount with currency.
+     */
+    public function getFormattedAmount(): string
     {
         return number_format($this->amount, 2) . ' ' . $this->currency;
     }
 
     /**
-     * Get the absolute amount (without negative sign).
+     * Get formatted converted amount with currency.
      */
-    public function getAbsoluteAmountAttribute(): float
+    public function getFormattedConvertedAmount(): string
     {
-        return abs($this->amount);
-    }
-
-    /**
-     * Check if the expense amount is negative.
-     */
-    public function isNegativeAmount(): bool
-    {
-        return $this->amount < 0;
-    }
-
-    /**
-     * Check if the expense amount is positive.
-     */
-    public function isPositiveAmount(): bool
-    {
-        return $this->amount > 0;
-    }
-
-    /**
-     * Get the status badge color for UI display.
-     */
-    public function getStatusColorAttribute(): string
-    {
-        return match ($this->status) {
-            self::STATUS_PENDING => 'warning',
-            self::STATUS_APPROVED => 'success',
-            self::STATUS_REJECTED => 'danger',
-            default => 'secondary',
-        };
-    }
-
-    /**
-     * Get the status label for UI display.
-     */
-    public function getStatusLabelAttribute(): string
-    {
-        return match ($this->status) {
-            self::STATUS_PENDING => 'Pending',
-            self::STATUS_APPROVED => 'Approved',
-            self::STATUS_REJECTED => 'Rejected',
-            default => 'Unknown',
-        };
-    }
-
-    /**
-     * Get the transaction type label for UI display.
-     */
-    public function getTransactionTypeLabelAttribute(): string
-    {
-        return $this->transaction_type;
-    }
-
-    /**
-     * Check if the expense has a receipt.
-     */
-    public function hasReceipt(): bool
-    {
-        return !empty($this->receipt_path);
-    }
-
-    /**
-     * Check if the expense has VAT.
-     */
-    public function hasVat(): bool
-    {
-        return !is_null($this->vat) && $this->vat > 0;
-    }
-
-    /**
-     * Get the VAT amount based on the expense amount and VAT percentage.
-     */
-    public function getVatAmountAttribute(): float
-    {
-        if (!$this->hasVat()) {
-            return 0.00;
+        if ($this->hasFxConversion()) {
+            return number_format($this->converted_amount, 2) . ' ' . $this->converted_currency;
         }
 
-        return round(($this->amount * $this->vat) / 100, 2);
+        return $this->getFormattedAmount();
     }
-
-    /**
-     * Get the amount excluding VAT.
-     */
-    public function getAmountExcludingVatAttribute(): float
-    {
-        if (!$this->hasVat()) {
-            return $this->amount;
-        }
-
-        return round($this->amount - $this->getVatAmountAttribute(), 2);
-    }
-
-    /**
-     * Check if the expense has custom fields.
-     */
-    public function hasCustomFields(): bool
-    {
-        return !empty($this->custom_fields) && is_array($this->custom_fields);
-    }
-
-    /**
-     * Get a specific custom field value.
-     */
-    public function getCustomField(string $key, mixed $default = null): mixed
-    {
-        if (!$this->hasCustomFields()) {
-            return $default;
-        }
-
-        return $this->custom_fields[$key] ?? $default;
-    }
-
-    /**
-     * Set a custom field value.
-     */
-    public function setCustomField(string $key, mixed $value): void
-    {
-        $customFields = $this->custom_fields ?? [];
-        $customFields[$key] = $value;
-        $this->custom_fields = $customFields;
-    }
-
-    /**
-     * Remove a custom field.
-     */
-    public function removeCustomField(string $key): void
-    {
-        if (!$this->hasCustomFields()) {
-            return;
-        }
-
-        $customFields = $this->custom_fields;
-        unset($customFields[$key]);
-        $this->custom_fields = $customFields;
-    }
-
-    /**
-     * Check if the expense belongs to a specific user.
-     */
-    public function belongsToUser(int $userId): bool
-    {
-        return $this->user_id === $userId;
-    }
-
-    /**
-     * Check if the expense belongs to a specific client.
-     */
-    public function belongsToClient(int $clientId): bool
-    {
-        return $this->client_id === $clientId;
-    }
-
-    /**
-     * Get the age of the expense in days.
-     */
-    public function getAgeInDaysAttribute(): int
-    {
-        return now()->diffInDays($this->created_at);
-    }
-
-    /**
-     * Check if the expense is older than the specified number of days.
-     */
-    public function isOlderThan(int $days): bool
-    {
-        return $this->getAgeInDaysAttribute() > $days;
-    }
-
-    /**
-     * Get expenses that need attention (pending for too long).
-     */
-    public function scopeNeedsAttention(Builder $query, int $days = 7): Builder
-    {
-        return $query->pending()
-                    ->where('created_at', '<', now()->subDays($days));
-    }
-
-    /**
-     * Get the total amount for a collection of expenses.
-     */
-    public static function getTotalAmount($expenses): float
-    {
-        if (is_a($expenses, Builder::class)) {
-            return $expenses->sum('amount');
-        }
-
-        return $expenses->sum('amount');
-    }
-
-    /**
-     * Get expenses grouped by currency.
-     */
-    public function scopeGroupByCurrency(Builder $query): Builder
-    {
-        return $query->selectRaw('currency, COUNT(*) as count, SUM(amount) as total_amount')
-                    ->groupBy('currency');
-    }
-
-    /**
-     * Get expenses grouped by status.
-     */
-    public function scopeGroupByStatus(Builder $query): Builder
-    {
-        return $query->selectRaw('status, COUNT(*)
+}
