@@ -2,8 +2,6 @@
 
 sequenceDiagram
     participant C as Client
-    participant MW as Oauth2UserClient (MW)
-    participant R as API Routes<br/>(routes/api.php)
     participant AC as ApiController
     participant FR as FormRequest
     participant P as Policy
@@ -11,11 +9,9 @@ sequenceDiagram
     participant M as Model
     participant J as Job
     participant AR as ApiResource
-
+    
     Note over C,AR: Permission Grant Flow
-    C->>MW: POST /api/permissions/grant
-    MW->>R: authenticated request
-    R->>AC: UserPermissionController.grant()
+    C->>AC: POST /api/permissions/grant
     AC->>FR: GrantUserFeaturePermissionRequest
     FR->>P: UserFeaturePermissionPolicy.create()
     P-->>FR: authorized
@@ -29,58 +25,41 @@ sequenceDiagram
     AC->>AR: UserFeaturePermissionResource
     AR-->>AC: formatted response
     AC-->>C: 201 Created JSON
-
-    Note over C,AR: CSV Upload Flow (SD-OOP_Pocket_expense.pdf)
-    C->>MW: POST /api/uploads/pocket-expense/csv (multipart/form-data)
-    MW->>R: authenticated request
-    R->>AC: PocketExpenseUploadController.uploadPocketExpenseCSV()
+    
+    Note over C,AR: CSV Upload Flow
+    C->>AC: POST /api/uploads/pocket-expense/csv
     AC->>FR: PocketExpenseCSVUploadRequest
-    FR->>FR: validate(file: csv,txt|max:10240, user_id, expense_user_id, client_id)
     FR->>P: PocketExpensePolicy.create()
-    P->>P: expense_user_id belongs to client_id
-    P->>P: client has OOP feature enabled
-    P->>P: user_id can manage expense_user_id
     P-->>FR: authorized
-    FR-->>AC: validated file + params
-
-    AC->>M: Store CSV to storage/app/pocket-expense-uploads
-    AC->>M: PocketExpenseFileUpload.create(status='uploaded')
-    M-->>AC: uploadRecord(id)
-
-    AC->>S: PocketExpenseCSVValidator(targetUserId, clientId, adminId)
-    S->>S: loadReferenceData() [expense types, currencies, countries, sources]
-    S->>S: validate headers (exact column name match)
-    S->>S: validateRow() for each row (max 200)
-    S-->>AC: validation result {errors[] or valid_rows[]}
-
-    AC->>M: PocketExpenseFileUpload.update(total_records, valid_records, validation_errors, validated_at)
-
-    alt Validation fails (any row has errors)
-        AC->>M: PocketExpenseFileUpload.update(status='validation_failed')
-        AC-->>C: 422 {success:false, errors:[{line_number, field, error, value}]}
-    else Validation passes (all rows valid)
-        AC->>M: DB::table('pocket_expense_uploads_data')->insert(bulk)
-        AC->>M: PocketExpenseFileUpload.update(status='processing')
-        AC->>J: ProcessExpenseUpload::dispatch(uploadRecord->id)
-        AC-->>C: 200 {success:true, upload_id, total_rows}
-
+    FR-->>AC: validated file
+    AC->>S: PocketExpenseCSVValidator.validateCsv()
+    S->>S: loadReferenceData() [cached]
+    S->>S: validateRow() for each row
+    alt validation fails
+        S-->>AC: validation errors array
+        AC->>M: PocketExpenseFileUpload.update(status=failed)
+        AC-->>C: 422 Validation Error JSON
+    else validation passes
+        S->>M: DB::transaction begin
+        S->>M: PocketExpenseFileUpload.create()
+        S->>M: bulk insert to pocket_expense_uploads_data
+        S->>M: DB::transaction commit
+        S->>J: dispatch ProcessPocketExpenseUpload
+        S-->>AC: success result
+        AC-->>C: 200 Success JSON
         J->>S: PocketExpenseService.createExpense() [background]
         S->>M: PocketExpense.create() [batch of 100]
         S->>M: PocketExpenseMetadata.create() [batch]
-        S->>M: PocketExpenseFileUpload.update(status='completed', processed_at)
-        J->>C: Notification (channel TBD)
     end
-
+    
     Note over C,AR: Single Expense Creation Flow
-    C->>MW: POST /api/pocket-expenses
-    MW->>R: authenticated request
-    R->>AC: PocketExpenseController.store()
+    C->>AC: POST /api/pocket-expenses
     AC->>FR: StorePocketExpenseRequest
     FR->>P: PocketExpensePolicy.create()
     P-->>FR: authorized
     FR-->>AC: validated data
     AC->>S: PocketExpenseService.createExpenseWithMetadata()
-    S->>S: FXConversionService.getFXRate(date, currency, client_id)
+    S->>S: FXConversionService.getFXRate()
     S->>M: DB::transaction begin
     S->>M: PocketExpense.create()
     M-->>S: expense model
@@ -90,18 +69,16 @@ sequenceDiagram
     AC->>AR: PocketExpenseResource
     AR-->>AC: formatted response
     AC-->>C: 201 Created JSON
-
+    
     Note over C,AR: Expense List with Permissions
-    C->>MW: GET /api/pocket-expenses
-    MW->>R: authenticated request
-    R->>AC: PocketExpenseController.index()
+    C->>AC: GET /api/pocket-expenses
     AC->>P: PocketExpensePolicy.viewAny()
     P-->>AC: authorized
     AC->>S: PocketExpenseService.getUserExpenses()
     S->>S: UserPermissionService.canManageUser()
-    S->>M: PocketExpense.with(['user','metadata','expenseType']).paginate()
+    S->>M: PocketExpense.with(['user','metadata']).paginate()
     M-->>S: paginated expenses
     S-->>AC: expenses collection
-    AC->>AR: PocketExpenseResource::collection()
+    AC->>AR: PocketExpenseResource.collection()
     AR-->>AC: formatted response
     AC-->>C: 200 OK JSON
