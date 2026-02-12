@@ -1,0 +1,271 @@
+# Environment Context for Volopa Platform (OOP Expense Perspective)
+# Extracted from existing/platform-level references in:
+#   SD-OOP_User_Management_System.json
+#   SD-OOP_Pocket_expense.json
+#   SD-OOP_Expense_single_data_capturing.json
+# Context: Environment - stable, cross-project rules, standards, and platform constraints
+
+metadata:
+  platform_name: "Volopa"
+  version: "1.0"
+  sources:
+    - "SD-OOP_User_Management_System.json"
+    - "SD-OOP_Pocket_expense.json"
+    - "SD-OOP_Expense_single_data_capturing.json"
+    - "dos_and_donts.pdf"
+  generated_date: "2026-02-11"
+  note: "This captures all existing platform entities, conventions, and infrastructure referenced by the OOP Expense feature specs"
+
+# =============================================================================
+# 1. INTENT
+# =============================================================================
+intent:
+  description: "Platform-level purpose and standards"
+
+  platform_purpose: "Volopa is a business payment and expense management platform providing card services, FX, and financial operations for corporate clients"
+
+  mental_model:
+    description: "Laravel API structure mental model"
+    source: "dos_and_donts.pdf"
+    flow: "Client -> route (versioned, throttled, auth) -> controller -> Form Request (validation + policy) -> domain logic (services/models/transactions) -> API Resource (shape output) -> JSON with correct status codes and error format"
+
+  design_principles:
+    - "Multi-tenant: all operations scoped by client_id"
+    - "Role-based access: hierarchical user roles with delegatable permissions"
+    - "Card-centric: platform assumes card services as a prerequisite for expense features"
+    - "Soft-delete pattern: preserve historical data while hiding from active views"
+
+# =============================================================================
+# 2. REQUIREMENTS
+# =============================================================================
+requirements:
+  description: "Platform-level behavioral requirements that OOP Expense inherits"
+
+  inherited_behaviors:
+    - "All API endpoints require OAuth2 authentication via middleware"
+    - "All data is scoped to a client (multi-tenancy)"
+    - "User roles (Primary Admin, Admin, Business User, Card User) are platform-wide"
+    - "Feature enablement is controlled via Sales/Ops through Admin.Volopa"
+    - "User management is accessible via Settings > Manage Users in the Web App"
+    - "Currency and country lists are platform-managed master data"
+    - "File storage uses platform storage infrastructure"
+    - "FX conversion is available as platform infrastructure"
+
+# =============================================================================
+# 3. CONSTRAINTS
+# =============================================================================
+constraints:
+  description: "Hard rules that restrict solution space - platform-level standards"
+
+  # ---------------------------------------------------------------------------
+  # DOS AND DONTS (from dos_and_donts.pdf)
+  # These are mandatory platform-wide coding standards. All projects must comply.
+  # ---------------------------------------------------------------------------
+  dos_and_donts:
+    source: "dos_and_donts.pdf"
+    origin: EXISTING
+
+    prerequisites:
+      - "The developer needs to be familiar with Laravel API structure and use the mental model defined in intent.mental_model"
+      - "The developer needs to understand the specs and create a plan of action"
+
+    dos:
+      routing:
+        - "Add routes to routes/api.php, usually under /v1 and auth middleware"
+        - "Keep names consistent (api.v1.posts.favorite.store, etc.)"
+
+      data_shape:
+        - "New tables? Write migrations and factories"
+        - "Add relationships on models"
+        - "Indexes/uniques/foreign keys"
+
+      validation_and_authorization:
+        - "Validate request content"
+        - "Use Policies (or Gates) for permissions"
+
+      controller_logic:
+        - "Keep controllers thin; push logic into model/service"
+        - "Use transactions when touching multiple tables"
+        - "Return proper status codes (201, 204, 400, 401, 403, 404, 422)"
+
+      resources:
+        - "Create an API Resource to shape responses and hide internal fields"
+        - "Add pagination using Resource::collection($query->paginate())"
+
+      testing:
+        - "Assert JSON shape, status codes, DB state, and policy enforcement"
+
+      authentication:
+        - "Volopa uses custom authorization processes via middlewares for OAuth2 type access tokens or WSSE credentials"
+
+    donts:
+      code_integrity:
+        - "Don't use a class or a method that doesn't exist in the current repository or was not defined in the added code"
+        - "Don't add methods that already exist in the current repository"
+
+      api_patterns:
+        - "Don't return raw Eloquent models"
+        - "Don't use session/redirect patterns in APIs"
+        - "Don't return 200 for errors"
+        - "Don't respond with inconsistent shapes/casing"
+
+      security:
+        - "Don't expose stack traces or sensitive error details"
+        - "Don't disable mass-assignment protection or trust client-owned fields"
+        - "Don't build query filters directly from user input"
+        - "Don't leak environment or config"
+
+      performance:
+        - "Don't create N+1 queries (especially in Resources)"
+        - "Don't return unbounded lists"
+        - "Don't ignore caching"
+        - "Don't let file uploads bloat the API process"
+
+      data_integrity:
+        - "Don't forget transactions for multi-write operations"
+        - "Don't hardcode timestamps/timezones"
+
+      observability:
+        - "Don't forget observability"
+
+  # ---------------------------------------------------------------------------
+  # PLATFORM CONSTRAINTS (derived from OOP Expense spec references)
+  # These are inferred from existing patterns observed across the JSON specs.
+  # ---------------------------------------------------------------------------
+  authentication:
+    # Extends dos_and_donts.dos.authentication with spec-specific evidence
+    - rule: "All API endpoints must be protected by Oauth2UserClient middleware"
+      origin: EXISTING
+      source: "SD-OOP_Pocket_expense.json#api_contract.route.middleware"
+      see_also: "dos_and_donts.dos.authentication"
+      referenced_in:
+        - "SD-OOP_Pocket_expense.json#security_and_permissions"
+
+  multi_tenancy:
+    - rule: "All queries and mutations must be scoped by client_id"
+      origin: EXISTING
+      evidence: "Every new table includes client_id as NOT NULL or foreign key"
+    - rule: "user_id must match authenticated user (server-side check)"
+      origin: EXISTING
+      referenced_in: "SD-OOP_Pocket_expense.json#security_and_permissions"
+    - rule: "Target entities (e.g. expense_user_id) must belong to the same client_id"
+      origin: EXISTING
+      referenced_in: "SD-OOP_Pocket_expense.json#api_contract.additional_checks"
+
+  soft_delete_pattern:
+    description: "Platform-standard pattern for logical deletion"
+    origin: EXISTING
+    variants:
+      - name: "Flag-based soft delete"
+        columns: ["deleted TINYINT(1) DEFAULT 0", "delete_time DATETIME DEFAULT NULL"]
+        convention: "Set deleted = 1 and delete_time = NOW()"
+      - name: "Laravel SoftDeletes trait"
+        columns: ["deleted_at TIMESTAMP DEFAULT NULL"]
+        convention: "Standard Eloquent SoftDeletes trait"
+    note: "Both patterns coexist in the platform; new tables should match the convention of the service they belong to"
+    see: "project_context.yaml#interfaces.database_tables for which OOP Expense tables use which variant"
+
+  timestamp_pattern:
+    description: "Platform-standard timestamp conventions"
+    origin: EXISTING
+    variants:
+      - name: "Volopa legacy style"
+        columns: ["create_time DATETIME DEFAULT CURRENT_TIMESTAMP", "update_time DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP"]
+      - name: "Laravel standard style"
+        columns: ["created_at TIMESTAMP DEFAULT NULL", "updated_at TIMESTAMP DEFAULT NULL"]
+    note: "New tables should match the timestamp convention of the service/database they reside in"
+    see: "project_context.yaml#interfaces.database_tables for which OOP Expense tables use which variant"
+
+  database_engine:
+    - rule: "InnoDB engine required"
+      origin: EXISTING
+      referenced_in: "SD-OOP_Pocket_expense.json#data_model.new_table"
+    - rule: "Character set: utf8mb4"
+      origin: EXISTING
+    - rule: "Collation: utf8mb4_unicode_ci"
+      origin: EXISTING
+
+  status_codes:
+    source: "dos_and_donts.pdf (controller logic)"
+    success:
+      - { code: 200, meaning: "OK - successful retrieval or operation" }
+      - { code: 201, meaning: "Created - successful creation" }
+      - { code: 204, meaning: "No Content - successful deletion" }
+    client_error:
+      - { code: 400, meaning: "Bad Request" }
+      - { code: 401, meaning: "Unauthorized" }
+      - { code: 403, meaning: "Forbidden" }
+      - { code: 404, meaning: "Not Found" }
+      - { code: 422, meaning: "Unprocessable Entity - validation failed" }
+
+# =============================================================================
+# 4. DECISIONS
+# =============================================================================
+decisions:
+  description: "Platform-level architectural decisions that all projects inherit"
+
+  platform_decisions:
+    - id: "ENV-DEC-001"
+      decision: "Laravel framework"
+      rationale: "Standard PHP framework for all Volopa services"
+      origin: EXISTING
+
+    - id: "ENV-DEC-002"
+      decision: "OAuth2/WSSE authentication via custom middleware"
+      rationale: "Secure API access with token-based auth; custom Oauth2UserClient middleware on all API routes"
+      origin: EXISTING
+
+    - id: "ENV-DEC-003"
+      decision: "Queue-based async processing for long-running tasks"
+      rationale: "Prevent API process blocking; file uploads and batch operations use background jobs"
+      origin: EXISTING
+
+    - id: "ENV-DEC-004"
+      decision: "API Resources for response shaping"
+      rationale: "Consistent response format; hide internal model fields from API consumers"
+      origin: EXISTING
+
+    - id: "ENV-DEC-005"
+      decision: "Form Request classes for validation"
+      rationale: "Centralised validation with policy enforcement; separation from controller logic"
+      origin: EXISTING
+
+    - id: "ENV-DEC-006"
+      decision: "Multi-tenant architecture scoped by client_id"
+      rationale: "All data and operations are isolated per client; enforced via FK constraints and query scoping"
+      origin: EXISTING
+
+    - id: "ENV-DEC-007"
+      decision: "Soft delete for data preservation"
+      rationale: "Historical data must remain queryable for audit, reporting, and referential integrity. Two variants coexist (flag-based and Laravel SoftDeletes)."
+      origin: EXISTING
+
+    - id: "ENV-DEC-008"
+      decision: "MySQL/InnoDB with utf8mb4 encoding"
+      rationale: "ACID compliance, foreign key support, full Unicode character support"
+      origin: EXISTING
+
+    - id: "ENV-DEC-009"
+      decision: "Eloquent ORM with explicit model relationships"
+      rationale: "Standard Laravel data access layer; relationships defined on models; factories for testing"
+      origin: EXISTING
+
+    - id: "ENV-DEC-010"
+      decision: "Centralised master data for currencies, countries, and reference lookups"
+      rationale: "Single source of truth for validation; prevents data inconsistency across features"
+      origin: EXISTING
+      evidence: "OOP Expense validates Currency Code and Merchant Country against existing platform lists"
+
+  unresolved:
+    - id: "ENV-DEC-UNRESOLVED-002"
+      area: "Audit logging"
+      question: "Is there a platform-standard audit logging mechanism (e.g. Laravel activity log, event sourcing, dedicated audit table) or is this project-specific?"
+      see: "project_context.yaml#decisions.unresolved[DEC-UNRESOLVED-003] for the project-specific audit logging question"
+
+    - id: "ENV-DEC-UNRESOLVED-003"
+      area: "Soft delete convention"
+      question: "Which soft delete pattern should new tables use - flag-based (deleted + delete_time) or Laravel SoftDeletes (deleted_at)? Both appear in the specs."
+
+    - id: "ENV-DEC-UNRESOLVED-004"
+      area: "Table naming convention"
+      question: "Specs reference both 'clients(id)' and 'client(id)', and both 'users(id)' and 'user(id)'. What is the actual table name convention - singular or plural?"
