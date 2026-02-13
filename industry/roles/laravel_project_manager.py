@@ -9,6 +9,7 @@
 import json
 from pathlib import Path
 from metagpt.roles.project_manager import ProjectManager
+from industry.utils.context_reader import ContextReader
 
 
 class LaravelProjectManager(ProjectManager):
@@ -101,6 +102,9 @@ class LaravelProjectManager(ProjectManager):
         """
         super().__init__(**kwargs)
 
+        # YAML context reader for reconciled domain data
+        self.context_reader = ContextReader()
+
         # Load requirements from all three JSON files
         self.requirements = self._load_requirements()
 
@@ -143,6 +147,29 @@ class LaravelProjectManager(ProjectManager):
         task_mapping = self._build_task_mapping(um, pe, sdc)
         stats = self._compute_stats(um, pe, sdc)
 
+        yaml_lines = []
+        yaml_lines.append("")
+        yaml_lines.append("=" * 60)
+        yaml_lines.append("RECONCILED CONTEXT FROM YAML (authoritative — supersedes JSON where conflicts exist):")
+        yaml_lines.append("=" * 60)
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_do_not_build())
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_database_tables("summary"))
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_components_to_build())
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_interfaces_summary())
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_unresolved_decisions())
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_inherited_behaviors())
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_platform_decisions())
+        yaml_lines.append("")
+        yaml_lines.append(self.context_reader.get_existing_user_roles())
+        yaml_context = '\n'.join(yaml_lines)
+
         self.constraints += f"""
 
 LOADED REQUIREMENTS FROM JSON (authoritative source — derive all entity names from this data):
@@ -158,6 +185,7 @@ Task breakdown with dependency-ordered implementation tasks derived from the JSO
 API contracts, and behavioral rules above. Use Laravel naming conventions to convert
 JSON table names to Model/Migration/Controller/Resource names. Do NOT invent entity names
 that are not backed by a JSON table or API contract.
+{yaml_context}
 """
 
     def _compute_stats(self, um: dict, pe: dict, sdc: dict) -> str:

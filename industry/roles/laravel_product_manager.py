@@ -9,6 +9,7 @@
 import json
 from pathlib import Path
 from metagpt.roles.product_manager import ProductManager
+from industry.utils.context_reader import ContextReader
 
 
 class LaravelProductManager(ProductManager):
@@ -50,6 +51,9 @@ class LaravelProductManager(ProductManager):
         - Tool access: RoleZero, Browser, Editor, SearchEnhancedQA
         """
         super().__init__(**kwargs)
+
+        # YAML context reader for reconciled domain data
+        self.context_reader = ContextReader()
 
         # Load functional requirements from JSON
         self.requirements = self._load_requirements()
@@ -172,6 +176,38 @@ class LaravelProductManager(ProductManager):
         lines.append("- Validation Rules (CSV and single entry)")
         lines.append("- Error Handling & Response Formats")
         lines.append("- Security and Access Control Requirements")
+
+        # === YAML Context (reconciled, authoritative domain data) ===
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("RECONCILED CONTEXT FROM YAML (authoritative — supersedes JSON where conflicts exist):")
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append(self.context_reader.get_mental_model())
+        lines.append("")
+        lines.append(self.context_reader.get_dos_and_donts())
+        lines.append("")
+        lines.append(self.context_reader.get_do_not_build())
+        lines.append("")
+        lines.append(self.context_reader.get_components_to_build())
+        lines.append("")
+        lines.append(self.context_reader.get_database_tables("names"))
+        lines.append("")
+        lines.append(self.context_reader.get_unresolved_decisions())
+        lines.append("")
+        lines.append(self.context_reader.get_project_intent())
+        lines.append("")
+        lines.append(self.context_reader.get_project_requirements())
+        lines.append("")
+        lines.append(self.context_reader.get_project_constraints())
+        lines.append("")
+        lines.append(self.context_reader.get_permission_matrix())
+        lines.append("")
+        lines.append(self.context_reader.get_inherited_behaviors())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_user_roles())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_platform_services())
 
         self.constraints += '\n'.join(lines)
 

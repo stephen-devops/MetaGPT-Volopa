@@ -9,6 +9,7 @@
 import json
 from pathlib import Path
 from metagpt.roles.architect import Architect
+from industry.utils.context_reader import ContextReader
 
 
 class LaravelArchitect(Architect):
@@ -129,6 +130,9 @@ class LaravelArchitect(Architect):
         - Watches: WritePRD messages from ProductManager
         """
         super().__init__(**kwargs)
+
+        # YAML context reader for reconciled domain data
+        self.context_reader = ContextReader()
 
         # Load architectural requirements from JSON
         self.requirements = self._load_requirements()
@@ -255,6 +259,54 @@ class LaravelArchitect(Architect):
         lines.append(f"CRITICAL USER ID MAPPING for {upload_table_name}:")
         lines.append("  DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)")
         lines.append("  DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)")
+
+        # === YAML Context (reconciled, authoritative domain data) ===
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("RECONCILED CONTEXT FROM YAML (authoritative — supersedes JSON where conflicts exist):")
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append(self.context_reader.get_platform_constraints())
+        lines.append("")
+        lines.append(self.context_reader.get_do_not_build())
+        lines.append("")
+        lines.append(self.context_reader.get_database_tables("full"))
+        lines.append("")
+        lines.append(self.context_reader.get_interfaces_summary())
+        lines.append("")
+        lines.append(self.context_reader.get_flows())
+        lines.append("")
+        lines.append(self.context_reader.get_unresolved_decisions())
+        lines.append("")
+        lines.append(self.context_reader.get_project_intent())
+        lines.append("")
+        lines.append(self.context_reader.get_project_constraints())
+        lines.append("")
+        lines.append(self.context_reader.get_csv_column_schema())
+        lines.append("")
+        lines.append(self.context_reader.get_api_routes())
+        lines.append("")
+        lines.append(self.context_reader.get_response_schemas())
+        lines.append("")
+        lines.append(self.context_reader.get_permission_matrix())
+        lines.append("")
+        lines.append(self.context_reader.get_fx_infrastructure())
+        lines.append("")
+        lines.append(self.context_reader.get_design_principles())
+        lines.append("")
+        lines.append(self.context_reader.get_inherited_behaviors())
+        lines.append("")
+        lines.append(self.context_reader.get_platform_decisions())
+        lines.append("")
+        lines.append(self.context_reader.get_platform_flow_touchpoints())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_tables_and_models())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_user_roles())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_platform_services())
+        lines.append("")
+        lines.append(self.context_reader.get_fx_query_contract())
 
         self.constraints += '\n'.join(lines)
 

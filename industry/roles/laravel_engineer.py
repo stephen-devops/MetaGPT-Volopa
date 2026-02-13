@@ -9,6 +9,7 @@
 import json
 from pathlib import Path
 from metagpt.roles.engineer import Engineer
+from industry.utils.context_reader import ContextReader
 
 
 class LaravelEngineer(Engineer):
@@ -111,6 +112,9 @@ DON'TS - Never Do These:
         """
         super().__init__(**kwargs)
 
+        # YAML context reader for reconciled domain data
+        self.context_reader = ContextReader()
+
         # Load requirements from all three JSON files
         self.requirements = self._load_requirements()
 
@@ -212,6 +216,36 @@ DON'TS - Never Do These:
         lines.append("  DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)")
         lines.append("  DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)")
         lines.append("  Do NOT swap these. The API field names differ from DB column names.")
+
+        # === YAML Context (reconciled, authoritative domain data) ===
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("RECONCILED CONTEXT FROM YAML (authoritative — supersedes JSON where conflicts exist):")
+        lines.append("=" * 60)
+        lines.append("")
+        lines.append(self.context_reader.get_dos_and_donts())
+        lines.append("")
+        lines.append(self.context_reader.get_do_not_build())
+        lines.append("")
+        lines.append(self.context_reader.get_database_tables("names"))
+        lines.append("")
+        lines.append(self.context_reader.get_components_to_build())
+        lines.append("")
+        lines.append(self.context_reader.get_interfaces_summary())
+        lines.append("")
+        lines.append(self.context_reader.get_csv_column_schema())
+        lines.append("")
+        lines.append(self.context_reader.get_api_routes())
+        lines.append("")
+        lines.append(self.context_reader.get_response_schemas())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_platform_services())
+        lines.append("")
+        lines.append(self.context_reader.get_existing_tables_and_models())
+        lines.append("")
+        lines.append(self.context_reader.get_fx_query_contract())
+        lines.append("")
+        lines.append(self.context_reader.get_inherited_behaviors())
 
         self.constraints += '\n'.join(lines)
 
