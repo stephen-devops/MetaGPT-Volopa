@@ -1,16 +1,20 @@
 # Environment Artifacts for Volopa Platform (OOP Expense Perspective)
-# Separated from environment_context.yaml for clarity
-# Context: Existing abstract models, platform artifacts, and infrastructure
-#   that pre-exist any project
+# RAG Repository Substitute - stores existing platform symbols (tables, models,
+#   middleware, endpoints, infrastructure) that agents would normally verify
+#   against a live repository index.
 #
-# The environment_context.yaml retains: intent, requirements, constraints, decisions
-# This file holds: flows (platform touchpoints) and interfaces (existing tables,
-#   models, middleware, endpoints, infrastructure)
+# This file holds only the Interfaces dimension - existing structural contracts.
+# All other environment dimensions (Intent, Requirements, Constraints, Flows,
+#   Decisions) are in environment_context.yaml.
+#
+# Once an official repository is available, agents should verify EXISTING symbols
+# via RAG index instead of relying solely on this file.
 
 metadata:
   platform_name: "Volopa"
   version: "1.0"
-  description: "Existing platform artifacts - abstract models, database tables, services, middleware, and infrastructure components referenced by OOP Expense specs"
+  description: "RAG substitute - existing platform symbols (database tables, Eloquent models, middleware, endpoints, infrastructure) referenced by OOP Expense specs"
+  purpose: "Provides the Interfaces dimension for environment context, serving as a symbol registry until a live repository RAG index is available"
   sources:
     - "SD-OOP_User_Management_System.json"
     - "SD-OOP_Pocket_expense.json"
@@ -18,45 +22,22 @@ metadata:
   generated_date: "2026-02-11"
 
 # =============================================================================
-# FLOWS (Platform Flow Touchpoints)
+# VERIFICATION CAPABILITY
 # =============================================================================
-flows:
-  description: "Platform-level flows are typically implicit; project-specific flows reference these environment touchpoints"
-  note: "Flows are always project-specific per the context-centric model. This section documents the platform flow touchpoints that project flows interact with."
-
-  platform_flow_touchpoints:
-    - name: "OAuth2 Authentication Flow"
-      origin: EXISTING
-      description: "Every API request passes through Oauth2UserClient middleware for token validation before reaching any controller"
-      referenced_by: ["CSV upload flow", "Single expense entry"]
-      see: "interfaces.standard_volopa_middleware[Oauth2UserClient]"
-
-    - name: "Feature Enablement Flow"
-      origin: EXISTING
-      description: "Sales/Ops enables features for clients via Admin.Volopa. System validates prerequisites (e.g. card services active) before activation."
-      referenced_by: ["Permission enablement flow"]
-      ui_entry_points:
-        - { path: "Admin.Volopa", origin: EXISTING }
-
-    - name: "User Management Flow"
-      origin: EXISTING
-      description: "Admins manage users via Settings > Manage Users in the Web App, or via Admin.Volopa: User accounts page"
-      referenced_by: ["Permission delegation flow"]
-      ui_entry_points:
-        - { path: "Web App: Settings > Manage Users", origin: EXISTING }
-        - { path: "Admin.Volopa: User accounts page", origin: EXISTING }
-
-    - name: "Queue/Job Dispatch Flow"
-      origin: EXISTING
-      description: "Platform provides Laravel queue infrastructure for dispatching background jobs. Jobs are dispatched onto named queues."
-      referenced_by: ["CSV upload flow - ProcessExpenseUpload job"]
-      see: "interfaces.standard_volopa_infrastructure[Queue]"
-
-    - name: "FX Rate Lookup Flow"
-      origin: EXISTING
-      description: "Platform provides FX rate infrastructure including rate storage, commission configuration, and wallet currency identification"
-      referenced_by: ["Single expense FX conversion flow"]
-      see: ["interfaces.existing_endpoints[/wallet-ccy-value]", "interfaces.standard_volopa_infrastructure[FX Service]"]
+verification:
+  description: "This file serves as a RAG substitute until an official repository is established"
+  capability: "Symbol existence, location, type, and signature lookup for EXISTING platform components"
+  query_types:
+    - "table existence and column signatures"
+    - "model existence and backing table"
+    - "middleware existence and application scope"
+    - "endpoint existence and response contract"
+    - "infrastructure component existence and capabilities"
+  origin_protocol:
+    EXISTING: "Must be evidenced by entry in this file (or repo RAG when available)"
+    NEW: "Must be declared in project_context.yaml and collision-checked against entries here"
+    UNKNOWN: "Must be resolved by lookup against this file (or repo RAG) before use"
+  note: "Once a live repo is available, agents should verify EXISTING symbols via RAG index and treat this file as supplementary documentation"
 
 # =============================================================================
 # INTERFACES (Existing Platform Tables, Models, Middleware, Endpoints, Infra)
@@ -333,7 +314,7 @@ interfaces:
           - "SD-OOP_Pocket_expense.json#api_contract.route.middleware"
           - "SD-OOP_Pocket_expense.json#security_and_permissions"
         applied_to: "All routes in routes/api.php"
-        flow_participation: "flows.platform_flow_touchpoints[OAuth2 Authentication Flow]"
+        flow_participation: "environment_context.yaml#flows.platform_flow_touchpoints[OAuth2 Authentication Flow]"
 
   # ---------------------------------------------------------------------------
   # Existing Endpoints
@@ -344,7 +325,7 @@ interfaces:
       type: "API Endpoint"
       description: "Returns wallet base currency information for a client. Used by FX conversion flow to identify the target currency for conversion."
       referenced_in: "SD-OOP_Expense_single_data_capturing.json#fx_conversion_flow.step_2_fx_calculation"
-      flow_participation: "flows.platform_flow_touchpoints[FX Rate Lookup Flow]"
+      flow_participation: "environment_context.yaml#flows.platform_flow_touchpoints[FX Rate Lookup Flow]"
       returns:
         - "client_id"
         - "account_base_currency_id"
@@ -377,7 +358,7 @@ interfaces:
         description: "Laravel queue system for async job processing"
         referenced_in: "SD-OOP_Pocket_expense.json#storing_pocket_expenses_from_file_upload"
         used_for: "ProcessExpenseUpload background job dispatch"
-        flow_participation: "flows.platform_flow_touchpoints[Queue/Job Dispatch Flow]"
+        flow_participation: "environment_context.yaml#flows.platform_flow_touchpoints[Queue/Job Dispatch Flow]"
 
       - name: "Storage"
         origin: EXISTING

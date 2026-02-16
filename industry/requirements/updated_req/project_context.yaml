@@ -46,7 +46,7 @@ requirements:
     - id: "REQ-001"
       name: "Service Enablement"
       source: "SD-OOP_User_Management_System.json#access_control_flow"
-      origin: new
+      origin: NEW
       description: "Sales/Ops enables OOP Expense feature for a client via Admin.Volopa"
       details:
         - "System validates client has card services active"
@@ -56,7 +56,7 @@ requirements:
     - id: "REQ-002"
       name: "Default Permission Assignment"
       source: "SD-OOP_User_Management_System.json#access_control_flow.default_permissions_once_enabled"
-      origin: new
+      origin: NEW
       description: "All users receive base permissions once OOP feature is enabled for the client"
       permissions_by_role:
         all_users: ["Add own expense", "Edit own expense", "View own expense"]
@@ -71,7 +71,7 @@ requirements:
     - id: "REQ-003"
       name: "Grant Management Rights"
       source: "SD-OOP_User_Management_System.json#access_control_flow.granting_managing_rights"
-      origin: new
+      origin: NEW
       description: "Primary Admin and Admin can delegate user management rights"
       details:
         - "Granted via Web App: Settings > Manage Users (existing UI)"
@@ -81,7 +81,7 @@ requirements:
     - id: "REQ-004"
       name: "Managing User Expenses After Rights Granted"
       source: "SD-OOP_User_Management_System.json#access_control_flow.managing_user_once_rights_granted"
-      origin: new
+      origin: NEW
       description: "Users with management rights can manage expenses for their assigned users"
       permissions_by_role:
         card_user_and_business_user:
@@ -98,7 +98,7 @@ requirements:
     - id: "REQ-005"
       name: "Revoke Management Rights"
       source: "SD-OOP_User_Management_System.json#access_control_flow.revoking_managing_rights"
-      origin: new
+      origin: NEW
       description: "Primary Admin or Volopa Admin can revoke management rights"
       details:
         - "Revoked user loses add/edit/view/approve access to that specific user"
@@ -108,7 +108,7 @@ requirements:
     - id: "REQ-006"
       name: "Single Expense Entry"
       source: "SD-OOP_Expense_single_data_capturing.json"
-      origin: new
+      origin: NEW
       description: "Users can create individual out-of-pocket expense records via a form"
       fields:
         - "Date (required)"
@@ -126,7 +126,7 @@ requirements:
     - id: "REQ-007"
       name: "Expense Source Configuration"
       source: "SD-OOP_Expense_single_data_capturing.json#oop_expense_source"
-      origin: new
+      origin: NEW
       description: "Client-configurable expense source dropdown"
       details:
         - "3 default sources auto-created on feature enable: Cash, Corporate Card, Personal Card"
@@ -138,7 +138,7 @@ requirements:
     - id: "REQ-008"
       name: "FX Currency Conversion"
       source: "SD-OOP_Expense_single_data_capturing.json#fx_conversion_flow"
-      origin: new
+      origin: NEW
       description: "Automatic FX conversion when expense currency differs from wallet base currency"
       details:
         - "Triggered after user enters Date + Currency + Amount (with 2s debounce)"
@@ -151,7 +151,7 @@ requirements:
     - id: "REQ-009"
       name: "Expense Metadata Capture"
       source: "SD-OOP_Expense_single_data_capturing.json#database_schema.tables[pocket_expense_metadata]"
-      origin: new
+      origin: NEW
       description: "Flexible metadata attached to each expense record"
       metadata_types:
         - "category (linked to existing transaction_category)"
@@ -166,7 +166,7 @@ requirements:
     - id: "REQ-010"
       name: "CSV Batch Upload"
       source: "SD-OOP_Pocket_expense.json#overview"
-      origin: new
+      origin: NEW
       description: "Admin uploads a CSV file of expenses for a selected user"
       details:
         - "Admin selects target user from dropdown (managed users only; all for Primary Admin)"
@@ -178,7 +178,7 @@ requirements:
     - id: "REQ-011"
       name: "CSV Validation Error Display"
       source: "SD-OOP_Pocket_expense.json#error_response"
-      origin: new
+      origin: NEW
       description: "Detailed error feedback for failed CSV uploads"
       details:
         - "Each error shows: line number, field name, error reason, provided value"
@@ -188,7 +188,7 @@ requirements:
     - id: "REQ-012"
       name: "Batch Upload Notification"
       source: "SD-OOP_Pocket_expense.json#file_processing.steps[5]"
-      origin: new
+      origin: NEW
       description: "Notification issued to target user/admin after successful batch creation"
       details:
         - "Channel TBD: in-app and/or email"
@@ -280,7 +280,7 @@ flows:
   permission_enablement_flow:
     name: "OOP Feature Enablement & Permission Setup"
     source: "SD-OOP_User_Management_System.json#access_control_flow"
-    origin: new
+    origin: NEW
     steps:
       - id: "FLOW-PE-001"
         name: "Service Enablement"
@@ -301,7 +301,7 @@ flows:
   permission_delegation_flow:
     name: "Management Rights Grant/Revoke"
     source: "SD-OOP_User_Management_System.json#access_control_flow"
-    origin: new
+    origin: NEW
     steps:
       - id: "FLOW-PD-001"
         name: "Grant Initiation"
@@ -322,7 +322,7 @@ flows:
   single_expense_fx_flow:
     name: "FX Conversion for Single Expense Entry"
     source: "SD-OOP_Expense_single_data_capturing.json#fx_conversion_flow"
-    origin: new
+    origin: NEW
     steps:
       - id: "FLOW-FX-001"
         name: "User Input"
@@ -338,7 +338,7 @@ flows:
         description: "Call /wallet-ccy-value endpoint to identify wallet base currency"
         referenced_infra:
           endpoint: "/wallet-ccy-value"
-          origin: existing
+          origin: EXISTING
       - id: "FLOW-FX-005"
         name: "Get Dated FX Rate"
         description: "Look up FX rate for expense date (max 30-day lookback)"
@@ -359,7 +359,7 @@ flows:
   csv_upload_flow:
     name: "CSV Batch Upload Processing"
     source: "SD-OOP_Pocket_expense.json#file_processing"
-    origin: new
+    origin: NEW
     steps:
       - id: "FLOW-CSV-001"
         name: "File Upload & Basic Checks"
@@ -425,12 +425,12 @@ flows:
     name: "CSV Upload Sequence"
     diagram_type: "Message Sequence Chart"
     source: "SD-OOP_Pocket_expense.json#api_contract"
-    origin: new
+    origin: NEW
 
     entities:
       - name: "Client"
         context: "Project"
-        origin: EXTERNAL
+        origin: EXISTING
         role: "Initiates CSV upload request"
 
       - name: "Oauth2UserClient (MW)"
@@ -585,11 +585,11 @@ interfaces:
       unique_keys:
         - { name: "unique_user_feature", columns: ["user_id", "client_id", "feature_id"] }
       foreign_keys:
-        - { column: "user_id", references: "users(id)", on_delete: "CASCADE", ref_origin: existing }
-        - { column: "client_id", references: "clients(id)", on_delete: "CASCADE", ref_origin: existing }
-        - { column: "feature_id", references: "features(id)", on_delete: "CASCADE", ref_origin: existing }
-        - { column: "grantor_id", references: "users(id)", on_delete: "CASCADE", ref_origin: existing }
-        - { column: "manager_user_id", references: "users(id)", on_delete: "CASCADE", ref_origin: existing }
+        - { column: "user_id", references: "users(id)", on_delete: "CASCADE", ref_origin: EXISTING }
+        - { column: "client_id", references: "clients(id)", on_delete: "CASCADE", ref_origin: EXISTING }
+        - { column: "feature_id", references: "features(id)", on_delete: "CASCADE", ref_origin: EXISTING }
+        - { column: "grantor_id", references: "users(id)", on_delete: "CASCADE", ref_origin: EXISTING }
+        - { column: "manager_user_id", references: "users(id)", on_delete: "CASCADE", ref_origin: EXISTING }
 
     # --- Single Expense Core Tables ---
     - name: "opt_pocket_expense_type"
@@ -625,7 +625,7 @@ interfaces:
       unique_keys:
         - { name: "oop_expense_source_client_name_unique", columns: ["client_id", "name"] }
       foreign_keys:
-        - { column: "client_id", references: "client(id)", ref_origin: existing }
+        - { column: "client_id", references: "client(id)", ref_origin: EXISTING }
 
     - name: "pocket_expense"
       origin: NEW
@@ -655,9 +655,9 @@ interfaces:
         - { name: "delete_time", type: "DATETIME", default: "NULL" }
       primary_key: "id"
       foreign_keys:
-        - { column: "user_id", references: "user(id)", ref_origin: existing }
-        - { column: "client_id", references: "client(id)", ref_origin: existing }
-        - { column: "expense_type", references: "opt_pocket_expense_type(id)", ref_origin: new }
+        - { column: "user_id", references: "user(id)", ref_origin: EXISTING }
+        - { column: "client_id", references: "client(id)", ref_origin: EXISTING }
+        - { column: "expense_type", references: "opt_pocket_expense_type(id)", ref_origin: NEW }
 
     - name: "pocket_expense_metadata"
       origin: NEW
@@ -681,14 +681,14 @@ interfaces:
         - { name: "delete_time", type: "DATETIME", default: "NULL" }
       primary_key: "id"
       foreign_keys:
-        - { column: "pocket_expense_id", references: "pocket_expense(id)", ref_origin: new }
-        - { column: "transaction_category_id", references: "transaction_category(id)", ref_origin: existing }
-        - { column: "tracking_code_id", references: "tracking_codes(id)", ref_origin: existing }
-        - { column: "project_id", references: "configurable_projects(id)", ref_origin: existing }
-        - { column: "file_store_id", references: "file_store(id)", ref_origin: existing }
-        - { column: "expense_source_id", references: "pocket_expense_source_client_config(id)", ref_origin: new }
-        - { column: "additional_field_id", references: "expense_additional_field(id)", ref_origin: existing }
-        - { column: "user_id", references: "user(id)", ref_origin: existing }
+        - { column: "pocket_expense_id", references: "pocket_expense(id)", ref_origin: NEW }
+        - { column: "transaction_category_id", references: "transaction_category(id)", ref_origin: EXISTING }
+        - { column: "tracking_code_id", references: "tracking_codes(id)", ref_origin: EXISTING }
+        - { column: "project_id", references: "configurable_projects(id)", ref_origin: EXISTING }
+        - { column: "file_store_id", references: "file_store(id)", ref_origin: EXISTING }
+        - { column: "expense_source_id", references: "pocket_expense_source_client_config(id)", ref_origin: NEW }
+        - { column: "additional_field_id", references: "expense_additional_field(id)", ref_origin: EXISTING }
+        - { column: "user_id", references: "user(id)", ref_origin: EXISTING }
 
     # --- CSV Upload Tables ---
     - name: "pocket_expense_file_uploads"
@@ -743,19 +743,19 @@ interfaces:
 
   csv_column_schema:
     source: "SD-OOP_Pocket_expense.json#csv_file_definition"
-    origin: new
+    origin: NEW
     description: "CSV template column definitions for batch upload"
     columns:
       - { index: 1, csv_column: "Date", target: "pocket_expense.date", required: true, format: "dd-mm-yyyy", validation: ["Required", "Not older than 3 years"] }
       - { index: 2, csv_column: "Expense Type", target: "opt_pocket_expense_type.option", required: true, validation: ["Must match dropdown values", "Determines amount sign"] }
-      - { index: 3, csv_column: "Currency Code", target: "pocket_expense.currency", required: true, format: "3-letter ISO", validation: ["Must be in allowed currency list"], validated_against_origin: existing }
+      - { index: 3, csv_column: "Currency Code", target: "pocket_expense.currency", required: true, format: "3-letter ISO", validation: ["Must be in allowed currency list"], validated_against_origin: EXISTING }
       - { index: 4, csv_column: "Amount", target: "pocket_expense.amount", required: true, format: "decimal(14,2)", validation: ["Sign based on expense type"] }
       - { index: 5, csv_column: "{Currency} Equivalent Amount", target: "pocket_expense.user_converted_amount", required: false, validation: ["If present, must be numeric"], note: "Column not yet defined in pocket_expense table — spec references it as a target but column is absent from SD-OOP_Expense_single_data_capturing.json#database_schema. Do not add until resolved." }
       - { index: 6, csv_column: "VAT %", target: "pocket_expense.vat_amount", required: false, validation: ["Must be 0-100", "Strip % sign"] }
       - { index: 7, csv_column: "Merchant Name", target: "pocket_expense.merchant_name", required: true, validation: ["Max length per DB (VARCHAR 180)"] }
       - { index: 8, csv_column: "Description", target: "pocket_expense.merchant_description", required: false }
       - { index: 9, csv_column: "Merchant Address", target: "pocket_expense.merchant_address", required: false }
-      - { index: 10, csv_column: "Merchant Country", target: "pocket_expense.merchant_country", required: false, validation: ["Must match country list"], validated_against_origin: existing, note: "Column not yet defined in pocket_expense table — spec references it as a target but column is absent from SD-OOP_Expense_single_data_capturing.json#database_schema. Do not add until resolved." }
+      - { index: 10, csv_column: "Merchant Country", target: "pocket_expense.merchant_country", required: false, validation: ["Must match country list"], validated_against_origin: EXISTING, note: "Column not yet defined in pocket_expense table — spec references it as a target but column is absent from SD-OOP_Expense_single_data_capturing.json#database_schema. Do not add until resolved." }
       - { index: 11, csv_column: "Source", target: "pocket_expense_source_client_config.name", required: false, validation: ["Must match client sources", "When Other, Source Note required"] }
       - { index: 12, csv_column: "Source Note", target: "pocket_expense_metadata", required: false, validation: ["Required when Source = Other"] }
       - { index: 13, csv_column: "Notes", target: "pocket_expense.notes", required: false, validation: ["DB limit", "Trim", "Prevent SQL injection"] }
@@ -831,10 +831,10 @@ interfaces:
       location: "app/Services/PocketExpenseCSVValidator.php"
       constructor_args: ["targetUserId", "clientId", "adminId"]
       preloaded_reference_data:
-        - { data: "Expense/transaction types", for_column: "Transaction Type", origin: new }
-        - { data: "Supported currencies", for_column: "Currency Code", origin: existing }
-        - { data: "Supported countries", for_column: "Merchant Country", origin: existing }
-        - { data: "Expense sources for client", for_column: "Source", origin: new }
+        - { data: "Expense/transaction types", for_column: "Transaction Type", origin: NEW }
+        - { data: "Supported currencies", for_column: "Currency Code", origin: EXISTING }
+        - { data: "Supported countries", for_column: "Merchant Country", origin: EXISTING }
+        - { data: "Expense sources for client", for_column: "Source", origin: NEW }
 
   jobs:
     - name: "ProcessExpenseUpload"
@@ -852,16 +852,16 @@ interfaces:
 
   permission_matrix:
     source: "SD-OOP_User_Management_System.json#permission_metrics"
-    origin: new
+    origin: NEW
     roles:
       - role: "Primary Administrator"
-        role_origin: existing
+        role_origin: EXISTING
         default_permissions:
           own_expenses: ["create", "view", "update", "delete", "approve"]
           all_users_expenses: ["create", "view", "update", "approve"]
           management_rights: ["grant", "revoke"]
       - role: "Administrator"
-        role_origin: existing
+        role_origin: EXISTING
         default_permissions:
           own_expenses: ["create", "view", "update", "delete", "approve"]
           all_users_expenses: []
@@ -870,7 +870,7 @@ interfaces:
           managed_users_expenses: ["create", "view", "update", "approve"]
           management_rights: ["grant", "revoke"]
       - role: "Business User"
-        role_origin: existing
+        role_origin: EXISTING
         default_permissions:
           own_expenses: ["create", "view", "update", "delete"]
           approval_rights: []
@@ -878,7 +878,7 @@ interfaces:
           managed_users_expenses: ["create", "view", "update"]
           approval_rights: []
       - role: "Card User"
-        role_origin: existing
+        role_origin: EXISTING
         default_permissions:
           own_expenses: ["create", "view", "update", "delete"]
           approval_rights: []
@@ -888,9 +888,9 @@ interfaces:
 
   fx_infrastructure_references:
     description: "Existing platform tables used for FX wallet base currency lookup"
-    origin: existing
+    origin: EXISTING
     see: "environment_artifacts.yaml#fx_query_contract"
-    note: "Full join chain (prepaid_card -> prepaid_card_tier_map -> account_tier -> account -> currency) and returned fields are defined in environment_artifacts.yaml. Not duplicated here as all components are origin: existing."
+    note: "Full join chain (prepaid_card -> prepaid_card_tier_map -> account_tier -> account -> currency) and returned fields are defined in environment_artifacts.yaml. Not duplicated here as all components are origin: EXISTING."
 
 # =============================================================================
 # 6. DECISIONS
@@ -998,7 +998,7 @@ decisions:
       context: project
       question: "Is the wallet-ccy-value + 30-day lookback + commission calculation reusing an existing platform FX service or is this a new integration?"
       source: "SD-OOP_Expense_single_data_capturing.json#fx_conversion_flow.step_2_fx_calculation"
-      current_annotation: "origin: unclear"
+      current_annotation: "origin: UNKNOWN"
       note: "This is a project-level integration decision. The platform FX infrastructure exists (environment_artifacts.yaml#standard_volopa_infrastructure[FX Service]) but whether the specific debounce + lookback + commission pattern is reuse or new is project-specific."
 
     - id: "DEC-UNRESOLVED-003"
@@ -1015,7 +1015,7 @@ decisions:
       question: "How is 'Client has OOP feature enabled' determined? What is the ClientFeatures model's backing table, and how does feature_id = 16 (OOP Expense) get checked?"
       source: "SD-OOP_Pocket_expense.json#api_contract.additional_checks"
       evidence:
-        - "user_feature_permission.feature_id FK references features(id) — table is origin: existing but schema undefined"
+        - "user_feature_permission.feature_id FK references features(id) — table is origin: EXISTING but schema undefined"
         - "Example data uses feature_id = 16 for OOP Expense (SD-OOP_User_Management_System.json#example_data)"
         - "ClientFeatures model (origin: EXISTING) is referenced for 'Client has OOP feature enabled' check but has no table field defined"
         - "SD-OOP_Expense_single_data_capturing.json#oop_expense_source.on_client_oop_feature_enable triggers default source seeding"

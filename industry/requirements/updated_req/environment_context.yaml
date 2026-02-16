@@ -4,6 +4,11 @@
 #   SD-OOP_Pocket_expense.json
 #   SD-OOP_Expense_single_data_capturing.json
 # Context: Environment - stable, cross-project rules, standards, and platform constraints
+#
+# This file covers 5 of the 6 canonical dimensions:
+#   Intent, Requirements, Constraints, Flows (platform touchpoints), Decisions
+# The 6th dimension (Interfaces) is in environment_artifacts.yaml, which serves
+#   as a RAG repository substitute for existing platform symbols.
 
 metadata:
   platform_name: "Volopa"
@@ -14,7 +19,8 @@ metadata:
     - "SD-OOP_Expense_single_data_capturing.json"
     - "dos_and_donts.pdf"
   generated_date: "2026-02-11"
-  note: "This captures all existing platform entities, conventions, and infrastructure referenced by the OOP Expense feature specs"
+  note: "This captures platform-level intent, requirements, constraints, flow touchpoints, and decisions. Existing platform symbols (tables, models, middleware, endpoints) are in environment_artifacts.yaml."
+  companion_file: "environment_artifacts.yaml (Interfaces dimension - RAG substitute)"
 
 # =============================================================================
 # 1. INTENT
@@ -199,7 +205,48 @@ constraints:
       - { code: 422, meaning: "Unprocessable Entity - validation failed" }
 
 # =============================================================================
-# 4. DECISIONS
+# 4. FLOWS (Platform Flow Touchpoints)
+# =============================================================================
+flows:
+  description: "Platform-level flow touchpoints that project-specific flows interact with"
+  note: "Full flows are always project-specific per the context-centric model. This section documents the existing platform flow touchpoints that project flows reference."
+
+  platform_flow_touchpoints:
+    - name: "OAuth2 Authentication Flow"
+      origin: EXISTING
+      description: "Every API request passes through Oauth2UserClient middleware for token validation before reaching any controller"
+      referenced_by: ["CSV upload flow", "Single expense entry"]
+      see: "environment_artifacts.yaml#interfaces.standard_volopa_middleware[Oauth2UserClient]"
+
+    - name: "Feature Enablement Flow"
+      origin: EXISTING
+      description: "Sales/Ops enables features for clients via Admin.Volopa. System validates prerequisites (e.g. card services active) before activation."
+      referenced_by: ["Permission enablement flow"]
+      ui_entry_points:
+        - { path: "Admin.Volopa", origin: EXISTING }
+
+    - name: "User Management Flow"
+      origin: EXISTING
+      description: "Admins manage users via Settings > Manage Users in the Web App, or via Admin.Volopa: User accounts page"
+      referenced_by: ["Permission delegation flow"]
+      ui_entry_points:
+        - { path: "Web App: Settings > Manage Users", origin: EXISTING }
+        - { path: "Admin.Volopa: User accounts page", origin: EXISTING }
+
+    - name: "Queue/Job Dispatch Flow"
+      origin: EXISTING
+      description: "Platform provides Laravel queue infrastructure for dispatching background jobs. Jobs are dispatched onto named queues."
+      referenced_by: ["CSV upload flow - ProcessExpenseUpload job"]
+      see: "environment_artifacts.yaml#interfaces.standard_volopa_infrastructure[Queue]"
+
+    - name: "FX Rate Lookup Flow"
+      origin: EXISTING
+      description: "Platform provides FX rate infrastructure including rate storage, commission configuration, and wallet currency identification"
+      referenced_by: ["Single expense FX conversion flow"]
+      see: ["environment_artifacts.yaml#interfaces.existing_endpoints[/wallet-ccy-value]", "environment_artifacts.yaml#interfaces.standard_volopa_infrastructure[FX Service]"]
+
+# =============================================================================
+# 5. DECISIONS
 # =============================================================================
 decisions:
   description: "Platform-level architectural decisions that all projects inherit"

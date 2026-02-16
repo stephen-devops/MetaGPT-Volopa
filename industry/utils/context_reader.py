@@ -410,15 +410,33 @@ class ContextReader:
     # environment_artifacts.yaml — new methods
     # ------------------------------------------------------------------
 
-    def get_existing_tables_and_models(self) -> str:
-        """Return artifacts.interfaces.existing_database_tables + standard_volopa_models."""
+    def get_existing_tables_and_models(self, detail: str = "full") -> str:
+        """Return artifacts.interfaces.existing_database_tables + standard_volopa_models.
+
+        Args:
+            detail: "names" | "full"
+              - "names" -> table names and model class names only
+              - "full"  -> complete details (columns, relationships, etc.)
+        """
         tables = self.get("artifacts", "interfaces", "existing_database_tables")
         models = self.get("artifacts", "interfaces", "standard_volopa_models")
-        lines = ["=== EXISTING TABLES AND MODELS ==="]
-        lines.append("\nExisting Database Tables:")
-        lines.append(self.format_section(tables, indent=1))
-        lines.append("\nStandard Volopa Models:")
-        lines.append(self.format_section(models, indent=1))
+        lines = [f"=== EXISTING TABLES AND MODELS (detail={detail}) ==="]
+
+        if detail == "names":
+            lines.append("\nExisting Database Tables:")
+            for t in tables:
+                name = t.get("name", t) if isinstance(t, dict) else t
+                lines.append(f"  - {name}")
+            lines.append("\nStandard Volopa Models:")
+            for m in models:
+                name = m.get("name", m) if isinstance(m, dict) else m
+                lines.append(f"  - {name}")
+        else:
+            lines.append("\nExisting Database Tables:")
+            lines.append(self.format_section(tables, indent=1))
+            lines.append("\nStandard Volopa Models:")
+            lines.append(self.format_section(models, indent=1))
+
         return "\n".join(lines)
 
     def get_existing_user_roles(self) -> str:

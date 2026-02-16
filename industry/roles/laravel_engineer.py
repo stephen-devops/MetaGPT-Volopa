@@ -6,15 +6,17 @@
 @Desc    : Laravel Engineer role for Volopa OOP Expense system
 """
 
-import json
-from pathlib import Path
+from typing import Optional
+
 from metagpt.roles.engineer import Engineer
+from metagpt.schema import CodingContext
+from metagpt.logs import logger
 from industry.utils.context_reader import ContextReader
 
 
 class LaravelEngineer(Engineer):
     """
-    Laravel Engineer specialized for implementing OOP Expense Laravel API code following DOS/DONTS.
+    Laravel Engineer specialized for implementing OOP Expense Laravel API code.
 
     Responsibilities:
     - Write Laravel controllers (thin, proper status codes)
@@ -24,80 +26,26 @@ class LaravelEngineer(Engineer):
     - Write migrations (schema with indexes, foreign keys, etc.)
     - Write API Resources (response transformers)
     - Write feature tests (assert JSON, status codes, DB state)
+
+    Domain knowledge is loaded exclusively from YAML context specifications.
     """
 
     use_fixed_sop: bool = True
     name: str = "Lucas"
     profile: str = "Laravel API Developer"
-    goal: str = "Write Laravel code for OOP Expense system following DOS/DONTS patterns and Volopa conventions"
+    goal: str = "Write Laravel code for OOP Expense system following platform constraints and Volopa conventions from YAML context"
 
     constraints: str = """
-CRITICAL OUTPUT FORMAT REQUIREMENT:
-- Development Plan: List ONLY filenames to be created (e.g., "app/Models/{ModelName}.php")
-- Incremental Change: For EACH file, provide ONLY this simple format:
-  "app/Models/{ModelName}.php: Create Eloquent model with relationships"
+TABLE DISAMBIGUATION:
+Tables with similar columns across modules are DISTINCT entities with different column types,
+status enums, and relationships. Each MUST have its own Model and Migration.
+Do NOT merge or conflate tables from different modules.
+Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).
 
-DO NOT generate actual code, diff blocks, or full file contents in the Incremental Change section.
-Keep each Incremental Change entry to ONE line with filename and brief description only.
-
-Example correct format:
-{
-  "Development Plan": [
-    "app/Models/{ModelName}.php",
-    "app/Services/{ServiceName}.php"
-  ],
-  "Incremental Change": [
-    "app/Models/{ModelName}.php: Eloquent model with UUID, relationships to metadata/user/client, soft deletes",
-    "app/Services/{ServiceName}.php: CSV validation with preloaded reference data, all-or-nothing"
-  ]
-}
-
-MENTAL MODEL:
-Client → route (Oauth2UserClient middleware) → controller → FormRequest
-(validation + policy) → service/model (domain logic, transactions) →
-API Resource (shape output) → JSON with correct status codes and error format
-
-DOS - Always Follow These Practices:
-- Add routes to routes/api.php with Oauth2UserClient middleware
-- Keep route names consistent (derive from API contract route paths in JSON)
-- Write migrations with proper indexes, unique constraints, and foreign keys
-- Add Eloquent model relationships (hasMany, belongsTo, etc.)
-- Validate all request content in FormRequests (not controllers)
-- Use Policies or Gates for authorization checks via the permission table defined in JSON
-- Keep controllers thin - push business logic into services or models
-- Use DB::transaction() when touching multiple tables
-- Return proper HTTP status codes:
-  * 201: Resource created successfully
-  * 200: Success with data
-  * 204: Success with no content
-  * 400: Bad request
-  * 401: Unauthorized (not authenticated)
-  * 403: Forbidden (authenticated but not authorized)
-  * 404: Resource not found
-  * 422: Validation failed (CSV errors, form validation)
-- Create API Resources to shape responses and hide internal fields
-- Add pagination using Resource::collection($query->paginate())
-- Write feature tests that assert JSON shape, status codes, DB state, and policy enforcement
-- Volopa uses Oauth2UserClient middleware for authentication
-
-DON'TS - Never Do These:
-- Don't use a class or method that doesn't exist in the current repository
-- Don't add methods that already exist in the current repository
-- Don't return raw Eloquent models from controllers
-- Don't use session/redirect patterns in APIs
-- Don't return 200 status code for errors
-- Don't expose stack traces or sensitive error details in responses
-- Don't disable mass-assignment protection ($guarded) or trust client-owned fields
-- Don't build query filters directly from user input (SQL injection risk)
-- Don't create N+1 queries (use eager loading: ->with(['relation']))
-- Don't return unbounded lists (always paginate)
-- Don't forget DB::transaction() for multi-write operations
-- Don't hardcode timestamps or timezones (use Carbon, database defaults)
-- Don't ignore caching opportunities (especially for reference data)
-- Don't let file uploads bloat the API process (use queues for large files or background sync)
-- Don't respond with inconsistent JSON shapes or casing (use Resources)
-- Don't leak environment variables or config in responses
-- Don't forget observability (logging, monitoring, error tracking)
+CRITICAL USER ID MAPPING (for upload tracking tables):
+DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)
+DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)
+Do NOT swap these. The API field names differ from DB column names.
 """
 
     def __init__(self, **kwargs):
@@ -112,14 +60,8 @@ DON'TS - Never Do These:
         """
         super().__init__(**kwargs)
 
-        # YAML context reader for reconciled domain data
-        self.context_reader = ContextReader()
-
-        # Load requirements from all three JSON files
-        self.requirements = self._load_requirements()
-
-        # Update constraints with loaded patterns
-        self._update_constraints_from_requirements()
+        # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
+        self._update_constraints_from_context(ContextReader())
 
         # Set incremental mode to False to skip WriteCodePlanAndChange phase
         self.config.inc = False
@@ -128,151 +70,66 @@ DON'TS - Never Do These:
         if self.use_fixed_sop:
             self._set_react_mode(self.rc.react_mode, max_react_loop=50)
 
-    def _load_requirements(self) -> dict:
-        """Load all three OOP Expense requirement JSON files"""
-        req_dir = Path(__file__).parent.parent / "requirements" / "updated_req"
+    def _update_constraints_from_context(self, context_reader: ContextReader):
+        """Inject YAML context into role constraints.
 
-        files = {
-            "user_management": req_dir / "SD-OOP_User_Management_System.json",
-            "pocket_expense": req_dir / "SD-OOP_Pocket_expense.json",
-            "single_data_capturing": req_dir / "SD-OOP_Expense_single_data_capturing.json",
-        }
-
-        loaded = {}
-        for key, path in files.items():
-            with open(path, 'r', encoding='utf-8') as f:
-                loaded[key] = json.load(f)
-
-        return loaded
-
-    def _update_constraints_from_requirements(self):
-        """Inject CONCISE requirements into constraints — only what's NOT already in the system design doc.
-
-        The Engineer receives PRD + system design + task breakdown as context from the pipeline.
-        Those documents already contain full table schemas, API contracts, CSV column definitions,
-        response structures, etc. Repeating all that here causes the prompt to exceed the 200K
-        token limit. Instead, we inject only:
-        - Table disambiguation warnings (prevent merging similar tables across modules)
-        - Table name/origin quick reference (so the LLM knows what's new vs existing)
-        - Critical behavioral rules that might be buried in the docs
-        - User ID mapping warning (common source of bugs)
+        Only injects guardrails and rules NOT already present in the design_doc
+        and task_doc that WriteCode includes in its prompt. Sections like
+        csv_column_schema, api_routes, response_schemas, components_to_build,
+        interfaces_summary, database_tables, and fx_query_contract are omitted
+        here because the Architect's design doc already carries them.
         """
 
-        um = self.requirements['user_management']
-        pe = self.requirements['pocket_expense']
-        sdc = self.requirements['single_data_capturing']
-
         lines = []
-
-        lines.append("")
-        lines.append("IMPLEMENTATION GUARDRAILS (the full specs are in the System Design document above):")
-
-        # ── Table disambiguation ──
-        lines.append("")
-        lines.append("TABLE DISAMBIGUATION:")
-        lines.append("  The JSON defines SEPARATE tables across modules. Tables with similar columns")
-        lines.append("  (e.g. expense-related tables in different modules) are DISTINCT entities with")
-        lines.append("  different column types, status enums, and relationships. Each MUST have its own")
-        lines.append("  Model and Migration. Do NOT merge or conflate tables from different modules.")
-        lines.append("  Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).")
-
-        # ── Quick reference: all tables with origin markers ──
-        lines.append("")
-        lines.append("TABLE QUICK REFERENCE (origin: new = build, existing = already in platform):")
-        self._append_table_names(lines, "User Management", um.get('database_schema', {}).get('tables', []))
-        self._append_table_names(lines, "Pocket Expense CSV Upload", [pe.get('data_model', {}).get('new_table', {})])
-        ls_schema = pe.get('storing_pocket_expenses_from_file_upload', {}).get('local_storage_schema', {})
-        if ls_schema:
-            lines.append(f"    {ls_schema.get('table_name', '?')} (origin: new)")
-        self._append_table_names(lines, "Single Expense Data Capturing", sdc.get('database_schema', {}).get('tables', []))
-
-        # ── Critical behavioral rules ──
-        lines.append("")
-        lines.append("CRITICAL BEHAVIORAL RULES:")
-        vb = pe.get('overview', {}).get('validation_behavior', {})
-        if vb:
-            lines.append(f"  CSV Validation: {vb.get('description', '?')} | on_failure: {vb.get('on_failure', '?')}")
-        vs = pe.get('validation_service', {})
-        if vs:
-            lines.append(f"  Validator Service: {vs.get('name', '?')}")
-            rfb = vs.get('row_failure_behavior', '')
-            if rfb:
-                lines.append(f"  Row Failure Behavior: {rfb}")
-        cc = sdc.get('currency_conversion', {})
-        if cc:
-            lines.append(f"  Currency Conversion: origin={cc.get('origin', '?')} — use existing platform infrastructure, do NOT build external API calls")
-            ref_tables = cc.get('referenced_tables', [])
-            if ref_tables:
-                existing = [f"{t['name']}" for t in ref_tables]
-                lines.append(f"  FX Referenced Tables (ALL existing — do NOT recreate): {existing}")
-        src_config = sdc.get('oop_expense_source', {}).get('client_config_behaviour', {})
-        if src_config:
-            lines.append(f"  Max active expense sources per client: {src_config.get('max_active_sources_per_client', '?')}")
-
-        # ── User ID mapping note ──
-        upload_table_name = pe.get('data_model', {}).get('new_table', {}).get('name', 'upload_tracking_table')
-        lines.append("")
-        lines.append(f"CRITICAL USER ID MAPPING for {upload_table_name}:")
-        lines.append("  DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)")
-        lines.append("  DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)")
-        lines.append("  Do NOT swap these. The API field names differ from DB column names.")
-
-        # === YAML Context (reconciled, authoritative domain data) ===
         lines.append("")
         lines.append("=" * 60)
-        lines.append("RECONCILED CONTEXT FROM YAML (authoritative — supersedes JSON where conflicts exist):")
+        lines.append("CONTEXT FROM YAML (authoritative guardrails):")
         lines.append("=" * 60)
         lines.append("")
-        lines.append(self.context_reader.get_dos_and_donts())
+        lines.append(context_reader.get_mental_model())
         lines.append("")
-        lines.append(self.context_reader.get_do_not_build())
+        lines.append(context_reader.get_dos_and_donts())
         lines.append("")
-        lines.append(self.context_reader.get_database_tables("names"))
+        lines.append(context_reader.get_do_not_build())
         lines.append("")
-        lines.append(self.context_reader.get_components_to_build())
+        lines.append(context_reader.get_project_constraints())
         lines.append("")
-        lines.append(self.context_reader.get_interfaces_summary())
-        lines.append("")
-        lines.append(self.context_reader.get_csv_column_schema())
-        lines.append("")
-        lines.append(self.context_reader.get_api_routes())
-        lines.append("")
-        lines.append(self.context_reader.get_response_schemas())
-        lines.append("")
-        lines.append(self.context_reader.get_existing_platform_services())
-        lines.append("")
-        lines.append(self.context_reader.get_existing_tables_and_models())
-        lines.append("")
-        lines.append(self.context_reader.get_fx_query_contract())
-        lines.append("")
-        lines.append(self.context_reader.get_inherited_behaviors())
+        lines.append(context_reader.get_inherited_behaviors())
 
         self.constraints += '\n'.join(lines)
 
-    # ── Helper methods ──
+    async def _new_coding_context(self, filename, dependency) -> Optional[CodingContext]:
+        """Override to skip files with unknown origin instead of raising.
 
-    def _append_table_names(self, lines: list, module: str, tables: list):
-        """Output just table names and origins for quick reference."""
-        if not tables:
-            return
-        lines.append(f"  {module}:")
-        for table in tables:
-            if not table:
-                continue
-            name = table.get('name', '?')
-            origin = table.get('origin', '?')
-            col_count = len(table.get('columns', []))
-            fk_count = len(table.get('foreign_keys', []))
-            lines.append(f"    {name} (origin: {origin}, {col_count} cols, {fk_count} FKs)")
+        On Windows, MetaGPT's path comparison (forward slash constants vs backslash
+        Path objects) causes dependency resolution to fail for files already written
+        by the Engineer in previous react loops. These files appear in changed_src_files
+        but can't be linked back to task/design docs due to the slash mismatch.
+
+        Gracefully returning None (skip) instead of raising ValueError prevents the
+        entire pipeline from crashing. Files from the task list are unaffected — they
+        are processed via _new_code_actions lines 354-421 which bypass this method.
+        """
+        try:
+            return await super()._new_coding_context(filename, dependency)
+        except ValueError as e:
+            if "unknown origin" in str(e):
+                logger.warning(f"LaravelEngineer: Skipping '{filename}' — {e}")
+                return None
+            raise
 
     async def _think(self) -> bool:
-        """Override _think to ensure correct src_path before code generation."""
+        """Override _think to ensure correct src_path and token budget before code generation."""
+        # Cap max_token ONLY when Engineer is about to act (not at __init__ time,
+        # which would poison the shared config before Architect/ProjectManager run).
+        # 2048 tokens ≈ 8KB of PHP — sufficient for single-file generation.
+        if self.context and self.context.config and self.context.config.llm:
+            self.context.config.llm.max_token = 2048
+
         result = await super()._think()
 
-        from pathlib import Path
-        from metagpt.logs import logger
-
         if hasattr(self, 'repo') and self.repo:
+            from pathlib import Path
             workdir = Path(self.repo.workdir)
             current_src = self.repo.src_relative_path
 

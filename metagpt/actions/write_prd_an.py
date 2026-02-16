@@ -142,7 +142,7 @@ REFINED_REQUIREMENT_ANALYSIS = ActionNode(
 REQUIREMENT_POOL = ActionNode(
     key="Requirement Pool",
     expected_type=List[List[str]],
-    instruction="List down the top-5 requirements with their priority (P0, P1, P2).",
+    instruction="List down the top 5 to 7 requirements with their priority (P0, P1, P2).",
     example=[["P0", "The main code ..."], ["P0", "The game algorithm ..."]],
 )
 
