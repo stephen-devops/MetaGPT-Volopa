@@ -32,9 +32,9 @@ class LaravelProductManager(ProductManager):
     - Define clear acceptance criteria for API endpoints
     - Specify data validation rules at business level
     - Document Laravel-specific requirements:
-      * API routes (protected by Oauth2UserClient middleware)
+      * API routes (protected by middleware)
       * Request/response formats (JSON)
-      * Authentication requirements (OAuth2 via Oauth2UserClient)
+      * Authentication requirements (OAuth2)
       * Validation rules for FormRequests
       * Business logic separation (controllers vs services)
     """

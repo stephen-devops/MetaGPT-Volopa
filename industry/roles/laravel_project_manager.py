@@ -28,7 +28,7 @@ class LaravelProjectManager(ProjectManager):
     name: str = "Manuel"
     profile: str = "Laravel Project Manager"
     goal: str = """
-    Break down OOP Expense system design into dependency-ordered tasks following
+    Break down software system design into dependency-ordered tasks following
     Laravel conventions (migrations first, then models, then services, controllers, routes)
     """
 
@@ -78,8 +78,7 @@ class LaravelProjectManager(ProjectManager):
        - Tests depend on: All application code
 
     5. Required Composer Packages:
-       - league/csv (for CSV parsing)
-       - Any other Laravel packages needed
+       - Any Laravel Composer packages needed
 
     TABLE DISAMBIGUATION:
     Tables with similar columns across modules are DISTINCT entities with different column types,
@@ -91,7 +90,7 @@ class LaravelProjectManager(ProjectManager):
     - Create ONE Eloquent Model per new table (snake_case table -> PascalCase model)
     - Create ONE Policy per module that needs authorization
     - Create ONE FormRequest per API endpoint
-    - Create ONE Service per domain operation (CRUD, validation, FX conversion, source config)
+    - Create ONE Service per domain operation (CRUD, validation, conversion, config)
     - Create ONE API Resource per model returned in responses
     - Create ONE Controller per API resource group (thin, delegates to services)
     - Create Queue Jobs only where context specifies background processing

@@ -38,8 +38,10 @@ class LaravelArchitect(Architect):
     Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).
 
     CRITICAL USER ID MAPPING (for upload tracking tables):
-    DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)
-    DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)
+    When tables track both a target user and the performing admin, the DB column
+    names and API form field names may differ. Refer to YAML context database_tables
+    and api_routes for the exact column-to-field mappings. Do NOT assume DB column
+    names match API form field names.
 
     DESIGN DOCUMENTATION FORMAT:
     - Keep design documentation concise

@@ -33,7 +33,7 @@ class LaravelEngineer(Engineer):
     use_fixed_sop: bool = True
     name: str = "Lucas"
     profile: str = "Laravel API Developer"
-    goal: str = "Write Laravel code for OOP Expense system following platform constraints and Volopa conventions from YAML context"
+    goal: str = "Write Laravel code for software system following platform constraints and policy conventions from YAML context"
 
     constraints: str = """
 TABLE DISAMBIGUATION:
@@ -43,8 +43,9 @@ Do NOT merge or conflate tables from different modules.
 Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).
 
 CRITICAL USER ID MAPPING (for upload tracking tables):
-DB user_id = the TARGET user whose expenses are being created (maps to API form field expense_user_id)
-DB created_by_user_id = the ADMIN who performed the upload (maps to API form field user_id / auth token)
+When tables track both a target user and the performing admin, the DB column
+names and API form field names may differ. Refer to YAML context database_tables
+and api_routes for the exact column-to-field mappings.
 Do NOT swap these. The API field names differ from DB column names.
 """
 

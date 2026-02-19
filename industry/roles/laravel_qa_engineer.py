@@ -101,7 +101,7 @@ class LaravelQaEngineer(QaEngineer):
         lines.append("")
         lines.append("For EVERY endpoint, test:")
         lines.append("1. Route exists and is accessible")
-        lines.append("2. Authentication required (401 if not authenticated via Oauth2UserClient)")
+        lines.append("2. Authentication required (401 if not authenticated via Oauth2)")
         lines.append("3. Authorization enforced (403 if permission check fails)")
         lines.append("4. Validation rules work (422 with proper errors)")
         lines.append("5. Business logic executes correctly")

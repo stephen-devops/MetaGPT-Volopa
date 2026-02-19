@@ -468,7 +468,7 @@ class ContextReader:
 
     def get_platform_flow_touchpoints(self) -> str:
         """Return artifacts.flows.platform_flow_touchpoints."""
-        data = self.get("artifacts", "flows", "platform_flow_touchpoints")
+        data = self.get("environment", "flows", "platform_flow_touchpoints")
         return f"=== PLATFORM FLOW TOUCHPOINTS ===\n{self.format_section(data)}"
 
     # ------------------------------------------------------------------
