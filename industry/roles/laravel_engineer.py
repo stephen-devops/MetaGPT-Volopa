@@ -35,19 +35,7 @@ class LaravelEngineer(Engineer):
     profile: str = "Laravel API Developer"
     goal: str = "Write Laravel code for software system following platform constraints and policy conventions from YAML context"
 
-    constraints: str = """
-TABLE DISAMBIGUATION:
-Tables with similar columns across modules are DISTINCT entities with different column types,
-status enums, and relationships. Each MUST have its own Model and Migration.
-Do NOT merge or conflate tables from different modules.
-Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).
-
-CRITICAL USER ID MAPPING (for upload tracking tables):
-When tables track both a target user and the performing admin, the DB column
-names and API form field names may differ. Refer to YAML context database_tables
-and api_routes for the exact column-to-field mappings.
-Do NOT swap these. The API field names differ from DB column names.
-"""
+    constraints: str = ""
 
     def __init__(self, **kwargs):
         """
@@ -67,9 +55,9 @@ Do NOT swap these. The API field names differ from DB column names.
         # Set incremental mode to False to skip WriteCodePlanAndChange phase
         self.config.inc = False
 
-        # Engineer needs multiple loops to write all files
+        # so only 1 react loop iteration is needed.  max_react_loop > 1 causes
         if self.use_fixed_sop:
-            self._set_react_mode(self.rc.react_mode, max_react_loop=50)
+            self._set_react_mode(self.rc.react_mode, max_react_loop=1)
 
     def _update_constraints_from_context(self, context_reader: ContextReader):
         """Inject YAML context into role constraints.

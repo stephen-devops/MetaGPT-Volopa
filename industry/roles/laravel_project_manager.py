@@ -35,9 +35,7 @@ class LaravelProjectManager(ProjectManager):
     constraints: str = """
     IMPORTANT: Output ONLY filenames and dependencies. DO NOT generate code, diff blocks, or implementations.
 
-    Laravel Task Breakdown Rules:
-
-    1. Output Format - Simple JSON:
+    Output Format - Simple JSON:
        {
          "Required packages": ["package1", "package2"],
          "Logic Analysis": [
@@ -47,53 +45,6 @@ class LaravelProjectManager(ProjectManager):
          "Task list": ["file1.php", "file2.php", "file3.php"],
          "Shared Knowledge": "Brief notes about Laravel patterns to follow"
        }
-
-    2. Execution Order Priority (for Task list):
-       P0: Migrations (database schema) - no dependencies
-       P1: Models (Eloquent) - depends on migrations
-       P2: Policies (authorization) - depends on models
-       P3: FormRequests (validation) - depends on policies
-       P4: Config files (config/*.php) - no dependencies
-       P5: Services (business logic) - depends on models
-       P6: Queue Jobs - depends on services
-       P7: Notifications - depends on models
-       P8: Middleware - no dependencies
-       P9: Resources (transformers) - depends on models
-       P10: Controllers (thin layer) - depends on services + FormRequests + Resources
-       P11: Routes (routes/api.php) - depends on controllers
-       P12: Tests (feature tests) - depends on all application code
-
-    3. Parallel Development Opportunities (note in Logic Analysis):
-       - Multiple migrations (if no FK dependencies between them)
-       - Multiple models (if no cross-relationships)
-       - Multiple FormRequests
-       - Multiple services (if no inter-service dependencies)
-       - Multiple API Resources
-
-    4. Critical Dependencies (document in Logic Analysis):
-       - Controllers depend on: Services + FormRequests + Resources
-       - Services depend on: Models
-       - FormRequests depend on: Policies (for authorize method)
-       - Policies depend on: Models
-       - Tests depend on: All application code
-
-    5. Required Composer Packages:
-       - Any Laravel Composer packages needed
-
-    TABLE DISAMBIGUATION:
-    Tables with similar columns across modules are DISTINCT entities with different column types,
-    status enums, and relationships. Each MUST have its own Model and Migration.
-    Do NOT merge tables from different modules.
-
-    DERIVATION RULES (derive all entity names from YAML context):
-    - Create ONE Migration per new table
-    - Create ONE Eloquent Model per new table (snake_case table -> PascalCase model)
-    - Create ONE Policy per module that needs authorization
-    - Create ONE FormRequest per API endpoint
-    - Create ONE Service per domain operation (CRUD, validation, conversion, config)
-    - Create ONE API Resource per model returned in responses
-    - Create ONE Controller per API resource group (thin, delegates to services)
-    - Create Queue Jobs only where context specifies background processing
 
     DO NOT include code examples, diff blocks, or implementation details.
     ONLY list filenames, descriptions, and dependencies.
@@ -148,5 +99,7 @@ class LaravelProjectManager(ProjectManager):
         lines.append(context_reader.get_platform_constraints())
         lines.append("")
         lines.append(context_reader.get_existing_user_roles())
+        lines.append("")
+        lines.append(context_reader.get_laravel_task_conventions())
 
         self.constraints += '\n'.join(lines)

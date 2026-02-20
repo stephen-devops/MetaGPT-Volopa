@@ -271,6 +271,25 @@ constraints:
     - "Backend must recalculate FX on save (do not trust frontend-only value)"
     - "Commission formula: AdjustedRate = BaseRate x (1 - Comm%)"
 
+  data_model_constraints:
+    - rule: "Tables with similar columns across modules are DISTINCT entities with different column types, status enums, and relationships. Each MUST have its own Model and Migration. Do NOT merge or conflate tables from different modules."
+      example: "oop_expenses (User Management) and pocket_expense (Single Data Capturing) are separate tables despite both storing expense data."
+    - rule: "When tables track both a target user and the performing admin, DB column names and API form field names may differ. Refer to database_tables and api_routes for exact column-to-field mappings. Do NOT assume DB column names match API form field names."
+      example: "pocket_expense_file_uploads: DB column 'created_by_user_id' maps to API form field 'user_id' (admin); DB column 'user_id' maps to API form field 'expense_user_id' (target user)."
+
+  design_output_constraints:
+    description: "Rules ensuring consistency across design document sections (File list, Class diagram, Sequence diagram)"
+    rules:
+      - id: "DOC-001"
+        scope: "classDiagram"
+        rule: "Every file in the 'File list' that defines a class (model, controller, service, request, resource, job, policy) MUST have a corresponding class entry in the 'Data structures and interfaces' classDiagram. Do NOT omit any classes."
+      - id: "DOC-002"
+        scope: "sequenceDiagram"
+        rule: "Every Controller and Service class from the classDiagram MUST appear as a participant in at least one sequence flow in the 'Program call flow' sequenceDiagram."
+      - id: "DOC-003"
+        scope: "sequenceDiagram"
+        rule: "Include a SEPARATE labelled sequence flow for EACH distinct domain: user permission management, single expense CRUD with FX conversion, and CSV batch upload with background processing. No domain may be omitted."
+
 # =============================================================================
 # 4. FLOWS
 # =============================================================================

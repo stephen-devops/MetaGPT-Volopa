@@ -191,6 +191,63 @@ constraints:
     - rule: "Collation: utf8mb4_unicode_ci"
       origin: EXISTING
 
+  # ---------------------------------------------------------------------------
+  # LARAVEL TASK CONVENTIONS (for task breakdown and dependency ordering)
+  # These define how system designs are decomposed into implementation tasks.
+  # ---------------------------------------------------------------------------
+  laravel_task_conventions:
+    description: "Laravel-specific conventions for breaking down system designs into ordered, dependency-aware implementation tasks"
+
+    execution_order_priority:
+      description: "Priority tiers for Task list ordering. Lower P-number = must be implemented first."
+      tiers:
+        - { priority: "P0", artifact: "Migrations (database schema)", dependencies: "none" }
+        - { priority: "P1", artifact: "Models (Eloquent)", dependencies: "migrations" }
+        - { priority: "P2", artifact: "Policies (authorization)", dependencies: "models" }
+        - { priority: "P3", artifact: "FormRequests (validation)", dependencies: "policies" }
+        - { priority: "P4", artifact: "Config files (config/*.php)", dependencies: "none" }
+        - { priority: "P5", artifact: "Services (business logic)", dependencies: "models" }
+        - { priority: "P6", artifact: "Queue Jobs", dependencies: "services" }
+        - { priority: "P7", artifact: "Notifications", dependencies: "models" }
+        - { priority: "P8", artifact: "Middleware", dependencies: "none" }
+        - { priority: "P9", artifact: "Resources (transformers)", dependencies: "models" }
+        - { priority: "P10", artifact: "Controllers (thin layer)", dependencies: "services + FormRequests + Resources" }
+        - { priority: "P11", artifact: "Routes (routes/api.php)", dependencies: "controllers" }
+        - { priority: "P12", artifact: "Tests (feature tests)", dependencies: "all application code" }
+
+    parallel_development_opportunities:
+      description: "Artifacts that can be developed in parallel when no inter-dependencies exist"
+      parallelisable:
+        - "Multiple migrations (if no FK dependencies between them)"
+        - "Multiple models (if no cross-relationships)"
+        - "Multiple FormRequests"
+        - "Multiple services (if no inter-service dependencies)"
+        - "Multiple API Resources"
+
+    critical_dependencies:
+      description: "Key dependency relationships to document in Logic Analysis"
+      rules:
+        - "Controllers depend on: Services + FormRequests + Resources"
+        - "Services depend on: Models"
+        - "FormRequests depend on: Policies (for authorize method)"
+        - "Policies depend on: Models"
+        - "Tests depend on: All application code"
+
+    composer_packages:
+      description: "List any Laravel Composer packages needed in Required packages"
+
+    derivation_rules:
+      description: "Rules for deriving implementation artifacts from YAML context"
+      rules:
+        - "Create ONE Migration per new table"
+        - "Create ONE Eloquent Model per new table (snake_case table -> PascalCase model)"
+        - "Create ONE Policy per module that needs authorization"
+        - "Create ONE FormRequest per API endpoint"
+        - "Create ONE Service per domain operation (CRUD, validation, conversion, config)"
+        - "Create ONE API Resource per model returned in responses"
+        - "Create ONE Controller per API resource group (thin, delegates to services)"
+        - "Create Queue Jobs only where context specifies background processing"
+
   status_codes:
     source: "dos_and_donts.pdf (controller logic)"
     success:

@@ -12,10 +12,10 @@ from industry.utils.context_reader import ContextReader
 
 class LaravelProductManager(ProductManager):
     """
-    Laravel Product Manager specialized for OOP Expense product requirements.
+    Laravel Product Manager specialized for software system product requirements.
 
     Responsibilities:
-    - Define business requirements for the OOP Expense Laravel APIs
+    - Define business requirements for the system Laravel APIs
     - Create PRDs with Laravel-specific technical specifications
     - Specify API endpoints, validation rules, and business logic
     - Define user stories and acceptance criteria
@@ -28,15 +28,6 @@ class LaravelProductManager(ProductManager):
 
     constraints: str = """
     - Use same language as user requirements
-    - Focus on Laravel API patterns and RESTful design principles
-    - Define clear acceptance criteria for API endpoints
-    - Specify data validation rules at business level
-    - Document Laravel-specific requirements:
-      * API routes (protected by middleware)
-      * Request/response formats (JSON)
-      * Authentication requirements (OAuth2)
-      * Validation rules for FormRequests
-      * Business logic separation (controllers vs services)
     """
 
     def __init__(self, **kwargs):

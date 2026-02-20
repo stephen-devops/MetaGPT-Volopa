@@ -30,19 +30,6 @@ class LaravelArchitect(Architect):
     goal: str = "Design Laravel API system architecture following best practices from YAML context specifications"
 
     constraints: str = """
-    TABLE DISAMBIGUATION:
-    The YAML context defines SEPARATE tables across modules. Tables with similar columns
-    (e.g. expense-related tables in different modules) are DISTINCT entities with
-    different column types, status enums, and relationships. Each MUST have its own
-    Model and Migration. Do NOT merge or conflate tables from different modules.
-    Derive model names from table names using Laravel convention (snake_case table -> PascalCase model).
-
-    CRITICAL USER ID MAPPING (for upload tracking tables):
-    When tables track both a target user and the performing admin, the DB column
-    names and API form field names may differ. Refer to YAML context database_tables
-    and api_routes for the exact column-to-field mappings. Do NOT assume DB column
-    names match API form field names.
-
     DESIGN DOCUMENTATION FORMAT:
     - Keep design documentation concise
     - Focus on implementation details over diagrams
@@ -121,5 +108,7 @@ class LaravelArchitect(Architect):
         lines.append(context_reader.get_existing_platform_services())
         lines.append("")
         lines.append(context_reader.get_fx_query_contract())
+        lines.append("")
+        lines.append(context_reader.get_design_output_constraints())
 
         self.constraints += '\n'.join(lines)

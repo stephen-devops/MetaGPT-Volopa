@@ -331,10 +331,6 @@ class ContextReader:
 
         return "\n".join(lines)
 
-    # ------------------------------------------------------------------
-    # project_context.yaml — new methods
-    # ------------------------------------------------------------------
-
     def get_project_intent(self) -> str:
         """Return project.intent (objectives, business rationale, success criteria)."""
         data = self.get("project", "intent")
@@ -346,9 +342,25 @@ class ContextReader:
         return f"=== PROJECT REQUIREMENTS ===\n{self.format_section(data)}"
 
     def get_project_constraints(self) -> str:
-        """Return project.constraints (file, validation, permission, expense source, FX)."""
+        """Return project.constraints (file, validation, permission, expense source, FX).
+
+        Excludes design_output_constraints which are loaded separately via
+        get_design_output_constraints() for the Architect role only.
+        """
         data = self.get("project", "constraints")
-        return f"=== PROJECT CONSTRAINTS ===\n{self.format_section(data)}"
+        filtered = {k: v for k, v in data.items() if k not in ("description", "design_output_constraints")}
+        return f"=== PROJECT CONSTRAINTS ===\n{self.format_section(filtered)}"
+
+    def get_design_output_constraints(self) -> str:
+        """Return project.constraints.design_output_constraints (classDiagram/sequenceDiagram consistency rules)."""
+        data = self.get("project", "constraints", "design_output_constraints")
+        lines = ["=== DESIGN OUTPUT CONSTRAINTS ==="]
+        desc = data.get("description", "")
+        if desc:
+            lines.append(desc)
+        for rule in data.get("rules", []):
+            lines.append(f"  [{rule.get('id', '?')}] ({rule.get('scope', '?')}): {rule.get('rule', '')}")
+        return "\n".join(lines)
 
     def get_csv_column_schema(self) -> str:
         """Return project.interfaces.csv_column_schema (CSV template column definitions)."""
@@ -406,10 +418,6 @@ class ContextReader:
         data = self.get("environment", "decisions", "platform_decisions")
         return f"=== PLATFORM DECISIONS ===\n{self.format_section(data)}"
 
-    # ------------------------------------------------------------------
-    # environment_artifacts.yaml — new methods
-    # ------------------------------------------------------------------
-
     def get_existing_tables_and_models(self, detail: str = "full") -> str:
         """Return artifacts.interfaces.existing_database_tables + standard_volopa_models.
 
@@ -466,8 +474,51 @@ class ContextReader:
         data = self.get("artifacts", "interfaces", "fx_query_contract")
         return f"=== FX QUERY CONTRACT ===\n{self.format_section(data)}"
 
+    def get_laravel_task_conventions(self) -> str:
+        """Return environment.constraints.laravel_task_conventions (execution order, parallelism, dependencies, derivation rules)."""
+        data = self.get("environment", "constraints", "laravel_task_conventions")
+        lines = ["=== LARAVEL TASK CONVENTIONS ==="]
+        desc = data.get("description", "")
+        if desc:
+            lines.append(desc)
+
+        # Execution order priority
+        eop = data.get("execution_order_priority", {})
+        if eop:
+            lines.append(f"\nExecution Order Priority: {eop.get('description', '')}")
+            for tier in eop.get("tiers", []):
+                lines.append(f"  {tier['priority']}: {tier['artifact']} - depends on: {tier['dependencies']}")
+
+        # Parallel development opportunities
+        pdo = data.get("parallel_development_opportunities", {})
+        if pdo:
+            lines.append(f"\nParallel Development Opportunities: {pdo.get('description', '')}")
+            for item in pdo.get("parallelisable", []):
+                lines.append(f"  - {item}")
+
+        # Critical dependencies
+        cd = data.get("critical_dependencies", {})
+        if cd:
+            lines.append(f"\nCritical Dependencies: {cd.get('description', '')}")
+            for rule in cd.get("rules", []):
+                lines.append(f"  - {rule}")
+
+        # Composer packages
+        cp = data.get("composer_packages", {})
+        if cp:
+            lines.append(f"\nComposer Packages: {cp.get('description', '')}")
+
+        # Derivation rules
+        dr = data.get("derivation_rules", {})
+        if dr:
+            lines.append(f"\nDerivation Rules: {dr.get('description', '')}")
+            for rule in dr.get("rules", []):
+                lines.append(f"  - {rule}")
+
+        return "\n".join(lines)
+
     def get_platform_flow_touchpoints(self) -> str:
-        """Return artifacts.flows.platform_flow_touchpoints."""
+        """Return environment.flows.platform_flow_touchpoints."""
         data = self.get("environment", "flows", "platform_flow_touchpoints")
         return f"=== PLATFORM FLOW TOUCHPOINTS ===\n{self.format_section(data)}"
 
