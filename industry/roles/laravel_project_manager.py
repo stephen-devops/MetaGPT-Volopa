@@ -28,28 +28,10 @@ class LaravelProjectManager(ProjectManager):
     name: str = "Manuel"
     profile: str = "Laravel Project Manager"
     goal: str = """
-    Break down software system design into dependency-ordered tasks following
-    Laravel conventions (migrations first, then models, then services, controllers, routes)
+    Break down software system design into dependency-ordered tasks following PRD/technical design and Laravel conventions
     """
 
-    constraints: str = """
-    IMPORTANT: Output ONLY filenames and dependencies. DO NOT generate code, diff blocks, or implementations.
-
-    Output Format - Simple JSON:
-       {
-         "Required packages": ["package1", "package2"],
-         "Logic Analysis": [
-           ["file1.php", "Description of file1 purpose and what it depends on"],
-           ["file2.php", "Description of file2 purpose and what it depends on"]
-         ],
-         "Task list": ["file1.php", "file2.php", "file3.php"],
-         "Shared Knowledge": "Brief notes about Laravel patterns to follow"
-       }
-
-    DO NOT include code examples, diff blocks, or implementation details.
-    ONLY list filenames, descriptions, and dependencies.
-    Keep Logic Analysis descriptions to 1-2 sentences per file.
-    """
+    constraints: str = "use the same language as user requirement"
 
     def __init__(self, **kwargs):
         """
@@ -81,8 +63,8 @@ class LaravelProjectManager(ProjectManager):
         lines.append(context_reader.get_do_not_build())
         lines.append("")
         lines.append(context_reader.get_database_tables("summary"))
-        lines.append("")
-        lines.append(context_reader.get_components_to_build())
+        # lines.append("")
+        # lines.append(context_reader.get_components_to_build())
         lines.append("")
         lines.append(context_reader.get_interfaces_summary())
         lines.append("")

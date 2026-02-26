@@ -152,76 +152,16 @@ async def main():
 
     # Define the requirement
     idea = """
-Build the Volopa OOP (Out-of-Pocket) Expenses API System covering User Management,
-Pocket Expense CSV Batch Upload, and Single Expense Data Capturing.
+Build the Volopa OOP (Out-of-Pocket) Expenses API System using Laravel 10+ with PHP 8.2+.
 
-## Core Requirements
+Three modules:
+1. User Management & Permissions — RBAC via user_feature_permission with delegation hierarchy
+2. Pocket Expense CSV Batch Upload — synchronous validation, async background sync
+3. Single Expense Data Capturing — CRUD with FX conversion and flexible metadata
 
-### User Management & Permissions
-1. Role hierarchy: Primary Administrator, Administrator, Business User, Card User
-2. user_feature_permission table for feature-level RBAC (per user, client, feature)
-3. Permission delegation: Primary Admin grants management rights to Admin, who manages subset of users
-4. Default permissions on service enablement (all users can add/edit/view own expense)
-5. Administrator can approve expenses; Primary Admin has full access to all users
-6. Grant/revoke managing rights via Web App or Admin.Volopa
-7. Audit log of permission grants, enables, and disables
-
-### Pocket Expense - CSV Batch Upload
-1. Admin selects target user, uploads CSV file (max 200 rows, text/csv or .txt)
-2. POST /api/uploads/pocket-expense/csv with Oauth2UserClient middleware
-3. Synchronous all-or-nothing validation: if any row fails, no expenses are created
-4. 14 CSV columns: Date, Expense Type, Currency Code, Amount, Equivalent Amount, VAT %, Merchant Name, Description, Merchant Address, Merchant Country, Source, Source Note, Notes (+ system fields)
-5. PocketExpenseCSVValidator service preloads reference data (expense types, currencies, countries, sources)
-6. Error response (HTTP 422): structured errors array with line_number, field, error, value
-7. Success response: upload_id, total_rows, expenses created
-8. Store validated rows in pocket_expense_uploads_data, dispatch ProcessExpenseUpload job (batch sync of 100)
-9. Notification issued to target user/admin on completion
-
-### Single Expense Data Capturing
-1. CRUD for pocket_expense records (draft, submitted, approved, rejected status workflow)
-2. Expense types: ATM Withdrawal (-), Point of Sale (-), Fee & Charges (-), Refund from Merchant (+)
-3. pocket_expense_metadata for flexible metadata (category, tracking codes, project, file, expense_source)
-4. Expense source config: 3 defaults (Cash, Corporate Card, Personal Card) + global "Other" (client_id=NULL) + max 20 active per client
-5. FX conversion: debounced API call after Date/Currency/Amount entered, 30-day lookback for dated FX rate, client commission adjustment
-6. User can override converted amount; backend recalculates FX on submit
-7. Currency conversion via wallet base currency lookup (prepaid_card -> account_tier -> account -> currency joins)
-
-## Technical Requirements
-
-### Laravel Architecture
-- Laravel 10+ with PHP 8.2+
-- RESTful API with Oauth2UserClient middleware
-- JSON responses with proper status codes (200, 201, 204, 422)
-- API Resources for response transformation
-- Queue-based async processing for CSV background sync
-- PocketExpenseCSVValidator with cached reference data
-
-### Database Tables
-- user_feature_permission (RBAC with grantor_id, manager_user_id)
-- oop_expenses (approval workflow with status enum)
-- opt_pocket_expense_type (expense type lookup with amount_sign)
-- pocket_expense_source_client_config (per-client + global sources)
-- pocket_expense (main expense records with status workflow)
-- pocket_expense_metadata (flexible metadata with enum type)
-- pocket_expense_file_uploads (CSV upload tracking with status lifecycle)
-- pocket_expense_uploads_data (local storage for background sync)
-
-### Quality Standards
-- Follow DOS/DONTS patterns
-- Thin controllers with service layer
-- FormRequest validation with policies
-- DB::transaction() for multi-write operations (especially all-or-nothing CSV)
-- Feature tests for all endpoints
-- No N+1 queries (use eager loading)
-- Cache reference data (expense types, currencies, countries, sources)
-
-## Success Criteria
-- All endpoints protected by Oauth2UserClient middleware
-- CSV validation is synchronous, all-or-nothing for max 200 rows
-- Permission checks enforced via user_feature_permission at every endpoint
-- FX conversion uses dated rates with 30-day lookback and client commission
-- All responses use consistent JSON structure via API Resources
-- Code passes all feature tests
+All domain requirements, constraints, database schemas, API contracts, flows, and platform
+standards are defined in the YAML context injected into your system prompt. Use those as the
+authoritative source. Do not invent requirements beyond what the YAML specifies.
 """
 
     # Run the team
@@ -297,7 +237,7 @@ if __name__ == "__main__":
         - Each role watches for specific messages (WritePRD, WriteDesign, WriteTasks, WriteCode, WriteTest)
         - Documents are passed via Message.instruct_content (file paths)
         - Engineer loads all previous documents for context
-        - QA Engineer loads requirements from industry/requirements/ JSON files
+        - QA Engineer loads requirements from industry/requirements/updated_req YAML files
         - DOS/DONTS constraints are embedded in Engineer's and QA's system prompts
     """
     asyncio.run(main())

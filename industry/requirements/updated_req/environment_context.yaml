@@ -5,10 +5,11 @@
 #   SD-OOP_Expense_single_data_capturing.json
 # Context: Environment - stable, cross-project rules, standards, and platform constraints
 #
-# This file covers 5 of the 6 canonical dimensions:
-#   Intent, Requirements, Constraints, Flows (platform touchpoints), Decisions
-# The 6th dimension (Interfaces) is in environment_artifacts.yaml, which serves
+# This file covers 4 of the 6 canonical dimensions:
+#   Intent, Requirements, Constraints, Decisions
+# The 5th dimension (Interfaces) is in environment_artifacts.yaml, which serves
 #   as a RAG repository substitute for existing platform symbols.
+# The 6th dimension (Flows) is always project-scoped — see project_context.yaml.
 
 metadata:
   platform_name: "Volopa"
@@ -19,7 +20,7 @@ metadata:
     - "SD-OOP_Expense_single_data_capturing.json"
     - "dos_and_donts.pdf"
   generated_date: "2026-02-11"
-  note: "This captures platform-level intent, requirements, constraints, flow touchpoints, and decisions. Existing platform symbols (tables, models, middleware, endpoints) are in environment_artifacts.yaml."
+  note: "This captures platform-level intent, requirements, constraints, and decisions. Existing platform symbols (tables, models, middleware, endpoints) are in environment_artifacts.yaml. Flows (dynamic behavior/sequencing) are always project-specific — see project_context.yaml."
   companion_file: "environment_artifacts.yaml (Interfaces dimension - RAG substitute)"
 
 # =============================================================================
@@ -42,23 +43,7 @@ intent:
     - "Soft-delete pattern: preserve historical data while hiding from active views"
 
 # =============================================================================
-# 2. REQUIREMENTS
-# =============================================================================
-requirements:
-  description: "Platform-level behavioral requirements that OOP Expense inherits"
-
-  inherited_behaviors:
-    - "All API endpoints require OAuth2 authentication via middleware"
-    - "All data is scoped to a client (multi-tenancy)"
-    - "User roles (Primary Admin, Admin, Business User, Card User) are platform-wide"
-    - "Feature enablement is controlled via Sales/Ops through Admin.Volopa"
-    - "User management is accessible via Settings > Manage Users in the Web App"
-    - "Currency and country lists are platform-managed master data"
-    - "File storage uses platform storage infrastructure"
-    - "FX conversion is available as platform infrastructure"
-
-# =============================================================================
-# 3. CONSTRAINTS
+# 2. CONSTRAINTS
 # =============================================================================
 constraints:
   description: "Hard rules that restrict solution space - platform-level standards"
@@ -69,7 +54,6 @@ constraints:
   # ---------------------------------------------------------------------------
   dos_and_donts:
     source: "dos_and_donts.pdf"
-    origin: EXISTING
 
     prerequisites:
       - "The developer needs to be familiar with Laravel API structure and use the mental model defined in intent.mental_model"
@@ -138,29 +122,17 @@ constraints:
   # PLATFORM CONSTRAINTS (derived from OOP Expense spec references)
   # These are inferred from existing patterns observed across the JSON specs.
   # ---------------------------------------------------------------------------
-  authentication:
-    # Extends dos_and_donts.dos.authentication with spec-specific evidence
-    - rule: "All API endpoints must be protected by Oauth2UserClient middleware"
-      origin: EXISTING
-      source: "SD-OOP_Pocket_expense.json#api_contract.route.middleware"
-      see_also: "dos_and_donts.dos.authentication"
-      referenced_in:
-        - "SD-OOP_Pocket_expense.json#security_and_permissions"
-
+  
   multi_tenancy:
     - rule: "All queries and mutations must be scoped by client_id"
-      origin: EXISTING
       evidence: "Every new table includes client_id as NOT NULL or foreign key"
     - rule: "user_id must match authenticated user (server-side check)"
-      origin: EXISTING
       referenced_in: "SD-OOP_Pocket_expense.json#security_and_permissions"
     - rule: "Target entities (e.g. expense_user_id) must belong to the same client_id"
-      origin: EXISTING
       referenced_in: "SD-OOP_Pocket_expense.json#api_contract.additional_checks"
 
   soft_delete_pattern:
     description: "Platform-standard pattern for logical deletion"
-    origin: EXISTING
     variants:
       - name: "Flag-based soft delete"
         columns: ["deleted TINYINT(1) DEFAULT 0", "delete_time DATETIME DEFAULT NULL"]
@@ -173,7 +145,6 @@ constraints:
 
   timestamp_pattern:
     description: "Platform-standard timestamp conventions"
-    origin: EXISTING
     variants:
       - name: "Volopa legacy style"
         columns: ["create_time DATETIME DEFAULT CURRENT_TIMESTAMP", "update_time DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP"]
@@ -184,12 +155,9 @@ constraints:
 
   database_engine:
     - rule: "InnoDB engine required"
-      origin: EXISTING
       referenced_in: "SD-OOP_Pocket_expense.json#data_model.new_table"
     - rule: "Character set: utf8mb4"
-      origin: EXISTING
     - rule: "Collation: utf8mb4_unicode_ci"
-      origin: EXISTING
 
   # ---------------------------------------------------------------------------
   # LARAVEL TASK CONVENTIONS (for task breakdown and dependency ordering)
@@ -261,49 +229,81 @@ constraints:
       - { code: 404, meaning: "Not Found" }
       - { code: 422, meaning: "Unprocessable Entity - validation failed" }
 
+  # ---------------------------------------------------------------------------
+  # VERIFICATION PROTOCOL (Mandatory pre-generation CHECK PLAN)
+  # Injected into LaravelEngineer and (optionally) LaravelArchitect prompts.
+  # ---------------------------------------------------------------------------
+  verification_protocol:
+    description: "Before generating any design or code, the agent MUST produce a CHECK PLAN listing every symbol it intends to reference, with origin classification and evidence."
+    applies_to: ["LaravelEngineer", "LaravelArchitect"]
+
+    protocol_rules:
+      - "Before generating any design or code, you MUST produce a CHECK PLAN."
+      - "A CHECK PLAN lists every class, model, controller, service, job, policy, form request, resource, migration, route, table, and queue name you intend to reference."
+      - "For each item, set Origin to one of: EXISTING, NEW, UNKNOWN."
+      - "Do NOT generate any design or code until all items in the CHECK PLAN are classified and evidence is cited."
+
+    origin_rules:
+      EXISTING:
+        definition: "Symbol already exists in the repository or platform"
+        action: "MUST cite evidence: file path and/or signature from the evidence sources below"
+        verification: "rag_symbol_lookup"
+        evidence_required: "path + public methods or column list"
+      NEW:
+        definition: "Symbol is introduced by this project/change"
+        action: "MUST declare where it will be created (file path) and verify no collision with existing symbols"
+        verification: "rag_collision_check"
+        evidence_required: "target file path + confirmation no existing match"
+      UNKNOWN:
+        definition: "Origin not yet determined — must be resolved before proceeding"
+        action: "MUST perform a lookup to resolve to EXISTING or NEW before any generation"
+        verification: "rag_symbol_lookup"
+        evidence_required: "lookup result that resolves to EXISTING (with path) or NEW (with collision check)"
+
+    blocking_rule: "Do NOT generate any design or code until ALL items in the CHECK PLAN have been resolved (no UNKNOWN remaining) and evidence is cited for every EXISTING and NEW symbol."
+
+    evidence_sources:
+      description: "Current evidence sources are static YAML files that substitute for a future live RAG repository"
+      future_note: "These will be replaced by RepoRAG.lookup_symbol() and RepoRAG.collision_check() calls when the RAG repository is operational"
+
+      existing_symbols:
+        source: "environment_artifacts.yaml#interfaces"
+        contains: "Existing database tables, models, middleware, endpoints, infrastructure, user roles, validation patterns"
+        rag_equivalent: "RepoRAG.lookup_symbol(name) -> {found: bool, path: str, signature: str}"
+
+      new_symbols:
+        source: "project_context.yaml#components_to_build"
+        contains: "All NEW components declared for this project with target file paths"
+        rag_equivalent: "RepoRAG.collision_check(name) -> {collision: bool, existing_path: str|null}"
+
+      database_tables:
+        source: "project_context.yaml#interfaces.database_tables"
+        contains: "Full column definitions, foreign keys, indexes for all project tables"
+
+      platform_models:
+        source: "environment_artifacts.yaml#interfaces.standard_volopa_models"
+        contains: "Existing Eloquent models with known/inferred relationships"
+
+      platform_tables:
+        source: "environment_artifacts.yaml#interfaces.existing_database_tables"
+        contains: "Existing platform tables referenced by this project"
+
+    check_plan_format:
+      description: "Expected format of the CHECK PLAN the agent must produce"
+      example: |
+        CHECK PLAN
+        - PocketExpenseFileUpload     -> NEW      -> collision check -> no match in repo, create at app/Models/PocketExpenseFileUpload.php
+        - PocketExpenseUploadController -> NEW    -> collision check -> no match in repo, create at app/Http/Controllers/PocketExpenseUploadController.php
+        - PocketExpenseCSVValidator    -> NEW      -> collision check -> no match in repo, create at app/Services/PocketExpenseCSVValidator.php
+        - User (model)                -> EXISTING  -> found at environment_artifacts.yaml#standard_volopa_models[User]
+        - Oauth2UserClient (middleware) -> EXISTING -> found at environment_artifacts.yaml#standard_volopa_middleware[Oauth2UserClient]
+        - pocket_expense_file_uploads (table) -> NEW -> collision check -> no match, defined in project_context.yaml#interfaces.database_tables
+        - ProcessExpenseUpload (job)  -> NEW      -> collision check -> no match in repo, create at app/Jobs/ProcessExpenseUpload.php
+
 # =============================================================================
-# 4. FLOWS (Platform Flow Touchpoints)
-# =============================================================================
-flows:
-  description: "Platform-level flow touchpoints that project-specific flows interact with"
-  note: "Full flows are always project-specific per the context-centric model. This section documents the existing platform flow touchpoints that project flows reference."
-
-  platform_flow_touchpoints:
-    - name: "OAuth2 Authentication Flow"
-      origin: EXISTING
-      description: "Every API request passes through Oauth2UserClient middleware for token validation before reaching any controller"
-      referenced_by: ["CSV upload flow", "Single expense entry"]
-      see: "environment_artifacts.yaml#interfaces.standard_volopa_middleware[Oauth2UserClient]"
-
-    - name: "Feature Enablement Flow"
-      origin: EXISTING
-      description: "Sales/Ops enables features for clients via Admin.Volopa. System validates prerequisites (e.g. card services active) before activation."
-      referenced_by: ["Permission enablement flow"]
-      ui_entry_points:
-        - { path: "Admin.Volopa", origin: EXISTING }
-
-    - name: "User Management Flow"
-      origin: EXISTING
-      description: "Admins manage users via Settings > Manage Users in the Web App, or via Admin.Volopa: User accounts page"
-      referenced_by: ["Permission delegation flow"]
-      ui_entry_points:
-        - { path: "Web App: Settings > Manage Users", origin: EXISTING }
-        - { path: "Admin.Volopa: User accounts page", origin: EXISTING }
-
-    - name: "Queue/Job Dispatch Flow"
-      origin: EXISTING
-      description: "Platform provides Laravel queue infrastructure for dispatching background jobs. Jobs are dispatched onto named queues."
-      referenced_by: ["CSV upload flow - ProcessExpenseUpload job"]
-      see: "environment_artifacts.yaml#interfaces.standard_volopa_infrastructure[Queue]"
-
-    - name: "FX Rate Lookup Flow"
-      origin: EXISTING
-      description: "Platform provides FX rate infrastructure including rate storage, commission configuration, and wallet currency identification"
-      referenced_by: ["Single expense FX conversion flow"]
-      see: ["environment_artifacts.yaml#interfaces.existing_endpoints[/wallet-ccy-value]", "environment_artifacts.yaml#interfaces.standard_volopa_infrastructure[FX Service]"]
 
 # =============================================================================
-# 5. DECISIONS
+# 3. DECISIONS
 # =============================================================================
 decisions:
   description: "Platform-level architectural decisions that all projects inherit"
@@ -312,52 +312,42 @@ decisions:
     - id: "ENV-DEC-001"
       decision: "Laravel framework"
       rationale: "Standard PHP framework for all Volopa services"
-      origin: EXISTING
 
     - id: "ENV-DEC-002"
       decision: "OAuth2/WSSE authentication via custom middleware"
-      rationale: "Secure API access with token-based auth; custom Oauth2UserClient middleware on all API routes"
-      origin: EXISTING
+      rationale: "Secure API access with token-based auth; custom Oauth2 middleware on all API routes"
 
     - id: "ENV-DEC-003"
       decision: "Queue-based async processing for long-running tasks"
       rationale: "Prevent API process blocking; file uploads and batch operations use background jobs"
-      origin: EXISTING
 
     - id: "ENV-DEC-004"
       decision: "API Resources for response shaping"
       rationale: "Consistent response format; hide internal model fields from API consumers"
-      origin: EXISTING
 
     - id: "ENV-DEC-005"
       decision: "Form Request classes for validation"
       rationale: "Centralised validation with policy enforcement; separation from controller logic"
-      origin: EXISTING
 
     - id: "ENV-DEC-006"
       decision: "Multi-tenant architecture scoped by client_id"
       rationale: "All data and operations are isolated per client; enforced via FK constraints and query scoping"
-      origin: EXISTING
 
     - id: "ENV-DEC-007"
       decision: "Soft delete for data preservation"
       rationale: "Historical data must remain queryable for audit, reporting, and referential integrity. Two variants coexist (flag-based and Laravel SoftDeletes)."
-      origin: EXISTING
 
     - id: "ENV-DEC-008"
       decision: "MySQL/InnoDB with utf8mb4 encoding"
       rationale: "ACID compliance, foreign key support, full Unicode character support"
-      origin: EXISTING
 
     - id: "ENV-DEC-009"
       decision: "Eloquent ORM with explicit model relationships"
       rationale: "Standard Laravel data access layer; relationships defined on models; factories for testing"
-      origin: EXISTING
 
     - id: "ENV-DEC-010"
       decision: "Centralised master data for currencies, countries, and reference lookups"
       rationale: "Single source of truth for validation; prevents data inconsistency across features"
-      origin: EXISTING
       evidence: "OOP Expense validates Currency Code and Merchant Country against existing platform lists"
 
   unresolved:

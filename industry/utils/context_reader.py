@@ -150,7 +150,8 @@ class ContextReader:
     def get_platform_constraints(self) -> str:
         """Return environment.constraints (auth, multi-tenancy, soft delete, etc.) formatted."""
         data = self.get("environment", "constraints")
-        return f"=== PLATFORM CONSTRAINTS ===\n{self.format_section(data)}"
+        filtered = {k: v for k, v in data.items() if k not in ("description", "verification_protocol")}
+        return f"=== PLATFORM CONSTRAINTS ===\n{self.format_section(filtered)}"
 
     def get_do_not_build(self) -> str:
         """Return DEC-011 do_not_build list as text."""
@@ -177,8 +178,14 @@ class ContextReader:
         return "\n".join(lines)
 
     def get_components_to_build(self) -> str:
-        """Return project.components_to_build formatted as text."""
-        data = self.get("project", "components_to_build")
+        """Return project.components_to_build formatted as text.
+
+        Falls back gracefully if the section is commented out or absent.
+        """
+        try:
+            data = self.get("project", "components_to_build")
+        except KeyError:
+            return "=== COMPONENTS TO BUILD ===\n(section not present — see interfaces for authoritative list)"
         return f"=== COMPONENTS TO BUILD ===\n{self.format_section(data)}"
 
     def get_database_tables(self, detail: str = "full") -> str:
@@ -196,7 +203,9 @@ class ContextReader:
         for table in tables:
             name = table.get("name", "?")
             origin = table.get("origin", "?")
+            # NEW tables use "columns"; EXISTING tables use "key_columns"
             columns = table.get("columns", [])
+            key_columns = table.get("key_columns", [])
             fks = table.get("foreign_keys", [])
             indexes = table.get("indexes", [])
 
@@ -204,11 +213,12 @@ class ContextReader:
                 lines.append(f"  - {name} (origin: {origin})")
 
             elif detail == "summary":
+                col_count = len(columns) or len(key_columns)
                 fk_targets = [fk.get("references", "") for fk in fks]
                 fk_str = ", ".join(fk_targets) if fk_targets else "none"
                 lines.append(
                     f"  - {name} (origin: {origin}, "
-                    f"columns: {len(columns)}, FK targets: {fk_str})"
+                    f"columns: {col_count}, FK targets: {fk_str})"
                 )
 
             else:  # full
@@ -230,6 +240,15 @@ class ContextReader:
                         if default is not None:
                             parts.append(f"DEFAULT {default}")
                         lines.append(" ".join(parts))
+                elif key_columns:
+                    lines.append("  Key Columns (reference only):")
+                    for col in key_columns:
+                        col_name = col.get("name", "?")
+                        col_type = col.get("type", "")
+                        if col_type:
+                            lines.append(f"    - {col_name} ({col_type})")
+                        else:
+                            lines.append(f"    - {col_name}")
 
                 if fks:
                     lines.append("  Foreign Keys:")
@@ -339,13 +358,11 @@ class ContextReader:
     def get_project_requirements(self) -> str:
         """Return project.requirements (features REQ-001–012, user journeys)."""
         data = self.get("project", "requirements")
-        return f"=== PROJECT REQUIREMENTS ===\n{self.format_section(data)}"
+        filtered_data = {k: v for k, v in data.items() if k not in ("description", "inherited_behaviors")}
+        return f"=== PROJECT REQUIREMENTS ===\n{self.format_section(filtered_data)}"
 
     def get_project_constraints(self) -> str:
         """Return project.constraints (file, validation, permission, expense source, FX).
-
-        Excludes design_output_constraints which are loaded separately via
-        get_design_output_constraints() for the Architect role only.
         """
         data = self.get("project", "constraints")
         filtered = {k: v for k, v in data.items() if k not in ("description", "design_output_constraints")}
@@ -407,7 +424,7 @@ class ContextReader:
 
     def get_inherited_behaviors(self) -> str:
         """Return environment.requirements.inherited_behaviors."""
-        data = self.get("environment", "requirements", "inherited_behaviors")
+        data = self.get("project", "requirements", "inherited_behaviors")
         lines = ["=== INHERITED BEHAVIORS (Platform) ==="]
         for item in data:
             lines.append(f"  - {item}")
@@ -518,9 +535,88 @@ class ContextReader:
         return "\n".join(lines)
 
     def get_platform_flow_touchpoints(self) -> str:
-        """Return environment.flows.platform_flow_touchpoints."""
-        data = self.get("environment", "flows", "platform_flow_touchpoints")
+        """Return project.flows.platform_flow_touchpoints.
+
+        Falls back gracefully if the section is commented out or absent.
+        """
+        try:
+            data = self.get("project", "flows", "platform_flow_touchpoints")
+        except KeyError:
+            return "=== PLATFORM FLOW TOUCHPOINTS ===\n(section not present — see environment_artifacts.yaml for existing platform services)"
         return f"=== PLATFORM FLOW TOUCHPOINTS ===\n{self.format_section(data)}"
+
+    # ------------------------------------------------------------------
+    # Verification Protocol
+    # ------------------------------------------------------------------
+
+    def get_verification_protocol(self) -> str:
+        """Return environment.constraints.verification_protocol formatted for prompt injection.
+
+        Produces the VERIFICATION PROTOCOL block that instructs the agent to
+        emit a CHECK PLAN before generating any design or code.  Evidence
+        sources currently point to static YAML files; these will be replaced
+        by live RAG queries in a future iteration.
+        """
+        data = self.get("environment", "constraints", "verification_protocol")
+
+        lines = [
+            "",
+            "=" * 60,
+            "VERIFICATION PROTOCOL (MANDATORY)",
+            "=" * 60,
+            "",
+            data.get("description", ""),
+            "",
+        ]
+
+        # Protocol rules
+        for rule in data.get("protocol_rules", []):
+            lines.append(f"  - {rule}")
+        lines.append("")
+
+        # Origin classification rules
+        origin_rules = data.get("origin_rules", {})
+        for origin, details in origin_rules.items():
+            lines.append(f"  * {origin}: {details.get('definition', '')}")
+            lines.append(f"    Action: {details.get('action', '')}")
+            lines.append(f"    Verification: {details.get('verification', '')}")
+            lines.append(f"    Evidence required: {details.get('evidence_required', '')}")
+        lines.append("")
+
+        # Blocking rule
+        blocking = data.get("blocking_rule", "")
+        if blocking:
+            lines.append(f"BLOCKING RULE: {blocking}")
+            lines.append("")
+
+        # Evidence sources
+        sources = data.get("evidence_sources", {})
+        if sources:
+            lines.append("Evidence sources (current: static YAML; future: live RAG):")
+            for key, source_info in sources.items():
+                if key in ("description", "future_note"):
+                    continue
+                if isinstance(source_info, dict):
+                    src = source_info.get("source", "")
+                    contains = source_info.get("contains", "")
+                    rag_eq = source_info.get("rag_equivalent", "")
+                    lines.append(f"  - {key}: {src}")
+                    if contains:
+                        lines.append(f"    Contains: {contains}")
+                    if rag_eq:
+                        lines.append(f"    RAG equivalent: {rag_eq}")
+            lines.append("")
+
+        # CHECK PLAN format example
+        fmt = data.get("check_plan_format", {})
+        if fmt:
+            lines.append("Expected CHECK PLAN format:")
+            example = fmt.get("example", "")
+            if example:
+                for ex_line in example.strip().splitlines():
+                    lines.append(f"  {ex_line}")
+
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Internal helpers

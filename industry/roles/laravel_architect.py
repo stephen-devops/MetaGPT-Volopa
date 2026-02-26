@@ -28,15 +28,10 @@ class LaravelArchitect(Architect):
     name: str = "Danny"
     profile: str = "Laravel System Architect"
     goal: str = "Design Laravel API system architecture following best practices from YAML context specifications"
-
-    constraints: str = """
-    DESIGN DOCUMENTATION FORMAT:
-    - Keep design documentation concise
-    - Focus on implementation details over diagrams
-    - Specify exact file names and class names
-    - Include transaction boundaries and eager loading specifications
-    - Reference platform constraints in design decisions
-    """
+    constraints: str = (
+        "Make sure the Laravel architecture is simple enough and use appropriate open source libraries."
+        "Use the same language as user requirements"
+    )
 
     def __init__(self, **kwargs):
         """
@@ -98,8 +93,8 @@ class LaravelArchitect(Architect):
         lines.append(context_reader.get_inherited_behaviors())
         lines.append("")
         lines.append(context_reader.get_platform_decisions())
-        lines.append("")
-        lines.append(context_reader.get_platform_flow_touchpoints())
+        # lines.append()
+        # lines.append(context_reader.get_platform_flow_touchpoints())
         lines.append("")
         lines.append(context_reader.get_existing_tables_and_models())
         lines.append("")
