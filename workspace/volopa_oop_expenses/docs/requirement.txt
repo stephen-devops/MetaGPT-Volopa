@@ -1,0 +1,11 @@
+
+Build the Volopa OOP (Out-of-Pocket) Expenses API System using Laravel 10+ with PHP 8.2+.
+
+Three modules:
+1. User Management & Permissions — RBAC via user_feature_permission with delegation hierarchy
+2. Pocket Expense CSV Batch Upload — synchronous validation, async background sync
+3. Single Expense Data Capturing — CRUD with FX conversion and flexible metadata
+
+All domain requirements, constraints, database schemas, API contracts, flows, and platform
+standards are defined in the YAML context injected into your system prompt. Use those as the
+authoritative source. Do not invent requirements beyond what the YAML specifies.

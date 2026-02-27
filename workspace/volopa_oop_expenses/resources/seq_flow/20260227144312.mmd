@@ -1,0 +1,101 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant Client as Client
+    participant Auth as Oauth2UserClient
+    participant UFPController as UserFeaturePermissionController
+    participant UPService as UserPermissionService
+    participant PEController as PocketExpenseController
+    participant PEService as PocketExpenseService
+    participant FXService as PocketExpenseFXService
+    participant UploadController as PocketExpenseUploadController
+    participant CSVValidator as PocketExpenseCSVValidator
+    participant Queue as Queue
+    participant ProcessJob as ProcessExpenseUpload
+    participant DB as Database
+    
+    Note over Client, ProcessJob: User Permission Management Flow
+    Client->>Auth: POST /api/v1/user-feature-permissions {user_id, client_id, feature_id, manager_user_id}
+    Auth->>UFPController: authorize request
+    UFPController->>UPService: grantPermission(user_id, client_id, feature_id, grantor_id, manager_id)
+    UPService->>DB: create UserFeaturePermission record
+    UPService->>UPService: seedDefaultExpenseSources(client_id)
+    UPService-->>UFPController: UserFeaturePermission created
+    UFPController-->>Client: 201 {success: true, permission: {...}}
+    
+    Note over Client, ProcessJob: Single Expense CRUD with FX Conversion Flow
+    Client->>Auth: POST /api/v1/pocket-expenses {date, currency, amount, merchant_name, ...}
+    Auth->>PEController: authorize request
+    PEController->>FXService: getWalletBaseCurrency(client_id)
+    FXService-->>PEController: {base_currency_code: 'USD'}
+    PEController->>FXService: calculateConvertedAmount(amount, currency, base_currency, date)
+    FXService->>FXService: getFXRate(from_currency, to_currency, date)
+    FXService->>FXService: applyCommission(rate, commission_percent)
+    FXService-->>PEController: {converted_amount: 100.50, fx_rate: 1.25}
+    PEController->>PEService: createExpense(data, user_id, client_id)
+    PEService->>DB: create PocketExpense record
+    PEService->>PEService: createExpenseMetadata(expense_id, 'category', metadata)
+    PEService->>DB: create PocketExpenseMetadata records
+    PEService-->>PEController: PocketExpense created
+    PEController-->>Client: 201 {success: true, expense: {...}}
+    
+    Client->>Auth: GET /api/v1/pocket-expenses/{id}
+    Auth->>PEController: authorize request
+    PEController->>PEService: getExpense(expense_id, user_id)
+    PEService->>DB: fetch PocketExpense with relationships
+    PEService-->>PEController: PocketExpense with metadata
+    PEController-->>Client: 200 {expense: {...}}
+    
+    Client->>Auth: PUT /api/v1/pocket-expenses/{id} {updated_data}
+    Auth->>PEController: authorize request
+    PEController->>FXService: calculateConvertedAmount(new_amount, currency, base_currency, date)
+    FXService-->>PEController: {converted_amount: 105.25}
+    PEController->>PEService: updateExpense(expense_id, data, user_id)
+    PEService->>DB: update PocketExpense record
+    PEService-->>PEController: updated PocketExpense
+    PEController-->>Client: 200 {success: true, expense: {...}}
+    
+    Client->>Auth: POST /api/v1/pocket-expenses/{id}/approve
+    Auth->>PEController: authorize request
+    PEController->>PEService: approveExpense(expense_id, approver_id)
+    PEService->>DB: update PocketExpense status to 'approved'
+    PEService-->>PEController: approved PocketExpense
+    PEController-->>Client: 200 {success: true, expense: {...}}
+    
+    Note over Client, ProcessJob: CSV Batch Upload Processing Flow
+    Client->>Auth: POST /api/uploads/pocket-expense/csv {file, user_id, expense_user_id, client_id}
+    Auth->>UploadController: authorize request
+    UploadController->>UploadController: validateFile(file, user_id, expense_user_id, client_id)
+    UploadController->>DB: create PocketExpenseFileUpload record {status: 'uploaded'}
+    UploadController->>CSVValidator: validate(file_path, target_user_id, client_id, admin_id)
+    CSVValidator->>CSVValidator: preloadReferenceData(client_id)
+    CSVValidator->>CSVValidator: validateHeaders(headers)
+    loop For each CSV row
+        CSVValidator->>CSVValidator: validateRow(row, line_number)
+        CSVValidator->>CSVValidator: validateDate(date)
+        CSVValidator->>CSVValidator: validateExpenseType(expense_type)
+        CSVValidator->>CSVValidator: validateCurrency(currency_code)
+        CSVValidator->>CSVValidator: validateAmount(amount, expense_type)
+        CSVValidator->>CSVValidator: validateSource(source_name, client_id)
+    end
+    alt Validation Failed
+        CSVValidator-->>UploadController: {valid: false, errors: [...]}
+        UploadController->>DB: update PocketExpenseFileUpload {status: 'validation_failed', validation_errors}
+        UploadController-->>Client: 422 {success: false, errors: [...], upload_id, total_rows, error_count}
+    else Validation Passed
+        CSVValidator-->>UploadController: {valid: true, validated_rows: [...]}
+        UploadController->>DB: bulk insert to PocketExpenseUploadData {status: 'pending'}
+        UploadController->>DB: update PocketExpenseFileUpload {status: 'processing'}
+        UploadController->>Queue: dispatch ProcessExpenseUpload(upload_id)
+        UploadController-->>Client: 200 {success: true, upload_id, total_rows}
+        Queue->>ProcessJob: handle(upload_id)
+        ProcessJob->>DB: fetch pending PocketExpenseUploadData
+        loop For each batch of 100
+            ProcessJob->>ProcessJob: syncExpensesToMainService(expenses_batch)
+            ProcessJob->>PEService: createExpense(expense_data, user_id, client_id)
+            ProcessJob->>DB: update PocketExpenseUploadData {status: 'synced'}
+        end
+        ProcessJob->>ProcessJob: updateUploadStatus('completed')
+        ProcessJob->>DB: update PocketExpenseFileUpload {status: 'completed', processed_at}
+        ProcessJob->>ProcessJob: notifyUser(user_id, 'Upload completed')
+    end
