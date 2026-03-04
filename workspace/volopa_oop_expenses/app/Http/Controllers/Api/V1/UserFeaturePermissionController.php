@@ -6,8 +6,8 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
-use App\Http\Requests\StoreUserFeaturePermissionRequest;
-use App\Http\Requests\UpdateUserFeaturePermissionRequest;
+use App\Http\Requests\GrantUserFeaturePermissionRequest;
+use App\Http\Requests\RevokeUserFeaturePermissionRequest;
 use App\Http\Resources\UserFeaturePermissionResource;
 use App\Models\UserFeaturePermission;
 use App\Services\UserPermissionService;
@@ -15,32 +15,47 @@ use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Database\Eloquent\Builder;
 use Exception;
+use InvalidArgumentException;
 
+/**
+ * UserFeaturePermissionController
+ * 
+ * Thin controller for user feature permission management operations.
+ * Delegates business logic to UserPermissionService and shapes responses using API Resources.
+ * Implements delegation-based RBAC system with multi-tenant support and role hierarchy enforcement.
+ * 
+ * Business Rules:
+ * - Primary Administrator has full access to all users' permissions
+ * - Administrator requires explicit delegation to manage other users' permissions
+ * - Business User and Card User cannot approve expenses even with management rights
+ * - Permission delegation can be granted by Primary Admin to any user regardless of role
+ * - Admin can only grant access to their own managed users, not all users
+ * - Revoked users fall back to Primary Administrator management until reassigned
+ */
 class UserFeaturePermissionController extends Controller
 {
     /**
-     * The user permission service instance.
+     * User permission service instance.
      *
      * @var UserPermissionService
      */
     private UserPermissionService $userPermissionService;
 
     /**
-     * Default pagination limit for index queries.
+     * Default pagination size for index requests.
      *
      * @var int
      */
-    private const DEFAULT_PAGINATION_LIMIT = 50;
+    private const DEFAULT_PER_PAGE = 15;
 
     /**
-     * Maximum pagination limit allowed.
+     * Maximum pagination size allowed.
      *
      * @var int
      */
-    private const MAX_PAGINATION_LIMIT = 200;
+    private const MAX_PER_PAGE = 100;
 
     /**
      * Create a new controller instance.
@@ -51,16 +66,18 @@ class UserFeaturePermissionController extends Controller
     {
         $this->userPermissionService = $userPermissionService;
         
-        // Apply auth middleware to all routes
+        // Apply OAuth2 middleware for all routes
         $this->middleware('auth:api');
         
-        // Apply throttle middleware for API rate limiting
-        $this->middleware('throttle:api')->only(['store', 'update', 'destroy']);
+        // Apply throttling middleware
+        $this->middleware('throttle:60,1');
     }
 
     /**
      * Display a listing of user feature permissions.
      *
+     * GET /api/v1/user-feature-permissions
+     * 
      * @param Request $request
      * @return JsonResponse
      */
@@ -69,149 +86,161 @@ class UserFeaturePermissionController extends Controller
         try {
             $user = Auth::user();
             
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized access',
-                    'error_code' => 'AUTH_REQUIRED'
-                ], 401);
+            if (!$user || !$user->client_id) {
+                return $this->errorResponse('Invalid user context', 401);
             }
 
-            // Authorize using policy
+            // Authorize the request
             $this->authorize('viewAny', UserFeaturePermission::class);
 
-            // Validate and sanitize input parameters
-            $validated = $request->validate([
-                'client_id' => 'required|integer|min:1|exists:clients,id',
-                'user_id' => 'sometimes|integer|min:1|exists:users,id',
-                'feature_id' => 'sometimes|integer|min:1|exists:features,id',
-                'manager_user_id' => 'sometimes|integer|min:1|exists:users,id',
-                'is_enabled' => 'sometimes|boolean',
-                'page' => 'sometimes|integer|min:1',
-                'per_page' => 'sometimes|integer|min:1|max:' . self::MAX_PAGINATION_LIMIT,
-                'sort_by' => 'sometimes|string|in:id,created_at,updated_at,user_id,feature_id',
-                'sort_direction' => 'sometimes|string|in:asc,desc',
-            ]);
-
             // Build query with filters
-            $query = UserFeaturePermission::with([
-                'user:id,name,email,role',
-                'client:id,name,code',
-                'feature:id,name,code,description',
-                'grantor:id,name,email,role',
-                'manager:id,name,email,role'
-            ]);
+            $query = UserFeaturePermission::with(['user', 'client', 'feature', 'grantor', 'manager'])
+                ->where('client_id', $user->client_id);
 
-            // Apply client filter (required)
-            $query->forClient($validated['client_id']);
+            // Apply filters
+            $this->applyFilters($query, $request);
 
-            // Apply additional filters if provided
-            if (isset($validated['user_id'])) {
-                $query->forUser($validated['user_id']);
-            }
+            // Apply ordering
+            $this->applyOrdering($query, $request);
 
-            if (isset($validated['feature_id'])) {
-                $query->forFeature($validated['feature_id']);
-            }
+            // Get pagination parameters
+            $perPage = min(
+                (int) $request->get('per_page', self::DEFAULT_PER_PAGE),
+                self::MAX_PER_PAGE
+            );
 
-            if (isset($validated['manager_user_id'])) {
-                $query->managedBy($validated['manager_user_id']);
-            }
-
-            if (isset($validated['is_enabled'])) {
-                if ($validated['is_enabled']) {
-                    $query->active();
-                } else {
-                    $query->where('is_enabled', false);
-                }
-            }
-
-            // Apply role-based filtering
-            if (!$user->isPrimaryAdmin()) {
-                if ($user->isAdmin()) {
-                    // Admin can only see permissions they granted or manage
-                    $query->where(function ($q) use ($user) {
-                        $q->where('grantor_id', $user->id)
-                          ->orWhere('manager_user_id', $user->id)
-                          ->orWhere('user_id', $user->id);
-                    });
-                } else {
-                    // Business Users and Card Users can only see their own permissions
-                    $query->forUser($user->id);
-                }
-            }
-
-            // Apply sorting
-            $sortBy = $validated['sort_by'] ?? 'created_at';
-            $sortDirection = $validated['sort_direction'] ?? 'desc';
-            $query->orderBy($sortBy, $sortDirection);
-
-            // Apply pagination
-            $perPage = min($validated['per_page'] ?? self::DEFAULT_PAGINATION_LIMIT, self::MAX_PAGINATION_LIMIT);
+            // Execute paginated query
             $permissions = $query->paginate($perPage);
 
             Log::info('User feature permissions retrieved', [
                 'user_id' => $user->id,
-                'client_id' => $validated['client_id'],
-                'filters' => array_intersect_key($validated, array_flip(['user_id', 'feature_id', 'manager_user_id', 'is_enabled'])),
-                'total_results' => $permissions->total()
+                'client_id' => $user->client_id,
+                'total_count' => $permissions->total(),
+                'filters' => $request->only(['user_id', 'feature_id', 'is_enabled', 'manager_user_id']),
             ]);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'User feature permissions retrieved successfully',
-                'data' => UserFeaturePermissionResource::collection($permissions->items()),
-                'pagination' => [
-                    'current_page' => $permissions->currentPage(),
-                    'total_pages' => $permissions->lastPage(),
-                    'per_page' => $permissions->perPage(),
-                    'total_items' => $permissions->total(),
-                    'has_next_page' => $permissions->hasMorePages(),
-                    'has_previous_page' => $permissions->currentPage() > 1,
-                ],
-                'filters_applied' => array_intersect_key($validated, array_flip(['user_id', 'feature_id', 'manager_user_id', 'is_enabled'])),
-            ], 200);
-
-        } catch (ValidationException $e) {
-            Log::warning('Validation error in user permissions index', [
-                'user_id' => Auth::id(),
-                'errors' => $e->errors()
-            ]);
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $e->errors(),
-                'error_code' => 'VALIDATION_ERROR'
-            ], 422);
+            return $this->successResponse(
+                UserFeaturePermissionResource::collection($permissions),
+                'User feature permissions retrieved successfully'
+            );
 
         } catch (Exception $e) {
-            Log::error('Error retrieving user feature permissions', [
+            Log::error('Failed to retrieve user feature permissions', [
                 'user_id' => Auth::id(),
                 'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
+                'trace' => $e->getTraceAsString(),
             ]);
 
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve user feature permissions',
-                'error_code' => 'RETRIEVAL_ERROR'
-            ], 500);
+            return $this->errorResponse(
+                'Failed to retrieve user feature permissions',
+                500,
+                ['error' => 'An unexpected error occurred while retrieving permissions']
+            );
         }
     }
 
     /**
      * Store a newly created user feature permission.
      *
-     * @param StoreUserFeaturePermissionRequest $request
+     * POST /api/v1/user-feature-permissions
+     * 
+     * @param GrantUserFeaturePermissionRequest $request
      * @return JsonResponse
      */
-    public function store(StoreUserFeaturePermissionRequest $request): JsonResponse
+    public function store(GrantUserFeaturePermissionRequest $request): JsonResponse
     {
         try {
             $user = Auth::user();
             
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    
+            if (!$user || !$user->client_id) {
+                return $this->errorResponse('Invalid user context', 401);
+            }
+
+            $validatedData = $request->validated();
+
+            // Grant the permission using the service
+            $permission = $this->userPermissionService->grantPermission(
+                $validatedData['user_id'],
+                $user->client_id,
+                $validatedData['feature_id'],
+                $user->id,
+                $validatedData['manager_user_id']
+            );
+
+            // Load relationships for response
+            $permission->load(['user', 'client', 'feature', 'grantor', 'manager']);
+
+            Log::info('User feature permission granted', [
+                'permission_id' => $permission->id,
+                'user_id' => $validatedData['user_id'],
+                'feature_id' => $validatedData['feature_id'],
+                'grantor_id' => $user->id,
+                'manager_id' => $validatedData['manager_user_id'],
+                'client_id' => $user->client_id,
+            ]);
+
+            return $this->successResponse(
+                new UserFeaturePermissionResource($permission),
+                'User feature permission granted successfully',
+                201
+            );
+
+        } catch (InvalidArgumentException $e) {
+            Log::warning('Invalid user feature permission grant request', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'request_data' => $request->validated(),
+            ]);
+
+            return $this->errorResponse(
+                'Invalid permission grant request',
+                422,
+                ['error' => $e->getMessage()]
+            );
+
+        } catch (Exception $e) {
+            Log::error('Failed to grant user feature permission', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'request_data' => $request->validated(),
+            ]);
+
+            return $this->errorResponse(
+                'Failed to grant user feature permission',
+                500,
+                ['error' => 'An unexpected error occurred while granting permission']
+            );
+        }
+    }
+
+    /**
+     * Remove the specified user feature permission.
+     *
+     * DELETE /api/v1/user-feature-permissions/{id}
+     * 
+     * @param int $id
+     * @param RevokeUserFeaturePermissionRequest $request
+     * @return JsonResponse
+     */
+    public function destroy(int $id, RevokeUserFeaturePermissionRequest $request): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user || !$user->client_id) {
+                return $this->errorResponse('Invalid user context', 401);
+            }
+
+            if ($id <= 0) {
+                return $this->errorResponse('Invalid permission ID', 400);
+            }
+
+            $validatedData = $request->validated();
+
+            // Find the permission to revoke
+            $permission = UserFeaturePermission::where('id', $id)
+                ->where('client_id', $user->client_id)
+                ->first();
+
+            if (!$permission

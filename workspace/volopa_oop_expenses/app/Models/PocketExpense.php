@@ -11,8 +11,43 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
-use Carbon\Carbon;
 
+/**
+ * PocketExpense Model
+ * 
+ * Represents out-of-pocket expenses with multi-tenant support and soft delete.
+ * Manages expense records with FX conversion, metadata, and approval workflow.
+ * 
+ * @property int $id
+ * @property string|null $uuid External reference UUID
+ * @property int $user_id User who owns this expense
+ * @property int $client_id Client context for multi-tenancy
+ * @property \Illuminate\Support\Carbon $date Expense date
+ * @property string $merchant_name Name of the merchant
+ * @property string|null $merchant_description Description of the merchant/expense
+ * @property int $expense_type Reference to opt_pocket_expense_type
+ * @property string $currency 3-letter ISO currency code
+ * @property float $amount Expense amount with 4 decimal precision
+ * @property string|null $merchant_address Address of the merchant
+ * @property float|null $vat_amount VAT amount with 4 decimal precision
+ * @property string|null $notes Additional notes for the expense
+ * @property string $status Current status of the expense
+ * @property int $created_by_user_id User who created this record
+ * @property int|null $updated_by_user_id User who last updated this record
+ * @property int|null $approved_by_user_id User who approved this expense
+ * @property \Illuminate\Support\Carbon $create_time Record creation time
+ * @property \Illuminate\Support\Carbon $update_time Record last update time
+ * @property bool $deleted Soft delete flag
+ * @property \Illuminate\Support\Carbon|null $delete_time When record was deleted
+ * 
+ * @property-read \App\Models\User $user
+ * @property-read \App\Models\Client $client
+ * @property-read \App\Models\OptPocketExpenseType $expenseType
+ * @property-read \App\Models\User $createdBy
+ * @property-read \App\Models\User|null $updatedBy
+ * @property-read \App\Models\User|null $approvedBy
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\PocketExpenseMetadata> $metadata
+ */
 class PocketExpense extends Model
 {
     use HasFactory;
@@ -23,6 +58,27 @@ class PocketExpense extends Model
      * @var string
      */
     protected $table = 'pocket_expense';
+
+    /**
+     * Indicates if the model should be timestamped.
+     *
+     * @var bool
+     */
+    public $timestamps = false;
+
+    /**
+     * The name of the "created at" column.
+     *
+     * @var string|null
+     */
+    const CREATED_AT = 'create_time';
+
+    /**
+     * The name of the "updated at" column.
+     *
+     * @var string|null
+     */
+    const UPDATED_AT = 'update_time';
 
     /**
      * The attributes that are mass assignable.
@@ -51,7 +107,7 @@ class PocketExpense extends Model
     ];
 
     /**
-     * The attributes that should be cast to native types.
+     * The attributes that should be cast.
      *
      * @var array<string, string>
      */
@@ -65,9 +121,9 @@ class PocketExpense extends Model
         'merchant_description' => 'string',
         'expense_type' => 'integer',
         'currency' => 'string',
-        'amount' => 'decimal:2',
+        'amount' => 'decimal:4',
         'merchant_address' => 'string',
-        'vat_amount' => 'decimal:2',
+        'vat_amount' => 'decimal:4',
         'notes' => 'string',
         'status' => 'string',
         'created_by_user_id' => 'integer',
@@ -87,7 +143,14 @@ class PocketExpense extends Model
     protected $hidden = [];
 
     /**
-     * The model's default values for attributes.
+     * The accessors to append to the model's array form.
+     *
+     * @var array<int, string>
+     */
+    protected $appends = [];
+
+    /**
+     * Default attribute values.
      *
      * @var array<string, mixed>
      */
@@ -97,31 +160,11 @@ class PocketExpense extends Model
     ];
 
     /**
-     * The attributes that should be mutated to dates.
+     * The possible values for status enum.
      *
      * @var array<int, string>
      */
-    protected $dates = [
-        'date',
-        'create_time',
-        'update_time',
-        'delete_time',
-    ];
-
-    /**
-     * Define the timestamp column names for custom timestamp fields.
-     *
-     * @var string
-     */
-    const CREATED_AT = 'create_time';
-    const UPDATED_AT = 'update_time';
-
-    /**
-     * Valid status values for pocket expenses.
-     *
-     * @var array<string>
-     */
-    const VALID_STATUSES = [
+    public const STATUS_VALUES = [
         'draft',
         'submitted',
         'approved',
@@ -129,47 +172,60 @@ class PocketExpense extends Model
     ];
 
     /**
-     * Maximum date lookback in years for expense dates.
-     *
-     * @var int
-     */
-    const MAX_DATE_LOOKBACK_YEARS = 3;
-
-    /**
      * Maximum length for merchant name field.
      *
      * @var int
      */
-    const MERCHANT_NAME_MAX_LENGTH = 180;
+    public const MERCHANT_NAME_MAX_LENGTH = 180;
+
+    /**
+     * Maximum age in years for expense date validation.
+     *
+     * @var int
+     */
+    public const MAX_EXPENSE_AGE_YEARS = 3;
 
     /**
      * Boot the model.
+     *
+     * @return void
      */
     protected static function boot(): void
     {
         parent::boot();
 
-        // Auto-generate UUID when creating new records
-        static::creating(function (self $model): void {
-            if (empty($model->uuid)) {
-                $model->uuid = Str::uuid()->toString();
+        // Generate UUID on creation
+        static::creating(function ($model) {
+            if (!$model->uuid) {
+                $model->uuid = (string) Str::uuid();
             }
-            
-            // Set create_time and update_time
-            $model->create_time = now();
+            if (!$model->create_time) {
+                $model->create_time = now();
+            }
             $model->update_time = now();
         });
 
-        // Update the update_time when saving
-        static::updating(function (self $model): void {
+        static::updating(function ($model) {
             $model->update_time = now();
+        });
+
+        // Ensure all queries exclude deleted records by default
+        static::addGlobalScope('not_deleted', function (Builder $builder) {
+            $builder->where('deleted', false);
+        });
+
+        // Ensure all queries are scoped by authenticated user's client context
+        static::addGlobalScope('client_scoped', function (Builder $builder) {
+            if (auth()->check() && auth()->user()->client_id) {
+                $builder->where('client_id', auth()->user()->client_id);
+            }
         });
     }
 
     /**
-     * Get the user that this expense belongs to.
+     * Get the user who owns this expense.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\User, PocketExpense>
      */
     public function user(): BelongsTo
     {
@@ -177,9 +233,9 @@ class PocketExpense extends Model
     }
 
     /**
-     * Get the client that this expense belongs to.
+     * Get the client context for this expense.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\Client, PocketExpense>
      */
     public function client(): BelongsTo
     {
@@ -187,107 +243,4 @@ class PocketExpense extends Model
     }
 
     /**
-     * Get the expense type for this expense.
-     *
-     * @return BelongsTo
-     */
-    public function expenseType(): BelongsTo
-    {
-        return $this->belongsTo(OptPocketExpenseType::class, 'expense_type');
-    }
-
-    /**
-     * Get all metadata records for this expense.
-     *
-     * @return HasMany
-     */
-    public function metadata(): HasMany
-    {
-        return $this->hasMany(PocketExpenseMetadata::class, 'pocket_expense_id')
-                    ->where('deleted', false);
-    }
-
-    /**
-     * Get the user who created this expense.
-     *
-     * @return BelongsTo
-     */
-    public function createdBy(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'created_by_user_id');
-    }
-
-    /**
-     * Get the user who last updated this expense.
-     *
-     * @return BelongsTo
-     */
-    public function updatedBy(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'updated_by_user_id');
-    }
-
-    /**
-     * Get the user who approved this expense.
-     *
-     * @return BelongsTo
-     */
-    public function approvedBy(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'approved_by_user_id');
-    }
-
-    /**
-     * Scope a query to only include active (not deleted) expenses.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeActive(Builder $query): Builder
-    {
-        return $query->where('deleted', false);
-    }
-
-    /**
-     * Scope a query to only include deleted expenses.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeDeleted(Builder $query): Builder
-    {
-        return $query->where('deleted', true);
-    }
-
-    /**
-     * Scope a query to only include expenses for a specific client.
-     *
-     * @param Builder $query
-     * @param int $clientId
-     * @return Builder
-     */
-    public function scopeForClient(Builder $query, int $clientId): Builder
-    {
-        return $query->where('client_id', $clientId);
-    }
-
-    /**
-     * Scope a query to only include expenses for a specific user.
-     *
-     * @param Builder $query
-     * @param int $userId
-     * @return Builder
-     */
-    public function scopeForUser(Builder $query, int $userId): Builder
-    {
-        return $query->where('user_id', $userId);
-    }
-
-    /**
-     * Scope a query to filter by status.
-     *
-     * @param Builder $query
-     * @param string $status
-     * @return Builder
-     */
-    public function scopeByStatus(Builder $query, string $
+     * Get the expense type that this

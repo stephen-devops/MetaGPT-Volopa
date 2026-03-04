@@ -1,3 +1,6 @@
+## Code: app/Models/UserFeaturePermission.php
+
+```php
 <?php
 
 namespace App\Models;
@@ -6,6 +9,28 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
+/**
+ * UserFeaturePermission Model
+ * 
+ * Represents delegation-based RBAC system for user feature permissions.
+ * Manages permission grants between users within client contexts.
+ * 
+ * @property int $id
+ * @property int $user_id User receiving the permission
+ * @property int $client_id Client context for multi-tenancy
+ * @property int $feature_id Feature being granted access to
+ * @property int $grantor_id User who granted this permission
+ * @property int $manager_user_id User who manages this permission
+ * @property bool $is_enabled Whether permission is active
+ * @property \Illuminate\Support\Carbon $created_at
+ * @property \Illuminate\Support\Carbon $updated_at
+ * 
+ * @property-read \App\Models\User $user
+ * @property-read \App\Models\Client $client
+ * @property-read \App\Models\Feature $feature
+ * @property-read \App\Models\User $grantor
+ * @property-read \App\Models\User $manager
+ */
 class UserFeaturePermission extends Model
 {
     use HasFactory;
@@ -15,7 +40,7 @@ class UserFeaturePermission extends Model
      *
      * @var string
      */
-    protected $table = 'user_feature_permission';
+    protected $table = 'user_feature_permissions';
 
     /**
      * The attributes that are mass assignable.
@@ -32,11 +57,12 @@ class UserFeaturePermission extends Model
     ];
 
     /**
-     * The attributes that should be cast to native types.
+     * The attributes that should be cast.
      *
      * @var array<string, string>
      */
     protected $casts = [
+        'id' => 'integer',
         'user_id' => 'integer',
         'client_id' => 'integer',
         'feature_id' => 'integer',
@@ -55,7 +81,14 @@ class UserFeaturePermission extends Model
     protected $hidden = [];
 
     /**
-     * The model's default values for attributes.
+     * The accessors to append to the model's array form.
+     *
+     * @var array<int, string>
+     */
+    protected $appends = [];
+
+    /**
+     * Default attribute values.
      *
      * @var array<string, mixed>
      */
@@ -64,9 +97,26 @@ class UserFeaturePermission extends Model
     ];
 
     /**
-     * Get the user that this permission belongs to.
+     * Boot the model.
      *
-     * @return BelongsTo
+     * @return void
+     */
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        // Ensure all queries are scoped by authenticated user's client context
+        static::addGlobalScope('client_scoped', function ($builder) {
+            if (auth()->check() && auth()->user()->client_id) {
+                $builder->where('client_id', auth()->user()->client_id);
+            }
+        });
+    }
+
+    /**
+     * Get the user who receives this permission.
+     *
+     * @return BelongsTo<\App\Models\User, UserFeaturePermission>
      */
     public function user(): BelongsTo
     {
@@ -74,9 +124,9 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the client that this permission belongs to.
+     * Get the client context for this permission.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\Client, UserFeaturePermission>
      */
     public function client(): BelongsTo
     {
@@ -84,9 +134,9 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the feature that this permission belongs to.
+     * Get the feature that this permission grants access to.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\Feature, UserFeaturePermission>
      */
     public function feature(): BelongsTo
     {
@@ -96,7 +146,7 @@ class UserFeaturePermission extends Model
     /**
      * Get the user who granted this permission.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\User, UserFeaturePermission>
      */
     public function grantor(): BelongsTo
     {
@@ -104,9 +154,9 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the manager user for this permission.
+     * Get the user who manages this permission.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\User, UserFeaturePermission>
      */
     public function manager(): BelongsTo
     {
@@ -114,30 +164,29 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Scope a query to only include active permissions.
+     * Scope a query to only include enabled permissions.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeActive($query)
+    public function scopeEnabled($query)
     {
         return $query->where('is_enabled', true);
     }
 
     /**
-     * Scope a query to only include permissions for a specific client.
+     * Scope a query to only include disabled permissions.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $clientId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeForClient($query, int $clientId)
+    public function scopeDisabled($query)
     {
-        return $query->where('client_id', $clientId);
+        return $query->where('is_enabled', false);
     }
 
     /**
-     * Scope a query to only include permissions for a specific user.
+     * Scope a query to filter by specific user.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param int $userId
@@ -149,7 +198,7 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Scope a query to only include permissions for a specific feature.
+     * Scope a query to filter by specific feature.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param int $featureId
@@ -161,75 +210,49 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Scope a query to only include permissions managed by a specific user.
+     * Scope a query to filter by specific manager.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param int $managerId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeManagedBy($query, int $managerId)
+    public function scopeForManager($query, int $managerId)
     {
         return $query->where('manager_user_id', $managerId);
     }
 
     /**
-     * Scope a query to only include permissions granted by a specific user.
+     * Scope a query to filter by specific grantor.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param int $grantorId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeGrantedBy($query, int $grantorId)
+    public function scopeForGrantor($query, int $grantorId)
     {
         return $query->where('grantor_id', $grantorId);
     }
 
     /**
-     * Check if this permission is active.
+     * Scope a query to filter by specific client.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $clientId
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeForClient($query, int $clientId)
+    {
+        return $query->where('client_id', $clientId);
+    }
+
+    /**
+     * Check if the permission is currently active.
      *
      * @return bool
      */
     public function isActive(): bool
     {
-        return $this->is_enabled;
+        return $this->is_enabled === true;
     }
 
-    /**
-     * Enable this permission.
-     *
-     * @return bool
-     */
-    public function enable(): bool
-    {
-        $this->is_enabled = true;
-        return $this->save();
-    }
-
-    /**
-     * Disable this permission.
-     *
-     * @return bool
-     */
-    public function disable(): bool
-    {
-        $this->is_enabled = false;
-        return $this->save();
-    }
-
-    /**
-     * Get a string representation of the permission for logging.
-     *
-     * @return string
-     */
-    public function getLogDescription(): string
-    {
-        return sprintf(
-            'Permission for user %d on client %d for feature %d (granted by %d, managed by %d)',
-            $this->user_id,
-            $this->client_id,
-            $this->feature_id,
-            $this->grantor_id,
-            $this->manager_user_id
-        );
-    }
-}
+    

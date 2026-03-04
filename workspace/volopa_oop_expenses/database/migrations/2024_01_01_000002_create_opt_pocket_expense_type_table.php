@@ -13,47 +13,44 @@ return new class extends Migration
     {
         Schema::create('opt_pocket_expense_type', function (Blueprint $table) {
             $table->id();
-            $table->string('option', 100)->unique();
-            $table->enum('amount_sign', ['positive', 'negative'])->default('negative');
-            $table->timestamps();
-
-            // Index for performance
-            $table->index('option');
-            $table->index('amount_sign');
+            $table->string('option', 100)->comment('Expense type option name');
+            $table->enum('amount_sign', ['positive', 'negative'])->default('negative')->comment('Sign applied to expense amount');
+            
+            // Indexes for performance
+            $table->index(['option'], 'idx_option');
+            $table->index(['amount_sign'], 'idx_amount_sign');
+            
+            // Unique constraint for option names
+            $table->unique(['option'], 'unique_option');
+            
+            // Table configuration
+            $table->engine('InnoDB');
+            $table->charset('utf8mb4');
+            $table->collation('utf8mb4_unicode_ci');
         });
-
+        
         // Insert default expense types
         DB::table('opt_pocket_expense_type')->insert([
             [
-                'option' => 'Business Expense',
-                'amount_sign' => 'negative',
-                'created_at' => now(),
-                'updated_at' => now(),
+                'option' => 'General Expense',
+                'amount_sign' => 'negative'
             ],
             [
                 'option' => 'Travel Expense',
-                'amount_sign' => 'negative',
-                'created_at' => now(),
-                'updated_at' => now(),
+                'amount_sign' => 'negative'
             ],
             [
-                'option' => 'Meal & Entertainment',
-                'amount_sign' => 'negative',
-                'created_at' => now(),
-                'updated_at' => now(),
+                'option' => 'Meal Expense',
+                'amount_sign' => 'negative'
             ],
             [
                 'option' => 'Office Supplies',
-                'amount_sign' => 'negative',
-                'created_at' => now(),
-                'updated_at' => now(),
+                'amount_sign' => 'negative'
             ],
             [
                 'option' => 'Refund',
-                'amount_sign' => 'positive',
-                'created_at' => now(),
-                'updated_at' => now(),
-            ],
+                'amount_sign' => 'positive'
+            ]
         ]);
     }
 

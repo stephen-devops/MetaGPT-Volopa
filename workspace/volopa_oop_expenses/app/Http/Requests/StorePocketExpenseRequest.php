@@ -7,7 +7,6 @@ namespace App\Http\Requests;
 
 use App\Models\PocketExpense;
 use App\Models\OptPocketExpenseType;
-use App\Models\PocketExpenseSourceClientConfig;
 use App\Policies\PocketExpensePolicy;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -15,22 +14,27 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
+/**
+ * StorePocketExpenseRequest
+ * 
+ * Form request validation for creating new pocket expenses.
+ * Handles validation rules, authorization checks, and business logic validation
+ * for expense creation with multi-tenant security and FX validation.
+ * 
+ * Validation Rules:
+ * - date: Required, valid date, not older than 3 years from current date
+ * - merchant_name: Required, max 180 characters per database VARCHAR definition
+ * - merchant_description: Optional string
+ * - expense_type: Required, must exist in opt_pocket_expense_type table
+ * - currency: Required, 3-letter ISO format validated against platform list
+ * - amount: Required, positive decimal with 4 decimal precision, minimum 0.01
+ * - merchant_address: Optional text
+ * - vat_amount: Optional positive decimal with 4 decimal precision
+ * - notes: Optional text, trimmed and SQL injection prevention
+ * - All data must be scoped to authenticated user's client_id
+ */
 class StorePocketExpenseRequest extends FormRequest
 {
-    /**
-     * OOP Expenses feature ID for permission checks.
-     *
-     * @var int
-     */
-    private const OOP_EXPENSES_FEATURE_ID = 1;
-
-    /**
-     * Maximum date lookback in years for expense dates.
-     *
-     * @var int
-     */
-    private const MAX_DATE_LOOKBACK_YEARS = 3;
-
     /**
      * Maximum length for merchant name field.
      *
@@ -39,13 +43,35 @@ class StorePocketExpenseRequest extends FormRequest
     private const MERCHANT_NAME_MAX_LENGTH = 180;
 
     /**
-     * Valid currency codes (ISO 3-letter format).
+     * Maximum age in years for expense date validation.
      *
-     * @var array<string>
+     * @var int
+     */
+    private const MAX_EXPENSE_AGE_YEARS = 3;
+
+    /**
+     * Minimum amount value for expenses.
+     *
+     * @var float
+     */
+    private const MIN_AMOUNT = 0.01;
+
+    /**
+     * Maximum amount precision (decimal places).
+     *
+     * @var int
+     */
+    private const AMOUNT_PRECISION = 4;
+
+    /**
+     * Valid 3-letter ISO currency codes (subset of platform supported currencies).
+     *
+     * @var array<int, string>
      */
     private const VALID_CURRENCIES = [
-        'USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'SEK', 'NZD',
-        'MXN', 'SGD', 'HKD', 'NOK', 'INR', 'KRW', 'THB', 'BRL', 'ZAR', 'RUB'
+        'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD',
+        'MXN', 'SGD', 'HKD', 'NOK', 'KRW', 'TRY', 'RUB', 'INR', 'BRL', 'ZAR',
+        'PLN', 'DKK', 'CZK', 'HUF', 'ILS', 'AED', 'SAR', 'THB', 'MYR', 'PHP'
     ];
 
     /**
@@ -57,25 +83,17 @@ class StorePocketExpenseRequest extends FormRequest
     {
         $user = Auth::user();
         
-        if (!$user) {
+        if (!$user || !$user->client_id) {
             return false;
         }
 
-        // Use policy to check if user can create pocket expenses
+        // Use policy to check if user can create expenses
         $policy = new PocketExpensePolicy();
         
-        if (!$policy->create($user)) {
-            return false;
-        }
-
-        // Additional authorization checks for client access
-        if ($this->has('client_id')) {
-            if (!$this->validateUserClientAccess($user, $this->input('client_id'))) {
-                return false;
-            }
-        }
-
-        return true;
+        // Check if creating for specific user (from expense_user_id if provided)
+        $expenseUserId = $this->input('expense_user_id', $user->id);
+        
+        return $policy->createFor($user, $expenseUserId, $user->client_id);
     }
 
     /**
@@ -85,159 +103,106 @@ class StorePocketExpenseRequest extends FormRequest
      */
     public function rules(): array
     {
-        $minDate = Carbon::now()->subYears(self::MAX_DATE_LOOKBACK_YEARS)->format('Y-m-d');
-        $maxDate = Carbon::now()->format('Y-m-d');
+        $user = Auth::user();
+        $clientId = $user ? $user->client_id : null;
+        $oldestAllowedDate = Carbon::now()->subYears(self::MAX_EXPENSE_AGE_YEARS)->format('Y-m-d');
 
         return [
-            'client_id' => [
-                'required',
-                'integer',
-                'min:1',
-                'exists:clients,id',
-            ],
             'date' => [
                 'required',
-                'date',
                 'date_format:Y-m-d',
-                "after_or_equal:{$minDate}",
-                "before_or_equal:{$maxDate}",
+                'before_or_equal:today',
+                'after_or_equal:' . $oldestAllowedDate,
             ],
             'merchant_name' => [
                 'required',
                 'string',
                 'max:' . self::MERCHANT_NAME_MAX_LENGTH,
-                'regex:/^[a-zA-Z0-9\s\.\-\_\&\(\)\,\!]+$/',
+                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+$/', // Prevent control characters
             ],
             'merchant_description' => [
-                'sometimes',
                 'nullable',
                 'string',
-                'max:1000',
+                'max:65535', // TEXT field limit
+                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$/', // Prevent control characters
             ],
             'expense_type' => [
                 'required',
                 'integer',
                 'min:1',
-                'exists:opt_pocket_expense_type,id',
+                Rule::exists('opt_pocket_expense_type', 'id'),
             ],
             'currency' => [
                 'required',
                 'string',
                 'size:3',
-                'alpha',
+                'regex:/^[A-Z]{3}$/',
                 Rule::in(self::VALID_CURRENCIES),
             ],
             'amount' => [
                 'required',
                 'numeric',
-                'between:0.01,999999.99',
-                'regex:/^\d{1,6}(\.\d{1,2})?$/',
+                'min:' . self::MIN_AMOUNT,
+                'max:999999999999.9999', // DECIMAL(15,4) max value
+                'regex:/^\d{1,11}(\.\d{1,' . self::AMOUNT_PRECISION . '})?$/',
             ],
             'merchant_address' => [
-                'sometimes',
                 'nullable',
                 'string',
-                'max:500',
+                'max:65535', // TEXT field limit
+                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$/', // Prevent control characters
             ],
             'vat_amount' => [
-                'sometimes',
                 'nullable',
                 'numeric',
-                'between:0,999999.99',
-                'regex:/^\d{1,6}(\.\d{1,2})?$/',
+                'min:0',
+                'max:999999999999.9999', // DECIMAL(15,4) max value
+                'regex:/^\d{1,11}(\.\d{1,' . self::AMOUNT_PRECISION . '})?$/',
             ],
             'notes' => [
-                'sometimes',
                 'nullable',
                 'string',
-                'max:2000',
+                'max:65535', // TEXT field limit
+                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$/', // Prevent control characters
             ],
-            'status' => [
+            'expense_user_id' => [
                 'sometimes',
-                'string',
-                Rule::in(PocketExpense::VALID_STATUSES),
-            ],
-            // Metadata fields
-            'metadata' => [
-                'sometimes',
-                'array',
-            ],
-            'metadata.transaction_category_id' => [
-                'sometimes',
-                'nullable',
                 'integer',
                 'min:1',
-                'exists:transaction_categories,id',
-            ],
-            'metadata.tracking_code_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                'exists:tracking_codes,id',
-            ],
-            'metadata.project_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                'exists:configurable_projects,id',
-            ],
-            'metadata.source_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                function ($attribute, $value, $fail) {
-                    if (!$this->validateExpenseSource($value, $this->input('client_id'))) {
-                        $fail('The selected expense source is not available for this client.');
+                Rule::exists('users', 'id')->where(function ($query) use ($clientId) {
+                    if ($clientId) {
+                        return $query->where('client_id', $clientId);
                     }
-                },
+                    return $query;
+                }),
             ],
-            'metadata.additional_field_id' => [
-                'sometimes',
+            // Metadata fields (optional)
+            'category_id' => [
                 'nullable',
                 'integer',
                 'min:1',
-                'exists:expense_additional_fields,id',
+                Rule::exists('transaction_categories', 'id')->where(function ($query) use ($clientId) {
+                    if ($clientId) {
+                        return $query->where('client_id', $clientId);
+                    }
+                    return $query;
+                }),
             ],
-            'metadata.source_note' => [
-                'sometimes',
+            'tracking_code_id' => [
                 'nullable',
-                'string',
-                'max:500',
-                'required_if:metadata.source_id,' . $this->getOtherSourceId(),
+                'integer',
+                'min:1',
+                Rule::exists('tracking_codes', 'id')->where(function ($query) use ($clientId) {
+                    if ($clientId) {
+                        return $query->where('client_id', $clientId);
+                    }
+                    return $query;
+                }),
             ],
-        ];
-    }
-
-    /**
-     * Get the error messages for the defined validation rules.
-     *
-     * @return array<string, string>
-     */
-    public function messages(): array
-    {
-        return [
-            'client_id.required' => 'The client ID is required.',
-            'client_id.integer' => 'The client ID must be an integer.',
-            'client_id.min' => 'The client ID must be at least 1.',
-            'client_id.exists' => 'The selected client does not exist.',
-            
-            'date.required' => 'The expense date is required.',
-            'date.date' => 'The expense date must be a valid date.',
-            'date.date_format' => 'The expense date must be in YYYY-MM-DD format.',
-            'date.after_or_equal' => 'The expense date cannot be older than 3 years.',
-            'date.before_or_equal' => 'The expense date cannot be in the future.',
-            
-            'merchant_name.required' => 'The merchant name is required.',
-            'merchant_name.string' => 'The merchant name must be text.',
-            'merchant_name.max' => 'The merchant name cannot exceed 180 characters.',
-            'merchant_name.regex' => 'The merchant name contains invalid characters.',
-            
-            'merchant_description.string' => 'The merchant description must be text.',
-            'merchant_description.max' => 'The merchant description cannot exceed 1000 characters.',
-            
-            'expense_type.required' => 'The expense type is required.',
-            'expense_type.integer' => 'The expense type must be an integer.',
-            'expense_type.min' => 'The expense type must be at least 1
+            'project_id' => [
+                'nullable',
+                'integer',
+                'min:1',
+                Rule::exists('projects', 'id')->where(function ($query) use ($clientId) {
+                    if ($clientId) {
+                        return $

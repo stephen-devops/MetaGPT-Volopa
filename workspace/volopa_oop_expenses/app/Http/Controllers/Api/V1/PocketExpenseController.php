@@ -11,78 +11,136 @@ use App\Http\Requests\UpdatePocketExpenseRequest;
 use App\Http\Resources\PocketExpenseResource;
 use App\Models\PocketExpense;
 use App\Services\PocketExpenseService;
-use App\Services\PocketExpenseFXService;
+use App\Services\FXConversionService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Validation\ValidationException;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Validation\Rule;
+use Carbon\Carbon;
 use Exception;
+use InvalidArgumentException;
 
+/**
+ * PocketExpenseController
+ * 
+ * Thin controller for pocket expense operations.
+ * Delegates business logic to PocketExpenseService and FXConversionService,
+ * shapes responses using API Resources following Laravel best practices.
+ * 
+ * Endpoints:
+ * - GET    /api/v1/pocket-expenses          (index)
+ * - POST   /api/v1/pocket-expenses          (store)
+ * - GET    /api/v1/pocket-expenses/{id}     (show)
+ * - PUT    /api/v1/pocket-expenses/{id}     (update)
+ * - DELETE /api/v1/pocket-expenses/{id}     (destroy)
+ * - POST   /api/v1/pocket-expenses/{id}/approve (approve)
+ * - POST   /api/v1/pocket-expenses/convert-fx   (convertFX)
+ */
 class PocketExpenseController extends Controller
 {
     /**
-     * The pocket expense service instance.
+     * Pocket expense service instance.
      *
      * @var PocketExpenseService
      */
     private PocketExpenseService $pocketExpenseService;
 
     /**
-     * The FX service instance.
+     * FX conversion service instance.
      *
-     * @var PocketExpenseFXService
+     * @var FXConversionService
      */
-    private PocketExpenseFXService $fxService;
+    private FXConversionService $fxConversionService;
 
     /**
-     * Default pagination limit for index queries.
+     * Default pagination size for index requests.
      *
      * @var int
      */
-    private const DEFAULT_PAGINATION_LIMIT = 50;
+    private const DEFAULT_PER_PAGE = 15;
 
     /**
-     * Maximum pagination limit allowed.
+     * Maximum pagination size allowed.
      *
      * @var int
      */
-    private const MAX_PAGINATION_LIMIT = 200;
+    private const MAX_PER_PAGE = 100;
 
     /**
-     * Valid status values for pocket expenses.
+     * Valid status values for filtering.
      *
-     * @var array<string>
+     * @var array<int, string>
      */
-    private const VALID_STATUSES = [
-        'draft',
-        'submitted',
-        'approved',
-        'rejected',
+    private const VALID_STATUSES = ['draft', 'submitted', 'approved', 'rejected'];
+
+    /**
+     * Valid sort fields.
+     *
+     * @var array<int, string>
+     */
+    private const VALID_SORT_FIELDS = [
+        'id',
+        'date',
+        'merchant_name',
+        'amount',
+        'currency',
+        'status',
+        'create_time',
+        'update_time'
+    ];
+
+    /**
+     * Default sort field.
+     *
+     * @var string
+     */
+    private const DEFAULT_SORT_FIELD = 'create_time';
+
+    /**
+     * Default sort direction.
+     *
+     * @var string
+     */
+    private const DEFAULT_SORT_DIRECTION = 'desc';
+
+    /**
+     * Valid 3-letter ISO currency codes.
+     *
+     * @var array<int, string>
+     */
+    private const VALID_CURRENCIES = [
+        'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD',
+        'MXN', 'SGD', 'HKD', 'NOK', 'KRW', 'TRY', 'RUB', 'INR', 'BRL', 'ZAR',
+        'PLN', 'DKK', 'CZK', 'HUF', 'ILS', 'AED', 'SAR', 'THB', 'MYR', 'PHP'
     ];
 
     /**
      * Create a new controller instance.
      *
      * @param PocketExpenseService $pocketExpenseService
-     * @param PocketExpenseFXService $fxService
+     * @param FXConversionService $fxConversionService
      */
-    public function __construct(PocketExpenseService $pocketExpenseService, PocketExpenseFXService $fxService)
-    {
+    public function __construct(
+        PocketExpenseService $pocketExpenseService,
+        FXConversionService $fxConversionService
+    ) {
         $this->pocketExpenseService = $pocketExpenseService;
-        $this->fxService = $fxService;
+        $this->fxConversionService = $fxConversionService;
         
-        // Apply auth middleware to all routes
+        // Apply OAuth2 middleware for all routes
         $this->middleware('auth:api');
         
-        // Apply throttle middleware for API rate limiting
-        $this->middleware('throttle:api')->only(['store', 'update', 'destroy']);
+        // Apply throttling middleware
+        $this->middleware('throttle:60,1');
     }
 
     /**
      * Display a listing of pocket expenses.
      *
+     * GET /api/v1/pocket-expenses
+     * 
      * @param Request $request
      * @return JsonResponse
      */
@@ -91,118 +149,97 @@ class PocketExpenseController extends Controller
         try {
             $user = Auth::user();
             
-            if (!$user) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Unauthorized access',
-                    'error_code' => 'AUTH_REQUIRED'
-                ], 401);
+            if (!$user || !$user->client_id) {
+                return $this->errorResponse('Invalid user context', 401);
             }
 
-            // Authorize using policy
+            // Authorize the request
             $this->authorize('viewAny', PocketExpense::class);
 
-            // Validate and sanitize input parameters
-            $validated = $request->validate([
-                'client_id' => 'required|integer|min:1|exists:clients,id',
-                'status' => 'sometimes|string|in:' . implode(',', self::VALID_STATUSES),
-                'date_from' => 'sometimes|date|date_format:Y-m-d',
-                'date_to' => 'sometimes|date|date_format:Y-m-d|after_or_equal:date_from',
-                'currency' => 'sometimes|string|size:3|alpha',
-                'user_id' => 'sometimes|integer|min:1|exists:users,id',
-                'expense_type' => 'sometimes|integer|min:1|exists:opt_pocket_expense_type,id',
-                'amount_min' => 'sometimes|numeric|min:0',
-                'amount_max' => 'sometimes|numeric|min:0|gte:amount_min',
-                'merchant_name' => 'sometimes|string|max:180',
-                'page' => 'sometimes|integer|min:1',
-                'per_page' => 'sometimes|integer|min:1|max:' . self::MAX_PAGINATION_LIMIT,
-                'sort_by' => 'sometimes|string|in:id,date,amount,merchant_name,status,create_time,update_time',
-                'sort_direction' => 'sometimes|string|in:asc,desc',
-                'include_deleted' => 'sometimes|boolean',
-            ]);
-
-            // Build query with relationships
+            // Build query with relationships and scoping
             $query = PocketExpense::with([
-                'user:id,name,email,role',
-                'client:id,name,code',
-                'expenseType:id,option,amount_sign',
-                'metadata.transactionCategory:id,name',
-                'metadata.trackingCode:id,code,description',
-                'metadata.project:id,name,code',
-                'metadata.expenseSource:id,uuid,name,is_default',
-                'createdBy:id,name,email',
-                'updatedBy:id,name,email',
-                'approvedBy:id,name,email'
-            ]);
+                'user',
+                'client',
+                'expenseType',
+                'createdBy',
+                'updatedBy',
+                'approvedBy',
+                'metadata.transactionCategory',
+                'metadata.trackingCode',
+                'metadata.project',
+                'metadata.expenseSource',
+                'metadata.fileStore',
+                'metadata.additionalField'
+            ])->where('client_id', $user->client_id);
 
-            // Apply client filter (required)
-            $query->forClient($validated['client_id']);
+            // Apply filters
+            $this->applyFilters($query, $request);
 
-            // Apply role-based filtering
-            if (!$user->isPrimaryAdmin()) {
-                if ($user->isAdmin()) {
-                    // Admin gets access to expenses they can manage
-                    $managedUserIds = $this->getManagedUserIds($user, $validated['client_id']);
-                    $managedUserIds[] = $user->id; // Include own expenses
-                    $query->whereIn('user_id', $managedUserIds);
-                } else {
-                    // Business Users and Card Users can only see their own expenses
-                    $query->forUser($user->id);
-                }
-            }
+            // Apply ordering
+            $this->applyOrdering($query, $request);
 
-            // Apply additional filters
-            if (isset($validated['status'])) {
-                $query->byStatus($validated['status']);
-            }
+            // Get pagination parameters
+            $perPage = min(
+                (int) $request->get('per_page', self::DEFAULT_PER_PAGE),
+                self::MAX_PER_PAGE
+            );
 
-            if (isset($validated['date_from'])) {
-                $query->where('date', '>=', $validated['date_from']);
-            }
-
-            if (isset($validated['date_to'])) {
-                $query->where('date', '<=', $validated['date_to']);
-            }
-
-            if (isset($validated['currency'])) {
-                $query->where('currency', strtoupper($validated['currency']));
-            }
-
-            if (isset($validated['user_id'])) {
-                $query->forUser($validated['user_id']);
-            }
-
-            if (isset($validated['expense_type'])) {
-                $query->where('expense_type', $validated['expense_type']);
-            }
-
-            if (isset($validated['amount_min'])) {
-                $query->where('amount', '>=', $validated['amount_min']);
-            }
-
-            if (isset($validated['amount_max'])) {
-                $query->where('amount', '<=', $validated['amount_max']);
-            }
-
-            if (isset($validated['merchant_name'])) {
-                $query->where('merchant_name', 'LIKE', '%' . $validated['merchant_name'] . '%');
-            }
-
-            // Apply deletion filter
-            if (!($validated['include_deleted'] ?? false)) {
-                $query->active();
-            }
-
-            // Apply sorting
-            $sortBy = $validated['sort_by'] ?? 'create_time';
-            $sortDirection = $validated['sort_direction'] ?? 'desc';
-            $query->orderBy($sortBy, $sortDirection);
-
-            // Apply pagination
-            $perPage = min($validated['per_page'] ?? self::DEFAULT_PAGINATION_LIMIT, self::MAX_PAGINATION_LIMIT);
+            // Execute paginated query
             $expenses = $query->paginate($perPage);
 
             Log::info('Pocket expenses retrieved', [
                 'user_id' => $user->id,
-                'client_id' => $validated['client_id'],
-                'filters' => array_intersect_key($validated, array_flip(['status', 'date_from', 'date_to', 'currency', 'user_id', 'expense_type'])),
+                'client_id' => $user->client_id,
+                'total_count' => $expenses->total(),
+                'filters' => $request->only(['status', 'date_from', 'date_to', 'currency', 'merchant_name']),
+            ]);
+
+            return $this->successResponse(
+                PocketExpenseResource::collection($expenses),
+                'Pocket expenses retrieved successfully'
+            );
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve pocket expenses', [
+                'user_id' => Auth::id(),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+
+            return $this->errorResponse(
+                'Failed to retrieve pocket expenses',
+                500,
+                ['error' => 'An unexpected error occurred while retrieving expenses']
+            );
+        }
+    }
+
+    /**
+     * Store a newly created pocket expense.
+     *
+     * POST /api/v1/pocket-expenses
+     * 
+     * @param StorePocketExpenseRequest $request
+     * @return JsonResponse
+     */
+    public function store(StorePocketExpenseRequest $request): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user || !$user->client_id) {
+                return $this->errorResponse('Invalid user context', 401);
+            }
+
+            $validatedData = $request->validated();
+
+            // Create the expense using the service
+            $expense = $this->pocketExpenseService->createExpense(
+                $validatedData,
+                $user->id,
+                $user->client_id
+            );
+
+            // Load relationships for response
+            $expense->load([
+                

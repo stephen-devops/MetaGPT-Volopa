@@ -9,10 +9,39 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 
+/**
+ * PocketExpenseFileUpload Model
+ * 
+ * Represents CSV file uploads for batch expense processing with status tracking.
+ * Manages upload lifecycle from file upload through validation to completion.
+ * 
+ * @property int $id
+ * @property string|null $uuid External reference UUID
+ * @property int $user_id User who uploaded the file
+ * @property int $client_id Client context for multi-tenancy
+ * @property int $created_by_user_id User who created this upload record
+ * @property string $file_name Original name of uploaded file
+ * @property string $file_path Storage path of uploaded file
+ * @property int $total_records Total number of records in uploaded file
+ * @property int $valid_records Number of valid records after validation
+ * @property array|null $validation_errors JSON array of validation errors
+ * @property string $status Current processing status of upload
+ * @property \Illuminate\Support\Carbon $uploaded_at When file was uploaded
+ * @property \Illuminate\Support\Carbon|null $validated_at When validation was completed
+ * @property \Illuminate\Support\Carbon|null $processed_at When processing was completed
+ * @property \Illuminate\Support\Carbon $created_at
+ * @property \Illuminate\Support\Carbon $updated_at
+ * @property \Illuminate\Support\Carbon|null $deleted_at
+ * 
+ * @property-read \App\Models\User $user
+ * @property-read \App\Models\Client $client
+ * @property-read \App\Models\User $createdBy
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\PocketExpenseUploadsData> $uploadsData
+ */
 class PocketExpenseFileUpload extends Model
 {
     use HasFactory, SoftDeletes;
@@ -46,7 +75,7 @@ class PocketExpenseFileUpload extends Model
     ];
 
     /**
-     * The attributes that should be cast to native types.
+     * The attributes that should be cast.
      *
      * @var array<string, string>
      */
@@ -78,7 +107,14 @@ class PocketExpenseFileUpload extends Model
     protected $hidden = [];
 
     /**
-     * The model's default values for attributes.
+     * The accessors to append to the model's array form.
+     *
+     * @var array<int, string>
+     */
+    protected $appends = [];
+
+    /**
+     * Default attribute values.
      *
      * @var array<string, mixed>
      */
@@ -86,66 +122,76 @@ class PocketExpenseFileUpload extends Model
         'total_records' => 0,
         'valid_records' => 0,
         'status' => 'uploaded',
+        'validation_errors' => null,
     ];
 
     /**
-     * Valid status values for file uploads.
+     * The possible values for status enum.
      *
-     * @var array<string>
+     * @var array<int, string>
      */
-    const VALID_STATUSES = [
+    public const STATUS_VALUES = [
         'uploaded',
+        'validation_failed',
+        'validation_passed',
         'processing',
         'completed',
         'failed',
-        'validation_failed',
+        'sync_failed',
     ];
 
     /**
-     * Maximum file size in KB (10MB).
+     * Maximum file size in KB for CSV uploads.
      *
      * @var int
      */
-    const MAX_FILE_SIZE_KB = 10240;
+    public const MAX_FILE_SIZE_KB = 10240; // 10MB
 
     /**
-     * Maximum CSV rows allowed per file.
+     * Maximum number of rows allowed per CSV file.
      *
      * @var int
      */
-    const MAX_CSV_ROWS = 200;
+    public const MAX_ROWS_PER_FILE = 200;
 
     /**
-     * Allowed file extensions.
+     * Storage path prefix for uploaded files.
      *
-     * @var array<string>
+     * @var string
      */
-    const ALLOWED_EXTENSIONS = ['csv', 'txt'];
+    public const STORAGE_PATH_PREFIX = 'pocket-expense-uploads';
 
     /**
      * Boot the model.
+     *
+     * @return void
      */
     protected static function boot(): void
     {
         parent::boot();
 
-        // Auto-generate UUID when creating new records
-        static::creating(function (self $model): void {
-            if (empty($model->uuid)) {
-                $model->uuid = Str::uuid()->toString();
+        // Generate UUID on creation and set uploaded_at
+        static::creating(function ($model) {
+            if (!$model->uuid) {
+                $model->uuid = (string) Str::uuid();
             }
-            
-            // Set uploaded_at if not already set
-            if (empty($model->uploaded_at)) {
+            if (!$model->uploaded_at) {
                 $model->uploaded_at = now();
+            }
+        });
+
+        // Ensure all queries are scoped by authenticated user's client context
+        static::addGlobalScope('client_scoped', function (Builder $builder) {
+            if (auth()->check() && auth()->user()->client_id) {
+                $builder->where('client_id', auth()->user()->client_id);
             }
         });
     }
 
     /**
-     * Get the user that this upload belongs to (target user for expenses).
+     * Get the user who uploaded the file.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\User, PocketExpenseFileUpload>
      */
     public function user(): BelongsTo
     {
@@ -153,9 +199,9 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get the client that this upload belongs to.
+     * Get the client context for this upload.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\Client, PocketExpenseFileUpload>
      */
     public function client(): BelongsTo
     {
@@ -163,9 +209,9 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get the user who created/uploaded this file.
+     * Get the user who created this upload record.
      *
-     * @return BelongsTo
+     * @return BelongsTo<\App\Models\User, PocketExpenseFileUpload>
      */
     public function createdBy(): BelongsTo
     {
@@ -173,53 +219,17 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get all upload data records for this file upload.
+     * Get the upload data records associated with this file upload.
      *
-     * @return HasMany
+     * @return HasMany<\App\Models\PocketExpenseUploadsData>
      */
-    public function uploadData(): HasMany
+    public function uploadsData(): HasMany
     {
-        return $this->hasMany(PocketExpenseUploadData::class, 'upload_id');
+        return $this->hasMany(PocketExpenseUploadsData::class, 'upload_id');
     }
 
     /**
-     * Scope a query to only include uploads for a specific client.
-     *
-     * @param Builder $query
-     * @param int $clientId
-     * @return Builder
-     */
-    public function scopeForClient(Builder $query, int $clientId): Builder
-    {
-        return $query->where('client_id', $clientId);
-    }
-
-    /**
-     * Scope a query to only include uploads for a specific user.
-     *
-     * @param Builder $query
-     * @param int $userId
-     * @return Builder
-     */
-    public function scopeForUser(Builder $query, int $userId): Builder
-    {
-        return $query->where('user_id', $userId);
-    }
-
-    /**
-     * Scope a query to only include uploads created by a specific user.
-     *
-     * @param Builder $query
-     * @param int $createdByUserId
-     * @return Builder
-     */
-    public function scopeCreatedBy(Builder $query, int $createdByUserId): Builder
-    {
-        return $query->where('created_by_user_id', $createdByUserId);
-    }
-
-    /**
-     * Scope a query to filter by status.
+     * Scope a query to filter by specific status.
      *
      * @param Builder $query
      * @param string $status
@@ -231,57 +241,9 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Scope a query to only include completed uploads.
+     * Scope a query to filter by specific user.
      *
      * @param Builder $query
+     * @param int $userId
      * @return Builder
      */
-    public function scopeCompleted(Builder $query): Builder
-    {
-        return $query->where('status', 'completed');
-    }
-
-    /**
-     * Scope a query to only include failed uploads.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeFailed(Builder $query): Builder
-    {
-        return $query->where('status', 'failed');
-    }
-
-    /**
-     * Scope a query to only include processing uploads.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeProcessing(Builder $query): Builder
-    {
-        return $query->where('status', 'processing');
-    }
-
-    /**
-     * Scope a query to only include validation failed uploads.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeValidationFailed(Builder $query): Builder
-    {
-        return $query->where('status', 'validation_failed');
-    }
-
-    /**
-     * Scope a query to filter by upload date range.
-     *
-     * @param Builder $query
-     * @param string $dateFrom
-     * @param string $dateTo
-     * @return Builder
-     */
-    public function scopeUploadedBetween(Builder $query, string $dateFrom, string $dateTo): Builder
-    {
-        return $query->whereBetween('uploaded_at', [$dateFrom, $dateTo]);

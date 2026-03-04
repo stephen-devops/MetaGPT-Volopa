@@ -7,11 +7,54 @@ namespace App\Policies;
 
 use App\Models\User;
 use App\Models\UserFeaturePermission;
-use Illuminate\Auth\Access\Response;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Auth\Access\HandlesAuthorization;
 
+/**
+ * UserFeaturePermissionPolicy
+ * 
+ * Authorization policy for user feature permission management operations.
+ * Implements delegation-based RBAC system with role hierarchy enforcement.
+ * 
+ * Business Rules:
+ * - Primary Administrator has full access to all users' permissions
+ * - Administrator requires explicit delegation to manage other users' permissions
+ * - Business User and Card User cannot approve expenses even with management rights
+ * - Permission delegation can be granted by Primary Admin to any user regardless of role
+ * - Admin can only grant access to their own managed users, not all users
+ * - Revoked users fall back to Primary Administrator management until reassigned
+ */
 class UserFeaturePermissionPolicy
 {
+    use HandlesAuthorization;
+
+    /**
+     * Primary Administrator role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_PRIMARY_ADMIN = 'Primary Administrator';
+
+    /**
+     * Administrator role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_ADMIN = 'Administrator';
+
+    /**
+     * Business User role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_BUSINESS_USER = 'Business User';
+
+    /**
+     * Card User role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_CARD_USER = 'Card User';
+
     /**
      * Determine whether the user can view any user feature permissions.
      *
@@ -20,70 +63,51 @@ class UserFeaturePermissionPolicy
      */
     public function viewAny(User $user): bool
     {
-        // Only authenticated users can view permissions
-        if (!$user) {
+        // Only authenticated users with valid client context can view permissions
+        if (!$user->client_id) {
             return false;
         }
 
-        // Primary Admin has full access to all permissions
-        if ($user->isPrimaryAdmin()) {
+        // Primary Administrator has full access
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can view permissions for their managed users and their own
-        if ($user->isAdmin()) {
-            return true;
+        // Administrator can view permissions they manage
+        if ($this->isAdministrator($user)) {
+            return $this->hasAnyManagedPermissions($user);
         }
 
-        // Business Users and Card Users cannot view permissions
+        // Business User and Card User cannot view permissions
         return false;
     }
 
     /**
-     * Determine whether the user can view the specific user feature permission.
+     * Determine whether the user can view the user feature permission.
      *
      * @param User $user
-     * @param UserFeaturePermission $permission
+     * @param UserFeaturePermission $userFeaturePermission
      * @return bool
      */
-    public function view(User $user, UserFeaturePermission $permission): bool
+    public function view(User $user, UserFeaturePermission $userFeaturePermission): bool
     {
-        // Only authenticated users can view permissions
-        if (!$user) {
+        // Ensure client context matches
+        if ($user->client_id !== $userFeaturePermission->client_id) {
             return false;
         }
 
-        // Primary Admin has full access to all permissions
-        if ($user->isPrimaryAdmin()) {
+        // Primary Administrator has full access
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can view permissions for their managed users and their own
-        if ($user->isAdmin()) {
-            // Can view their own permissions
-            if ($permission->user_id === $user->id) {
-                return true;
-            }
-
-            // Can view permissions for users they manage
-            if ($permission->manager_user_id === $user->id) {
-                return true;
-            }
-
-            // Can view permissions they granted
-            if ($permission->grantor_id === $user->id) {
-                return true;
-            }
-
-            return false;
+        // Administrator can view permissions they manage
+        if ($this->isAdministrator($user)) {
+            return $userFeaturePermission->manager_user_id === $user->id;
         }
 
-        // Business Users and Card Users can only view their own permissions
-        if ($user->isBusinessUser() || $user->isCardUser()) {
-            return $permission->user_id === $user->id;
-        }
-
-        return false;
+        // Users can view their own permissions
+        return $userFeaturePermission->user_id === $user->id;
     }
 
     /**
@@ -94,22 +118,57 @@ class UserFeaturePermissionPolicy
      */
     public function create(User $user): bool
     {
-        // Only authenticated users can create permissions
-        if (!$user) {
+        // Only authenticated users with valid client context can create permissions
+        if (!$user->client_id) {
             return false;
         }
 
-        // Primary Admin can grant permissions to anyone
-        if ($user->isPrimaryAdmin()) {
+        // Primary Administrator can grant permissions to any user
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can grant permissions but only to their managed users
-        if ($user->isAdmin()) {
-            return true;
+        // Administrator can grant permissions to their managed users
+        if ($this->isAdministrator($user)) {
+            return $this->hasAnyManagedUsers($user);
         }
 
-        // Business Users and Card Users cannot grant permissions
+        // Business User and Card User cannot grant permissions
+        return false;
+    }
+
+    /**
+     * Determine whether the user can grant a specific permission.
+     *
+     * @param User $user
+     * @param int $targetUserId
+     * @param int $clientId
+     * @param int $featureId
+     * @return bool
+     */
+    public function grant(User $user, int $targetUserId, int $clientId, int $featureId): bool
+    {
+        // Ensure client context matches
+        if ($user->client_id !== $clientId) {
+            return false;
+        }
+
+        // Cannot grant permissions to self
+        if ($user->id === $targetUserId) {
+            return false;
+        }
+
+        // Primary Administrator can grant to any user within same client
+        if ($this->isPrimaryAdministrator($user)) {
+            return $this->isValidTargetUser($targetUserId, $clientId);
+        }
+
+        // Administrator can only grant to their managed users
+        if ($this->isAdministrator($user)) {
+            return $this->canManageUser($user, $targetUserId, $clientId);
+        }
+
+        // Business User and Card User cannot grant permissions
         return false;
     }
 
@@ -117,190 +176,98 @@ class UserFeaturePermissionPolicy
      * Determine whether the user can update the user feature permission.
      *
      * @param User $user
-     * @param UserFeaturePermission $permission
+     * @param UserFeaturePermission $userFeaturePermission
      * @return bool
      */
-    public function update(User $user, UserFeaturePermission $permission): bool
+    public function update(User $user, UserFeaturePermission $userFeaturePermission): bool
     {
-        // Only authenticated users can update permissions
-        if (!$user) {
+        // Ensure client context matches
+        if ($user->client_id !== $userFeaturePermission->client_id) {
             return false;
         }
 
-        // Primary Admin has full access to update any permission
-        if ($user->isPrimaryAdmin()) {
+        // Primary Administrator has full access
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can update permissions for their managed users
-        if ($user->isAdmin()) {
-            // Can update permissions they granted
-            if ($permission->grantor_id === $user->id) {
-                return true;
-            }
-
-            // Can update permissions for users they manage
-            if ($permission->manager_user_id === $user->id) {
-                return true;
-            }
-
-            return false;
+        // Administrator can update permissions they manage
+        if ($this->isAdministrator($user)) {
+            return $userFeaturePermission->manager_user_id === $user->id;
         }
 
-        // Business Users and Card Users cannot update permissions
+        // Business User and Card User cannot update permissions
         return false;
     }
 
     /**
-     * Determine whether the user can delete the user feature permission.
+     * Determine whether the user can delete/revoke the user feature permission.
      *
      * @param User $user
-     * @param UserFeaturePermission $permission
+     * @param UserFeaturePermission $userFeaturePermission
      * @return bool
      */
-    public function delete(User $user, UserFeaturePermission $permission): bool
+    public function delete(User $user, UserFeaturePermission $userFeaturePermission): bool
     {
-        // Only authenticated users can delete permissions
-        if (!$user) {
+        // Ensure client context matches
+        if ($user->client_id !== $userFeaturePermission->client_id) {
             return false;
         }
 
-        // Primary Admin has full access to delete any permission
-        if ($user->isPrimaryAdmin()) {
+        // Primary Administrator has full access
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can delete permissions for their managed users
-        if ($user->isAdmin()) {
-            // Can delete permissions they granted
-            if ($permission->grantor_id === $user->id) {
-                return true;
-            }
-
-            // Can delete permissions for users they manage
-            if ($permission->manager_user_id === $user->id) {
-                return true;
-            }
-
-            return false;
+        // Administrator can revoke permissions they manage
+        if ($this->isAdministrator($user)) {
+            return $userFeaturePermission->manager_user_id === $user->id;
         }
 
-        // Business Users and Card Users cannot delete permissions
+        // Business User and Card User cannot revoke permissions
         return false;
     }
 
     /**
-     * Determine whether the user can grant permissions to a specific target user.
+     * Determine whether the user can revoke a specific permission.
+     *
+     * @param User $user
+     * @param UserFeaturePermission $userFeaturePermission
+     * @return bool
+     */
+    public function revoke(User $user, UserFeaturePermission $userFeaturePermission): bool
+    {
+        return $this->delete($user, $userFeaturePermission);
+    }
+
+    /**
+     * Determine whether the user can manage permissions for a target user.
      *
      * @param User $user
      * @param int $targetUserId
      * @param int $clientId
      * @return bool
      */
-    public function canGrantToUser(User $user, int $targetUserId, int $clientId): bool
+    public function manageUser(User $user, int $targetUserId, int $clientId): bool
     {
-        // Only authenticated users can grant permissions
-        if (!$user) {
+        // Ensure client context matches
+        if ($user->client_id !== $clientId) {
             return false;
         }
 
-        // Primary Admin can grant to anyone within the same client
-        if ($user->isPrimaryAdmin()) {
-            return $this->userBelongsToClient($targetUserId, $clientId);
-        }
-
-        // Admin can only grant to users they manage
-        if ($user->isAdmin()) {
-            return $this->canUserManageTarget($user->id, $targetUserId, $clientId);
-        }
-
-        // Business Users and Card Users cannot grant permissions
-        return false;
-    }
-
-    /**
-     * Determine whether the user can assign a specific manager to a permission.
-     *
-     * @param User $user
-     * @param int $managerUserId
-     * @param int $clientId
-     * @return bool
-     */
-    public function canAssignManager(User $user, int $managerUserId, int $clientId): bool
-    {
-        // Only authenticated users can assign managers
-        if (!$user) {
+        // Cannot manage self
+        if ($user->id === $targetUserId) {
             return false;
         }
 
-        // Primary Admin can assign any manager within the same client
-        if ($user->isPrimaryAdmin()) {
-            return $this->userBelongsToClient($managerUserId, $clientId);
+        // Primary Administrator can manage any user within same client
+        if ($this->isPrimaryAdministrator($user)) {
+            return $this->isValidTargetUser($targetUserId, $clientId);
         }
 
-        // Admin can only assign themselves or their managed users as managers
-        if ($user->isAdmin()) {
-            // Can assign themselves
-            if ($managerUserId === $user->id) {
-                return true;
-            }
-
-            // Can assign users they manage
-            return $this->canUserManageTarget($user->id, $managerUserId, $clientId);
+        // Administrator can manage their assigned users
+        if ($this->isAdministrator($user)) {
+            return $this->canManageUser($user, $targetUserId, $clientId);
         }
 
-        return false;
-    }
-
-    /**
-     * Determine whether the user can manage permissions for a specific client.
-     *
-     * @param User $user
-     * @param int $clientId
-     * @return bool
-     */
-    public function canManageClientPermissions(User $user, int $clientId): bool
-    {
-        // Only authenticated users can manage client permissions
-        if (!$user) {
-            return false;
-        }
-
-        // Primary Admin has full access to all clients
-        if ($user->isPrimaryAdmin()) {
-            return true;
-        }
-
-        // Admin can manage permissions for their client
-        if ($user->isAdmin()) {
-            return $user->client_id === $clientId;
-        }
-
-        return false;
-    }
-
-    /**
-     * Check if a user belongs to a specific client.
-     *
-     * @param int $userId
-     * @param int $clientId
-     * @return bool
-     */
-    private function userBelongsToClient(int $userId, int $clientId): bool
-    {
-        $targetUser = User::find($userId);
-        
-        if (!$targetUser) {
-            return false;
-        }
-
-        return $targetUser->client_id === $clientId;
-    }
-
-    /**
-     * Check if a manager user can manage a target user within a client.
-     *
-     * @param int $managerUserId
-     * @param int $targetUserId
-     * @param int $clientId
-     * @return
+        // Business User and Card User cannot manage other

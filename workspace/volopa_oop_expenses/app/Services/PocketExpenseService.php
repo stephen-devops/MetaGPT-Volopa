@@ -8,217 +8,213 @@ namespace App\Services;
 use App\Models\PocketExpense;
 use App\Models\PocketExpenseMetadata;
 use App\Models\OptPocketExpenseType;
-use App\Models\PocketExpenseSourceClientConfig;
 use App\Models\User;
 use App\Models\Client;
-use Illuminate\Support\Collection;
+use App\Services\FXConversionService;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
-use InvalidArgumentException;
-use Exception;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Carbon\Carbon;
+use Exception;
+use InvalidArgumentException;
 
+/**
+ * PocketExpenseService
+ * 
+ * Service class for managing pocket expense operations with business logic.
+ * Handles expense CRUD operations, metadata management, approval workflow,
+ * and FX conversion integration with multi-tenant support.
+ * 
+ * Business Rules:
+ * - All expenses must be scoped to client_id for multi-tenancy
+ * - Amount sign determined by expense type: Refund = positive, others = negative
+ * - Backend must recalculate FX on save, do not trust frontend-only values
+ * - Date validation: expenses cannot be older than 3 years from current date
+ * - All expense metadata stored in pocket_expense_metadata with enum metadata_type
+ * - Approval workflow: draft -> submitted -> approved/rejected
+ * - Soft delete pattern for expense sources (excluded from dropdowns but visible on historical records)
+ */
 class PocketExpenseService
 {
     /**
-     * Valid status values for pocket expenses.
+     * FX conversion service instance.
      *
-     * @var array<string>
+     * @var FXConversionService
      */
-    private const VALID_STATUSES = [
-        'draft',
-        'submitted',
-        'approved',
-        'rejected',
-    ];
+    private FXConversionService $fxService;
 
     /**
-     * Valid metadata types for pocket expense metadata.
+     * Maximum length for merchant name field.
      *
-     * @var array<string>
+     * @var int
+     */
+    private const MERCHANT_NAME_MAX_LENGTH = 180;
+
+    /**
+     * Maximum age in years for expense date validation.
+     *
+     * @var int
+     */
+    private const MAX_EXPENSE_AGE_YEARS = 3;
+
+    /**
+     * Default status for new expenses.
+     *
+     * @var string
+     */
+    private const DEFAULT_STATUS = 'draft';
+
+    /**
+     * Valid status values for expenses.
+     *
+     * @var array<int, string>
+     */
+    private const VALID_STATUSES = ['draft', 'submitted', 'approved', 'rejected'];
+
+    /**
+     * Statuses that allow updates.
+     *
+     * @var array<int, string>
+     */
+    private const UPDATABLE_STATUSES = ['draft', 'submitted'];
+
+    /**
+     * Statuses that allow deletion.
+     *
+     * @var array<int, string>
+     */
+    private const DELETABLE_STATUSES = ['draft', 'submitted', 'rejected'];
+
+    /**
+     * Valid metadata types.
+     *
+     * @var array<int, string>
      */
     private const VALID_METADATA_TYPES = [
         'category',
         'tracking_code',
         'project',
-        'file_store',
-        'expense_source',
-        'additional_field',
-        'other',
+        'receipt',
+        'source',
+        'additional_field'
     ];
 
     /**
-     * Maximum date lookback in years for expense dates.
+     * Create a new PocketExpenseService instance.
      *
-     * @var int
+     * @param FXConversionService $fxService
      */
-    private const MAX_DATE_LOOKBACK_YEARS = 3;
+    public function __construct(FXConversionService $fxService)
+    {
+        $this->fxService = $fxService;
+    }
 
     /**
-     * Default pagination limit for expense queries.
+     * Create a new pocket expense with metadata and FX conversion.
      *
-     * @var int
-     */
-    private const DEFAULT_PAGINATION_LIMIT = 50;
-
-    /**
-     * Create a new pocket expense.
-     *
-     * @param array<string, mixed> $data
-     * @param int $userId
-     * @param int $clientId
-     * @return PocketExpense
-     * @throws InvalidArgumentException
-     * @throws Exception
+     * @param array $data Expense data
+     * @param int $userId User creating the expense
+     * @param int $clientId Client context for multi-tenancy
+     * @return PocketExpense The created expense with relationships loaded
+     * 
+     * @throws InvalidArgumentException If validation fails
+     * @throws Exception If expense creation fails
      */
     public function createExpense(array $data, int $userId, int $clientId): PocketExpense
     {
         // Validate input parameters
-        if ($userId <= 0 || $clientId <= 0) {
-            throw new InvalidArgumentException('User ID and Client ID must be positive integers');
-        }
+        $this->validateExpenseData($data, true);
+        $this->validateUserContext($userId, $clientId);
 
-        // Validate required fields
-        $requiredFields = ['date', 'merchant_name', 'expense_type', 'currency', 'amount'];
-        foreach ($requiredFields as $field) {
-            if (!isset($data[$field]) || empty($data[$field])) {
-                throw new InvalidArgumentException("Required field '{$field}' is missing or empty");
-            }
-        }
-
-        // Validate expense type exists
+        // Get the expense type to determine amount sign
         $expenseType = OptPocketExpenseType::find($data['expense_type']);
         if (!$expenseType) {
-            throw new InvalidArgumentException('Invalid expense type specified');
+            throw new InvalidArgumentException('Invalid expense type specified.');
         }
 
-        // Validate date is not too old
-        $expenseDate = Carbon::parse($data['date']);
-        $minDate = Carbon::now()->subYears(self::MAX_DATE_LOOKBACK_YEARS);
-        if ($expenseDate->lt($minDate)) {
-            throw new InvalidArgumentException('Expense date cannot be older than ' . self::MAX_DATE_LOOKBACK_YEARS . ' years');
-        }
-
-        // Validate date is not in the future
-        if ($expenseDate->gt(Carbon::now())) {
-            throw new InvalidArgumentException('Expense date cannot be in the future');
-        }
-
-        // Validate user and client relationship
-        $this->validateUserClientRelationship($userId, $clientId);
+        // Get the target user (for expense creation on behalf of others)
+        $expenseUserId = $data['expense_user_id'] ?? $userId;
+        $this->validateExpenseUser($expenseUserId, $clientId);
 
         try {
             DB::beginTransaction();
 
-            // Prepare expense data
-            $expenseData = [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'date' => $expenseDate->format('Y-m-d'),
-                'merchant_name' => trim($data['merchant_name']),
-                'merchant_description' => isset($data['merchant_description']) ? trim($data['merchant_description']) : null,
-                'expense_type' => $data['expense_type'],
-                'currency' => strtoupper($data['currency']),
-                'amount' => round((float) $data['amount'], 2),
-                'merchant_address' => isset($data['merchant_address']) ? trim($data['merchant_address']) : null,
-                'vat_amount' => isset($data['vat_amount']) ? round((float) $data['vat_amount'], 2) : null,
-                'notes' => isset($data['notes']) ? trim($data['notes']) : null,
-                'status' => $data['status'] ?? 'draft',
-                'created_by_user_id' => Auth::id() ?? $userId,
-                'updated_by_user_id' => null,
-                'approved_by_user_id' => null,
-            ];
+            // Apply amount sign based on expense type
+            $amount = abs((float) $data['amount']);
+            $signedAmount = $expenseType->applyAmountSign($amount);
 
-            // Validate status
-            if (!in_array($expenseData['status'], self::VALID_STATUSES)) {
-                throw new InvalidArgumentException('Invalid status specified');
+            // Get base currency for FX conversion
+            $baseCurrency = $this->fxService->getBaseCurrency($clientId);
+            $expenseCurrency = strtoupper($data['currency']);
+            
+            // Convert amount to base currency if needed
+            $convertedAmount = $signedAmount;
+            $fxRate = 1.0;
+            
+            if ($expenseCurrency !== $baseCurrency) {
+                $fxData = $this->fxService->convertAmount(
+                    abs($signedAmount),
+                    $expenseCurrency,
+                    $baseCurrency,
+                    Carbon::parse($data['date'])
+                );
+                
+                $convertedAmount = $expenseType->applyAmountSign($fxData['converted_amount']);
+                $fxRate = $fxData['fx_rate'];
             }
 
-            // Create expense record
+            // Prepare expense data
+            $expenseData = [
+                'uuid' => (string) Str::uuid(),
+                'user_id' => $expenseUserId,
+                'client_id' => $clientId,
+                'date' => Carbon::parse($data['date'])->format('Y-m-d'),
+                'merchant_name' => trim(substr($data['merchant_name'], 0, self::MERCHANT_NAME_MAX_LENGTH)),
+                'merchant_description' => $data['merchant_description'] ? trim($data['merchant_description']) : null,
+                'expense_type' => (int) $data['expense_type'],
+                'currency' => $expenseCurrency,
+                'amount' => $signedAmount,
+                'merchant_address' => $data['merchant_address'] ? trim($data['merchant_address']) : null,
+                'vat_amount' => $data['vat_amount'] ? abs((float) $data['vat_amount']) : null,
+                'notes' => $data['notes'] ? trim($data['notes']) : null,
+                'status' => self::DEFAULT_STATUS,
+                'created_by_user_id' => $userId,
+                'updated_by_user_id' => null,
+                'approved_by_user_id' => null,
+                'deleted' => false,
+                'delete_time' => null,
+            ];
+
+            // Create the expense record
             $expense = PocketExpense::create($expenseData);
 
-            // Create metadata records if provided
-            if (isset($data['metadata']) && is_array($data['metadata'])) {
-                $this->createExpenseMetadata($expense->id, $data['metadata']);
+            // Attach metadata if provided
+            $this->attachAllMetadata($expense, $data, $userId);
+
+            // Store FX conversion metadata if conversion was applied
+            if ($expenseCurrency !== $baseCurrency) {
+                $this->attachMetadata($expense, 'additional_field', [
+                    'fx_conversion' => [
+                        'original_currency' => $expenseCurrency,
+                        'base_currency' => $baseCurrency,
+                        'fx_rate' => $fxRate,
+                        'converted_amount' => $convertedAmount,
+                        'conversion_date' => now()->toISOString(),
+                    ]
+                ], $userId);
             }
 
             DB::commit();
 
-            return $expense->fresh(['expenseType', 'metadata', 'user', 'client']);
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw new Exception('Failed to create expense: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Update an existing pocket expense.
-     *
-     * @param int $expenseId
-     * @param array<string, mixed> $data
-     * @param int $userId
-     * @return PocketExpense
-     * @throws InvalidArgumentException
-     * @throws ModelNotFoundException
-     * @throws Exception
-     */
-    public function updateExpense(int $expenseId, array $data, int $userId): PocketExpense
-    {
-        // Validate input parameters
-        if ($expenseId <= 0 || $userId <= 0) {
-            throw new InvalidArgumentException('Expense ID and User ID must be positive integers');
-        }
-
-        // Find expense
-        $expense = PocketExpense::where('id', $expenseId)
-                                ->where('deleted', false)
-                                ->first();
-
-        if (!$expense) {
-            throw new ModelNotFoundException('Expense not found or has been deleted');
-        }
-
-        // Check if expense can be updated (not approved or rejected)
-        if (in_array($expense->status, ['approved', 'rejected'])) {
-            throw new InvalidArgumentException('Cannot update expense with status: ' . $expense->status);
-        }
-
-        // Validate date if provided
-        if (isset($data['date'])) {
-            $expenseDate = Carbon::parse($data['date']);
-            $minDate = Carbon::now()->subYears(self::MAX_DATE_LOOKBACK_YEARS);
-            if ($expenseDate->lt($minDate)) {
-                throw new InvalidArgumentException('Expense date cannot be older than ' . self::MAX_DATE_LOOKBACK_YEARS . ' years');
-            }
-            if ($expenseDate->gt(Carbon::now())) {
-                throw new InvalidArgumentException('Expense date cannot be in the future');
-            }
-        }
-
-        // Validate expense type if provided
-        if (isset($data['expense_type'])) {
-            $expenseType = OptPocketExpenseType::find($data['expense_type']);
-            if (!$expenseType) {
-                throw new InvalidArgumentException('Invalid expense type specified');
-            }
-        }
-
-        // Validate status transition if provided
-        if (isset($data['status'])) {
-            if (!in_array($data['status'], self::VALID_STATUSES)) {
-                throw new InvalidArgumentException('Invalid status specified');
-            }
-            if (!$this->isValidStatusTransition($expense->status, $data['status'])) {
-                throw new InvalidArgumentException("Invalid status transition from {$expense->status} to {$data['status']}");
-            }
-        }
-
-        try {
-            DB::beginTransaction();
-
-            // Prepare update data
-            $updateData = [];
-            
-            $allowedFields = [
-                'date', 'merchant_name
+            Log::info('Pocket expense created', [
+                'expense_id' => $expense->id,
+                'expense_uuid' => $expense->uuid,
+                'user_id' => $expenseUserId,
+                'client_id' => $clientId,
+                'created_by' => $userId,
+                'amount' => $signedAmount,
+                'currency' => $expenseCurrency,
+                'converted_amount' => $convertedAmount,
+                'fx

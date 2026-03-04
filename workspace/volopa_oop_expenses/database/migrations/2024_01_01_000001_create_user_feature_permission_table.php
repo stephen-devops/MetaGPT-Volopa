@@ -11,32 +11,37 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('user_feature_permission', function (Blueprint $table) {
+        Schema::create('user_feature_permissions', function (Blueprint $table) {
             $table->id();
-            $table->unsignedBigInteger('user_id');
-            $table->unsignedBigInteger('client_id');
-            $table->unsignedBigInteger('feature_id');
-            $table->unsignedBigInteger('grantor_id');
-            $table->unsignedBigInteger('manager_user_id');
-            $table->boolean('is_enabled')->default(true);
+            $table->unsignedBigInteger('user_id')->comment('User receiving the permission');
+            $table->unsignedBigInteger('client_id')->comment('Client context for multi-tenancy');
+            $table->unsignedBigInteger('feature_id')->comment('Feature being granted access to');
+            $table->unsignedBigInteger('grantor_id')->comment('User who granted this permission');
+            $table->unsignedBigInteger('manager_user_id')->comment('User who manages this permission');
+            $table->boolean('is_enabled')->default(true)->comment('Whether permission is active');
             $table->timestamps();
-
+            
             // Foreign key constraints
             $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
             $table->foreign('client_id')->references('id')->on('clients')->onDelete('cascade');
             $table->foreign('feature_id')->references('id')->on('features')->onDelete('cascade');
             $table->foreign('grantor_id')->references('id')->on('users')->onDelete('cascade');
             $table->foreign('manager_user_id')->references('id')->on('users')->onDelete('cascade');
-
+            
             // Indexes for performance
-            $table->index(['user_id', 'client_id']);
-            $table->index(['client_id', 'feature_id']);
-            $table->index(['manager_user_id', 'client_id']);
-            $table->index('grantor_id');
-            $table->index('is_enabled');
-
+            $table->index(['user_id', 'client_id', 'feature_id'], 'idx_user_client_feature');
+            $table->index(['client_id', 'feature_id'], 'idx_client_feature');
+            $table->index(['manager_user_id', 'client_id'], 'idx_manager_client');
+            $table->index(['grantor_id'], 'idx_grantor');
+            $table->index(['is_enabled'], 'idx_is_enabled');
+            
             // Unique constraint to prevent duplicate permissions
             $table->unique(['user_id', 'client_id', 'feature_id'], 'unique_user_client_feature');
+            
+            // Table configuration
+            $table->engine('InnoDB');
+            $table->charset('utf8mb4');
+            $table->collation('utf8mb4_unicode_ci');
         });
     }
 
@@ -45,6 +50,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('user_feature_permission');
+        Schema::dropIfExists('user_feature_permissions');
     }
 };

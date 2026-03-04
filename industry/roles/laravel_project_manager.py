@@ -6,7 +6,10 @@
 @Desc    : Laravel Project Manager role for Volopa OOP Expense system
 """
 
+from metagpt.actions.design_api import WriteDesign
 from metagpt.roles.project_manager import ProjectManager
+
+from industry.actions.laravel_design_api import LaravelWriteDesign
 from industry.utils.context_reader import ContextReader
 
 
@@ -44,6 +47,9 @@ class LaravelProjectManager(ProjectManager):
         """
         super().__init__(**kwargs)
 
+        # Watch both core WriteDesign and our LaravelWriteDesign so the pipeline continues
+        self._watch([WriteDesign, LaravelWriteDesign])
+
         # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
         self._update_constraints_from_context(ContextReader())
 
@@ -67,18 +73,18 @@ class LaravelProjectManager(ProjectManager):
         # lines.append(context_reader.get_components_to_build())
         lines.append("")
         lines.append(context_reader.get_interfaces_summary())
-        lines.append("")
-        lines.append(context_reader.get_project_constraints())
-        lines.append("")
-        lines.append(context_reader.get_dos_and_donts())
+        # lines.append("")
+        # lines.append(context_reader.get_project_constraints())
+        # lines.append("")
+        # lines.append(context_reader.get_dos_and_donts())
         lines.append("")
         lines.append(context_reader.get_unresolved_decisions())
         lines.append("")
         lines.append(context_reader.get_inherited_behaviors())
         lines.append("")
         lines.append(context_reader.get_platform_decisions())
-        lines.append("")
-        lines.append(context_reader.get_platform_constraints())
+        # lines.append("")
+        # lines.append(context_reader.get_platform_constraints())
         lines.append("")
         lines.append(context_reader.get_existing_user_roles())
         lines.append("")

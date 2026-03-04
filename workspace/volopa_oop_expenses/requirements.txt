@@ -1,4 +1,5 @@
-laravel/sanctum:^3.0
-league/csv:^9.0
 laravel/framework:^10.0
+spatie/laravel-query-builder:^5.0
+laravel/sanctum:^3.2
+league/csv:^9.8
 maatwebsite/excel:^3.1

@@ -9,6 +9,21 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Carbon\Carbon;
 
+/**
+ * PocketExpenseFileUploadResource
+ * 
+ * API Resource for transforming PocketExpenseFileUpload model responses.
+ * Shapes output data structure and hides internal model fields for API responses
+ * following Laravel best practices with proper data transformation.
+ * 
+ * Response Structure:
+ * - Exposes essential file upload data for frontend consumption
+ * - Includes related user, client, and created by information
+ * - Formats timestamps consistently
+ * - Hides sensitive internal fields and database specifics
+ * - Provides clear upload status and processing metadata
+ * - Includes validation errors and upload statistics
+ */
 class PocketExpenseFileUploadResource extends JsonResource
 {
     /**
@@ -27,163 +42,133 @@ class PocketExpenseFileUploadResource extends JsonResource
             'created_by_user_id' => $this->created_by_user_id,
             'file_name' => $this->file_name,
             'file_path' => $this->file_path,
-            'total_records' => $this->total_records ?? 0,
-            'valid_records' => $this->valid_records ?? 0,
-            'invalid_records' => $this->total_records - $this->valid_records,
-            'validation_errors' => $this->validation_errors,
+            'total_records' => (int) $this->total_records,
+            'valid_records' => (int) $this->valid_records,
+            'invalid_records' => (int) ($this->total_records - $this->valid_records),
+            'validation_errors' => $this->validation_errors ?? [],
             'status' => $this->status,
-            'uploaded_at' => $this->uploaded_at?->toISOString(),
-            'validated_at' => $this->validated_at?->toISOString(),
-            'processed_at' => $this->processed_at?->toISOString(),
-            'created_at' => $this->created_at?->toISOString(),
-            'updated_at' => $this->updated_at?->toISOString(),
-            'deleted_at' => $this->deleted_at?->toISOString(),
-            
-            // Relationship data (loaded when available)
-            'user' => $this->whenLoaded('user', function () {
-                return [
-                    'id' => $this->user->id,
-                    'name' => $this->user->name ?? 'Unknown User',
-                    'email' => $this->user->email ?? 'no-email@example.com',
-                    'role' => $this->user->role ?? 'user',
-                ];
-            }),
-            
-            'client' => $this->whenLoaded('client', function () {
-                return [
-                    'id' => $this->client->id,
-                    'name' => $this->client->name ?? 'Unknown Client',
-                    'code' => $this->client->code ?? 'N/A',
-                ];
-            }),
-            
-            'created_by' => $this->whenLoaded('createdBy', function () {
-                return [
-                    'id' => $this->createdBy->id,
-                    'name' => $this->createdBy->name ?? 'Unknown User',
-                    'email' => $this->createdBy->email ?? 'no-email@example.com',
-                    'role' => $this->createdBy->role ?? 'user',
-                ];
-            }),
-            
-            'upload_data' => $this->whenLoaded('uploadData', function () {
-                return $this->uploadData->map(function ($data) {
-                    return [
-                        'id' => $data->id,
-                        'line_number' => $data->line_number,
-                        'status' => $data->status,
-                        'expense_data' => $data->expense_data,
-                        'created_at' => $data->created_at?->toISOString(),
-                        'updated_at' => $data->updated_at?->toISOString(),
-                    ];
-                });
-            }),
-            
-            // Additional computed fields
-            'file_size_display' => $this->getFileSizeDisplay(),
-            'status_display' => $this->getStatusDisplay(),
-            'processing_progress' => $this->getProcessingProgress(),
-            'validation_summary' => $this->getValidationSummary(),
-            'processing_duration' => $this->getProcessingDuration(),
-            'error_summary' => $this->getErrorSummary(),
-            
-            // Upload statistics
-            'statistics' => [
-                'total_records' => $this->total_records ?? 0,
-                'valid_records' => $this->valid_records ?? 0,
-                'invalid_records' => ($this->total_records ?? 0) - ($this->valid_records ?? 0),
-                'success_rate' => $this->getSuccessRate(),
-                'has_errors' => $this->hasValidationErrors(),
-                'error_count' => $this->getErrorCount(),
-            ],
             
             // Status information
             'status_info' => [
-                'current_status' => $this->status,
+                'current' => $this->status,
+                'display_name' => $this->getStatusDisplayName(),
                 'is_processing' => $this->isProcessing(),
                 'is_completed' => $this->isCompleted(),
                 'is_failed' => $this->isFailed(),
-                'is_validation_failed' => $this->isValidationFailed(),
                 'can_retry' => $this->canRetry(),
-                'can_download_errors' => $this->canDownloadErrors(),
-            ],
-            
-            // Timing information
-            'timing' => [
-                'uploaded_at' => $this->uploaded_at?->toISOString(),
-                'validated_at' => $this->validated_at?->toISOString(),
-                'processed_at' => $this->processed_at?->toISOString(),
-                'processing_started_at' => $this->getProcessingStartTime(),
-                'processing_completed_at' => $this->getProcessingCompleteTime(),
-                'total_processing_time' => $this->getTotalProcessingTime(),
+                'progress_percentage' => $this->getProgressPercentage(),
             ],
             
             // File information
             'file_info' => [
                 'name' => $this->file_name,
-                'original_name' => $this->getOriginalFileName(),
+                'size' => $this->getFileSize(),
+                'type' => $this->getFileType(),
                 'extension' => $this->getFileExtension(),
-                'mime_type' => $this->getFileMimeType(),
-                'size_bytes' => $this->getFileSizeBytes(),
-                'size_display' => $this->getFileSizeDisplay(),
-                'upload_date' => $this->uploaded_at?->format('Y-m-d H:i:s'),
+                'is_csv' => $this->isCsvFile(),
             ],
             
-            // Permissions and actions
-            'permissions' => [
-                'can_view' => $this->canView(),
-                'can_update' => $this->canUpdate(),
-                'can_delete' => $this->canDelete(),
-                'can_retry' => $this->canRetry(),
-                'can_download_template' => true,
-                'can_download_errors' => $this->canDownloadErrors(),
+            // Processing statistics
+            'statistics' => [
+                'total_rows' => (int) $this->total_records,
+                'valid_rows' => (int) $this->valid_records,
+                'invalid_rows' => (int) ($this->total_records - $this->valid_records),
+                'success_rate' => $this->getSuccessRate(),
+                'error_count' => $this->getErrorCount(),
+                'has_errors' => $this->hasValidationErrors(),
             ],
-        ];
-    }
-
-    /**
-     * Get additional data that should be returned with the resource array.
-     *
-     * @param Request $request
-     * @return array<string, mixed>
-     */
-    public function with(Request $request): array
-    {
-        return [
-            'meta' => [
-                'resource_type' => 'pocket_expense_file_upload',
-                'api_version' => 'v1',
-                'generated_at' => now()->toISOString(),
-                'upload_constraints' => [
-                    'max_file_size_kb' => 10240,
-                    'max_csv_rows' => 200,
-                    'allowed_extensions' => ['csv', 'txt'],
-                    'required_headers' => [
-                        'Date',
-                        'Merchant Name',
-                        'Merchant Description',
-                        'Expense Type',
-                        'Currency Code',
-                        'Amount',
-                        'Merchant Address',
-                        'VAT %',
-                        'Source',
-                        'Source Note',
-                        'Notes'
+            
+            // Related user information
+            'user' => [
+                'id' => $this->user?->id,
+                'name' => $this->user?->name ?? 'Unknown User',
+                'email' => $this->user?->email,
+                'role' => $this->user?->role ?? 'Unknown Role',
+            ],
+            
+            // Related client information
+            'client' => [
+                'id' => $this->client?->id,
+                'name' => $this->client?->name ?? 'Unknown Client',
+                'code' => $this->client?->code,
+            ],
+            
+            // Related created by user information
+            'created_by' => [
+                'id' => $this->createdBy?->id,
+                'name' => $this->createdBy?->name ?? 'Unknown User',
+                'email' => $this->createdBy?->email,
+                'role' => $this->createdBy?->role ?? 'Unknown Role',
+            ],
+            
+            // Upload data information
+            'uploads_data' => $this->when($this->relationLoaded('uploadsData'), function () {
+                return [
+                    'total_count' => $this->uploadsData->count(),
+                    'pending_count' => $this->uploadsData->where('status', 'pending')->count(),
+                    'processing_count' => $this->uploadsData->where('status', 'processing')->count(),
+                    'synced_count' => $this->uploadsData->where('status', 'synced')->count(),
+                    'failed_count' => $this->uploadsData->where('status', 'failed')->count(),
+                    'status_breakdown' => [
+                        'pending' => $this->uploadsData->where('status', 'pending')->count(),
+                        'processing' => $this->uploadsData->where('status', 'processing')->count(),
+                        'synced' => $this->uploadsData->where('status', 'synced')->count(),
+                        'failed' => $this->uploadsData->where('status', 'failed')->count(),
                     ],
+                ];
+            }, []),
+            
+            // Validation error summary
+            'error_summary' => $this->when($this->hasValidationErrors(), function () {
+                $errors = $this->validation_errors ?? [];
+                $errorTypes = [];
+                $errorLines = [];
+                
+                foreach ($errors as $error) {
+                    if (isset($error['type'])) {
+                        $errorTypes[] = $error['type'];
+                    }
+                    if (isset($error['line'])) {
+                        $errorLines[] = $error['line'];
+                    }
+                }
+                
+                return [
+                    'total_errors' => count($errors),
+                    'unique_error_types' => array_unique($errorTypes),
+                    'affected_lines' => array_unique($errorLines),
+                    'most_common_error' => $this->getMostCommonError($errors),
+                    'first_error' => $errors[0] ?? null,
+                ];
+            }, null),
+            
+            // Timestamps
+            'uploaded_at' => $this->uploaded_at ? $this->uploaded_at->toISOString() : null,
+            'validated_at' => $this->validated_at ? $this->validated_at->toISOString() : null,
+            'processed_at' => $this->processed_at ? $this->processed_at->toISOString() : null,
+            'created_at' => $this->created_at ? $this->created_at->toISOString() : null,
+            'updated_at' => $this->updated_at ? $this->updated_at->toISOString() : null,
+            'deleted_at' => $this->deleted_at ? $this->deleted_at->toISOString() : null,
+            
+            // Processing timeline
+            'timeline' => [
+                'uploaded' => [
+                    'timestamp' => $this->uploaded_at ? $this->uploaded_at->toISOString() : null,
+                    'human' => $this->uploaded_at ? $this->uploaded_at->diffForHumans() : null,
+                    'completed' => true,
+                ],
+                'validated' => [
+                    'timestamp' => $this->validated_at ? $this->validated_at->toISOString() : null,
+                    'human' => $this->validated_at ? $this->validated_at->diffForHumans() : null,
+                    'completed' => $this->validated_at !== null,
+                ],
+                'processed' => [
+                    'timestamp' => $this->processed_at ? $this->processed_at->toISOString() : null,
+                    'human' => $this->processed_at ? $this->processed_at->diffForHumans() : null,
+                    'completed' => $this->processed_at !== null,
                 ],
             ],
-        ];
-    }
-
-    /**
-     * Customize the response for a request.
-     *
-     * @param Request $request
-     * @param \Illuminate\Http\JsonResponse $response
-     * @return void
-     */
-    public function withResponse(Request $request, $response): void
-    {
-        $response->header('X-Resource-Type', 'PocketExpenseFileUpload');
-        $response
+            
+            // Processing duration
+            'duration' => [
+                'total' => $

@@ -3,11 +3,10 @@
 ```php
 <?php
 
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\V1\UserFeaturePermissionController;
 use App\Http\Controllers\Api\V1\PocketExpenseController;
-use App\Http\Controllers\PocketExpenseUploadController;
+use App\Http\Controllers\Api\V1\PocketExpenseUploadController;
 
 /*
 |--------------------------------------------------------------------------
@@ -18,176 +17,147 @@ use App\Http\Controllers\PocketExpenseUploadController;
 | routes are loaded by the RouteServiceProvider and all of them will
 | be assigned to the "api" middleware group. Make something great!
 |
+| All routes require OAuth2 authentication via middleware and are scoped
+| to authenticated user's client context for multi-tenant data isolation.
+| Routes follow REST conventions with proper HTTP status codes and 
+| structured error responses using API Resources.
 */
-
-// Health check endpoint
-Route::get('/', function () {
-    return response()->json([
-        'success' => true,
-        'message' => 'Volopa OOP Expenses API is running',
-        'version' => '1.0.0',
-        'timestamp' => now()->toISOString(),
-    ]);
-});
-
-// Health check endpoint for monitoring
-Route::get('/health', function () {
-    return response()->json([
-        'status' => 'healthy',
-        'timestamp' => now()->toISOString(),
-        'version' => '1.0.0',
-        'service' => 'volopa-oop-expenses-api',
-    ]);
-});
 
 /*
 |--------------------------------------------------------------------------
-| V1 API Routes - User Feature Permission Management
+| V1 API Routes with OAuth2 Authentication
 |--------------------------------------------------------------------------
+|
+| All V1 routes are protected by OAuth2 middleware and follow Laravel
+| REST conventions. Routes are versioned under /v1 prefix with exception
+| of upload routes which follow /api/uploads pattern per specification.
 */
 
-Route::prefix('v1')->name('api.v1.')->middleware(['auth:api', 'throttle:api'])->group(function () {
+Route::prefix('v1')->group(function () {
     
-    // User Feature Permission Routes
-    Route::prefix('user-feature-permissions')->name('user-feature-permissions.')->group(function () {
+    /*
+    |--------------------------------------------------------------------------
+    | User Feature Permission Management Routes
+    |--------------------------------------------------------------------------
+    |
+    | Routes for delegation-based RBAC system managing user feature permissions.
+    | Implements role hierarchy with Primary Admin, Admin, Business User, Card User.
+    | 
+    | Business Rules:
+    | - Primary Administrator has full access to all users' permissions
+    | - Administrator requires explicit delegation to manage other users' permissions
+    | - Permission delegation can be granted by Primary Admin to any user regardless of role
+    | - Admin can only grant access to their own managed users, not all users
+    | - Revoked users fall back to Primary Administrator management until reassigned
+    */
+    Route::middleware(['auth:api', 'throttle:60,1'])->group(function () {
         
-        // GET /api/v1/user-feature-permissions - List user feature permissions
-        Route::get('/', [UserFeaturePermissionController::class, 'index'])
-             ->name('index');
+        // List user feature permissions with filtering support
+        // GET /api/v1/user-feature-permissions?user_id=1&feature_id=1&is_enabled=true
+        Route::get('user-feature-permissions', [UserFeaturePermissionController::class, 'index'])
+            ->name('api.v1.user-feature-permissions.index');
         
-        // POST /api/v1/user-feature-permissions - Grant user feature permission
-        Route::post('/', [UserFeaturePermissionController::class, 'store'])
-             ->name('store');
+        // Grant new user feature permission with delegation management
+        // POST /api/v1/user-feature-permissions
+        // Body: {"user_id": 1, "feature_id": 1, "manager_user_id": 2}
+        Route::post('user-feature-permissions', [UserFeaturePermissionController::class, 'store'])
+            ->name('api.v1.user-feature-permissions.store');
         
-        // GET /api/v1/user-feature-permissions/{userFeaturePermission} - Get specific permission
-        Route::get('/{userFeaturePermission}', [UserFeaturePermissionController::class, 'show'])
-             ->name('show');
-        
-        // PUT /api/v1/user-feature-permissions/{userFeaturePermission} - Update permission
-        Route::put('/{userFeaturePermission}', [UserFeaturePermissionController::class, 'update'])
-             ->name('update');
-        
-        // DELETE /api/v1/user-feature-permissions/{userFeaturePermission} - Revoke permission
-        Route::delete('/{userFeaturePermission}', [UserFeaturePermissionController::class, 'destroy'])
-             ->name('destroy');
+        // Revoke specific user feature permission
+        // DELETE /api/v1/user-feature-permissions/{id}
+        // Body: {"reason": "No longer needed", "reassign_to_primary_admin": false}
+        Route::delete('user-feature-permissions/{id}', [UserFeaturePermissionController::class, 'destroy'])
+            ->where('id', '[0-9]+')
+            ->name('api.v1.user-feature-permissions.destroy');
     });
 
     /*
     |--------------------------------------------------------------------------
-    | V1 API Routes - Pocket Expense Management
+    | Pocket Expense CRUD Routes
     |--------------------------------------------------------------------------
+    |
+    | Routes for single expense management with real-time FX conversion,
+    | metadata support, and approval workflow. All expenses scoped to 
+    | authenticated user's client context for multi-tenancy.
+    |
+    | Business Rules:
+    | - All queries and mutations must be scoped by client_id for multi-tenancy
+    | - user_id must match authenticated user (server-side validation)
+    | - Target entities (expense_user_id) must belong to the same client_id
+    | - Only Primary Administrator has full access to all users' expenses by default
+    | - Administrator requires explicit delegation to manage other users' expenses
+    | - Business User and Card User cannot approve expenses even with management rights
+    | - Backend must recalculate FX on save, do not trust frontend-only values
+    | - Date validation: expenses cannot be older than 3 years from current date
+    | - Amount sign determined by expense type: Refund = positive, others = negative
     */
-    
-    // Pocket Expense Routes
-    Route::prefix('pocket-expenses')->name('pocket-expenses.')->group(function () {
+    Route::middleware(['auth:api', 'throttle:60,1'])->group(function () {
         
-        // GET /api/v1/pocket-expenses - List user expenses
-        Route::get('/', [PocketExpenseController::class, 'index'])
-             ->name('index');
+        // List pocket expenses with filtering and pagination
+        // GET /api/v1/pocket-expenses?status=draft&date_from=2024-01-01&date_to=2024-12-31
+        Route::get('pocket-expenses', [PocketExpenseController::class, 'index'])
+            ->name('api.v1.pocket-expenses.index');
         
-        // POST /api/v1/pocket-expenses - Create new expense
-        Route::post('/', [PocketExpenseController::class, 'store'])
-             ->name('store');
+        // Create new pocket expense with metadata and FX conversion
+        // POST /api/v1/pocket-expenses
+        // Body: {"date": "2024-01-01", "merchant_name": "Test Merchant", "expense_type": 1, "currency": "USD", "amount": 100.00}
+        Route::post('pocket-expenses', [PocketExpenseController::class, 'store'])
+            ->name('api.v1.pocket-expenses.store');
         
-        // GET /api/v1/pocket-expenses/{pocketExpense} - Get specific expense
-        Route::get('/{pocketExpense}', [PocketExpenseController::class, 'show'])
-             ->name('show');
+        // Get single pocket expense with relationships
+        // GET /api/v1/pocket-expenses/{id}
+        Route::get('pocket-expenses/{id}', [PocketExpenseController::class, 'show'])
+            ->where('id', '[0-9]+')
+            ->name('api.v1.pocket-expenses.show');
         
-        // PUT /api/v1/pocket-expenses/{pocketExpense} - Update expense
-        Route::put('/{pocketExpense}', [PocketExpenseController::class, 'update'])
-             ->name('update');
+        // Update pocket expense (only draft and submitted status allowed)
+        // PUT /api/v1/pocket-expenses/{id}
+        // Body: {"merchant_name": "Updated Merchant", "amount": 150.00}
+        Route::put('pocket-expenses/{id}', [PocketExpenseController::class, 'update'])
+            ->where('id', '[0-9]+')
+            ->name('api.v1.pocket-expenses.update');
         
-        // DELETE /api/v1/pocket-expenses/{pocketExpense} - Delete expense
-        Route::delete('/{pocketExpense}', [PocketExpenseController::class, 'destroy'])
-             ->name('destroy');
+        // Soft delete pocket expense (cannot delete approved expenses)
+        // DELETE /api/v1/pocket-expenses/{id}
+        Route::delete('pocket-expenses/{id}', [PocketExpenseController::class, 'destroy'])
+            ->where('id', '[0-9]+')
+            ->name('api.v1.pocket-expenses.destroy');
         
-        // POST /api/v1/pocket-expenses/{pocketExpense}/approve - Approve expense
-        Route::post('/{pocketExpense}/approve', [PocketExpenseController::class, 'approve'])
-             ->name('approve');
+        // Approve pocket expense (only submitted status, role-based authorization)
+        // POST /api/v1/pocket-expenses/{id}/approve
+        // Body: {} (empty body, approval is action-based)
+        Route::post('pocket-expenses/{id}/approve', [PocketExpenseController::class, 'approve'])
+            ->where('id', '[0-9]+')
+            ->name('api.v1.pocket-expenses.approve');
         
-        // POST /api/v1/pocket-expenses/{pocketExpense}/reject - Reject expense
-        Route::post('/{pocketExpense}/reject', [PocketExpenseController::class, 'reject'])
-             ->name('reject');
-        
-        // POST /api/v1/pocket-expenses/{pocketExpense}/submit - Submit expense for approval
-        Route::post('/{pocketExpense}/submit', [PocketExpenseController::class, 'submit'])
-             ->name('submit');
-        
-        // GET /api/v1/pocket-expenses/{pocketExpense}/fx-conversion - Get FX conversion details
-        Route::get('/{pocketExpense}/fx-conversion', [PocketExpenseController::class, 'getFXConversion'])
-             ->name('fx-conversion');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | V1 API Routes - Expense Source Configuration
-    |--------------------------------------------------------------------------
-    */
-    
-    // Expense Source Configuration Routes
-    Route::prefix('expense-sources')->name('expense-sources.')->group(function () {
-        
-        // GET /api/v1/expense-sources - List available expense sources for client
-        Route::get('/', [PocketExpenseController::class, 'getExpenseSources'])
-             ->name('index');
-        
-        // POST /api/v1/expense-sources - Create new expense source
-        Route::post('/', [PocketExpenseController::class, 'createExpenseSource'])
-             ->name('store');
-        
-        // PUT /api/v1/expense-sources/{sourceId} - Update expense source
-        Route::put('/{sourceId}', [PocketExpenseController::class, 'updateExpenseSource'])
-             ->name('update');
-        
-        // DELETE /api/v1/expense-sources/{sourceId} - Delete expense source (soft delete)
-        Route::delete('/{sourceId}', [PocketExpenseController::class, 'deleteExpenseSource'])
-             ->name('destroy');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | V1 API Routes - Reference Data
-    |--------------------------------------------------------------------------
-    */
-    
-    // Reference Data Routes
-    Route::prefix('reference')->name('reference.')->group(function () {
-        
-        // GET /api/v1/reference/expense-types - Get available expense types
-        Route::get('/expense-types', [PocketExpenseController::class, 'getExpenseTypes'])
-             ->name('expense-types');
-        
-        // GET /api/v1/reference/currencies - Get supported currencies
-        Route::get('/currencies', [PocketExpenseController::class, 'getCurrencies'])
-             ->name('currencies');
-        
-        // GET /api/v1/reference/transaction-categories - Get transaction categories
-        Route::get('/transaction-categories', [PocketExpenseController::class, 'getTransactionCategories'])
-             ->name('transaction-categories');
-        
-        // GET /api/v1/reference/tracking-codes - Get tracking codes
-        Route::get('/tracking-codes', [PocketExpenseController::class, 'getTrackingCodes'])
-             ->name('tracking-codes');
-        
-        // GET /api/v1/reference/projects - Get configurable projects
-        Route::get('/projects', [PocketExpenseController::class, 'getProjects'])
-             ->name('projects');
+        // Real-time FX conversion for expense amounts
+        // POST /api/v1/pocket-expenses/convert-fx
+        // Body: {"amount": 100.00, "from_currency": "USD", "expense_date": "2024-01-01"}
+        Route::post('pocket-expenses/convert-fx', [PocketExpenseController::class, 'convertFX'])
+            ->name('api.v1.pocket-expenses.convert-fx');
     });
 });
 
 /*
 |--------------------------------------------------------------------------
-| CSV Upload Routes - Separate from versioned API
+| CSV Upload Routes (Non-versioned per specification)
 |--------------------------------------------------------------------------
+|
+| Routes for CSV batch upload with synchronous validation and asynchronous
+| background processing using Laravel queues. These routes follow the
+| /api/uploads pattern as specified in the requirements.
+|
+| Business Rules:
+| - Maximum 200 rows per CSV file for batch upload processing
+| - All-or-nothing validation: if any CSV row fails validation, no expense records are created
+| - Header row mandatory in CSV and must exactly match required column names
+| - Date format for CSV: DD/MM/YYYY (DD-MM-YYYY in template)
+| - Currency Code must be 3-letter ISO format and validated against platform list
+| - VAT percentage must be numeric between 0-100 with % sign stripped
+| - Expense source must match configured sources for client including global 'Other'
+| - Source Note required when expense source equals 'Other'
+| - Queue job processing: sync expenses in batches of 100 records
+| - Upload status progression: uploaded → validation_passed/validation_failed → processing → completed/failed
+| - Background job must update upload status and notify user on completion
 */
-
-Route::prefix('uploads')->name('api.uploads.')->middleware(['auth:api', 'throttle:uploads'])->group(function () {
-    
-    // Pocket Expense CSV Upload Routes
-    Route::prefix('pocket-expense')->name('pocket-expense.')->group(function () {
-        
-        // CSV Upload Routes
-        Route::prefix('csv')->name('csv.')->group(function () {
-            
-            // POST /api/uploads/pocket-expense/csv - Upload CSV file for batch expense creation
-            Route::post
+Route::prefix('uploads

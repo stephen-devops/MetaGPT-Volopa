@@ -8,17 +8,62 @@ namespace App\Policies;
 use App\Models\User;
 use App\Models\PocketExpense;
 use App\Models\UserFeaturePermission;
-use Illuminate\Auth\Access\Response;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Auth\Access\HandlesAuthorization;
+use Illuminate\Support\Facades\DB;
 
+/**
+ * PocketExpensePolicy
+ * 
+ * Authorization policy for pocket expense operations with role-based access control.
+ * Implements multi-tenant security with delegation-based permission management.
+ * 
+ * Business Rules:
+ * - Only Primary Administrator has full access to all users' expenses by default
+ * - Administrator requires explicit delegation to manage other users' expenses
+ * - Business User and Card User cannot approve expenses even with management rights
+ * - All queries and mutations must be scoped by client_id for multi-tenancy
+ * - user_id must match authenticated user (server-side validation)
+ * - Target entities (expense_user_id) must belong to the same client_id
+ * - Managing access enables create/view/edit but approval rights depend on original user role
+ */
 class PocketExpensePolicy
 {
+    use HandlesAuthorization;
+
     /**
-     * OOP Expenses feature ID for permission checks.
+     * Primary Administrator role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_PRIMARY_ADMIN = 'Primary Administrator';
+
+    /**
+     * Administrator role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_ADMIN = 'Administrator';
+
+    /**
+     * Business User role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_BUSINESS_USER = 'Business User';
+
+    /**
+     * Card User role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_CARD_USER = 'Card User';
+
+    /**
+     * Feature ID for pocket expense management.
      *
      * @var int
      */
-    private const OOP_EXPENSES_FEATURE_ID = 1;
+    private const POCKET_EXPENSE_FEATURE_ID = 1; // Assuming feature ID 1 for pocket expenses
 
     /**
      * Determine whether the user can view any pocket expenses.
@@ -28,79 +73,41 @@ class PocketExpensePolicy
      */
     public function viewAny(User $user): bool
     {
-        // Only authenticated users can view expenses
-        if (!$user) {
+        // Only authenticated users with valid client context can view expenses
+        if (!$user->client_id) {
             return false;
         }
 
-        // Check if user has OOP expenses feature permission
-        if (!$this->hasOopExpensePermission($user)) {
-            return false;
-        }
-
-        // Primary Admin has full access to all expenses
-        if ($user->isPrimaryAdmin()) {
-            return true;
-        }
-
-        // Admin gets full access only to own expenses by default; needs explicit grant for others
-        if ($user->isAdmin()) {
-            return true;
-        }
-
-        // Business User and Card User can view expenses if they have permission
-        if ($user->isBusinessUser() || $user->isCardUser()) {
-            return true;
-        }
-
-        return false;
+        // All authenticated users can view some expenses (their own or managed)
+        return true;
     }
 
     /**
-     * Determine whether the user can view the specific pocket expense.
+     * Determine whether the user can view the pocket expense.
      *
      * @param User $user
-     * @param PocketExpense $expense
+     * @param PocketExpense $pocketExpense
      * @return bool
      */
-    public function view(User $user, PocketExpense $expense): bool
+    public function view(User $user, PocketExpense $pocketExpense): bool
     {
-        // Only authenticated users can view expenses
-        if (!$user) {
+        // Ensure client context matches
+        if ($user->client_id !== $pocketExpense->client_id) {
             return false;
-        }
-
-        // Check if user has OOP expenses feature permission
-        if (!$this->hasOopExpensePermission($user)) {
-            return false;
-        }
-
-        // Must belong to the same client
-        if ($expense->client_id !== $user->client_id) {
-            return false;
-        }
-
-        // Primary Admin has full access to all expenses within their scope
-        if ($user->isPrimaryAdmin()) {
-            return true;
         }
 
         // Users can always view their own expenses
-        if ($expense->user_id === $user->id) {
+        if ($user->id === $pocketExpense->user_id) {
             return true;
         }
 
-        // Admin can view expenses if they have managing access to the expense owner
-        if ($user->isAdmin()) {
-            return $this->canUserManageExpenseOwner($user, $expense);
+        // Primary Administrator has full access to all expenses within client
+        if ($this->isPrimaryAdministrator($user)) {
+            return true;
         }
 
-        // Business User and Card User can only view their own expenses
-        if ($user->isBusinessUser() || $user->isCardUser()) {
-            return $expense->user_id === $user->id;
-        }
-
-        return false;
+        // Check if user has delegated permission to manage this expense owner
+        return $this->canManageExpenseUser($user, $pocketExpense->user_id, $pocketExpense->client_id);
     }
 
     /**
@@ -111,183 +118,144 @@ class PocketExpensePolicy
      */
     public function create(User $user): bool
     {
-        // Only authenticated users can create expenses
-        if (!$user) {
+        // Only authenticated users with valid client context can create expenses
+        if (!$user->client_id) {
             return false;
         }
 
-        // Check if user has OOP expenses feature permission
-        if (!$this->hasOopExpensePermission($user)) {
-            return false;
-        }
-
-        // All users with OOP expenses permission can create expenses
+        // All authenticated users can create their own expenses
         return true;
+    }
+
+    /**
+     * Determine whether the user can create expenses for a specific user.
+     *
+     * @param User $user
+     * @param int $expenseUserId
+     * @param int $clientId
+     * @return bool
+     */
+    public function createFor(User $user, int $expenseUserId, int $clientId): bool
+    {
+        // Ensure client context matches
+        if ($user->client_id !== $clientId) {
+            return false;
+        }
+
+        // Users can create their own expenses
+        if ($user->id === $expenseUserId) {
+            return true;
+        }
+
+        // Primary Administrator can create expenses for any user within client
+        if ($this->isPrimaryAdministrator($user)) {
+            return $this->isValidTargetUser($expenseUserId, $clientId);
+        }
+
+        // Check if user has delegated permission to manage the target user
+        return $this->canManageExpenseUser($user, $expenseUserId, $clientId);
     }
 
     /**
      * Determine whether the user can update the pocket expense.
      *
      * @param User $user
-     * @param PocketExpense $expense
+     * @param PocketExpense $pocketExpense
      * @return bool
      */
-    public function update(User $user, PocketExpense $expense): bool
+    public function update(User $user, PocketExpense $pocketExpense): bool
     {
-        // Only authenticated users can update expenses
-        if (!$user) {
-            return false;
-        }
-
-        // Check if user has OOP expenses feature permission
-        if (!$this->hasOopExpensePermission($user)) {
-            return false;
-        }
-
-        // Must belong to the same client
-        if ($expense->client_id !== $user->client_id) {
+        // Ensure client context matches
+        if ($user->client_id !== $pocketExpense->client_id) {
             return false;
         }
 
         // Cannot update approved or rejected expenses
-        if (in_array($expense->status, ['approved', 'rejected'])) {
+        if (in_array($pocketExpense->status, ['approved', 'rejected'])) {
             return false;
         }
 
-        // Primary Admin has full access to all expenses within their scope
-        if ($user->isPrimaryAdmin()) {
+        // Users can update their own expenses
+        if ($user->id === $pocketExpense->user_id) {
             return true;
         }
 
-        // Users can always update their own expenses (if not approved/rejected)
-        if ($expense->user_id === $user->id) {
+        // Primary Administrator can update any expense within client
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can update expenses if they have managing access to the expense owner
-        if ($user->isAdmin()) {
-            return $this->canUserManageExpenseOwner($user, $expense);
-        }
-
-        // Business User and Card User can only update their own expenses
-        if ($user->isBusinessUser() || $user->isCardUser()) {
-            return $expense->user_id === $user->id;
-        }
-
-        return false;
+        // Check if user has delegated permission to manage this expense owner
+        return $this->canManageExpenseUser($user, $pocketExpense->user_id, $pocketExpense->client_id);
     }
 
     /**
      * Determine whether the user can delete the pocket expense.
      *
      * @param User $user
-     * @param PocketExpense $expense
+     * @param PocketExpense $pocketExpense
      * @return bool
      */
-    public function delete(User $user, PocketExpense $expense): bool
+    public function delete(User $user, PocketExpense $pocketExpense): bool
     {
-        // Only authenticated users can delete expenses
-        if (!$user) {
-            return false;
-        }
-
-        // Check if user has OOP expenses feature permission
-        if (!$this->hasOopExpensePermission($user)) {
-            return false;
-        }
-
-        // Must belong to the same client
-        if ($expense->client_id !== $user->client_id) {
+        // Ensure client context matches
+        if ($user->client_id !== $pocketExpense->client_id) {
             return false;
         }
 
         // Cannot delete approved expenses
-        if ($expense->status === 'approved') {
+        if ($pocketExpense->status === 'approved') {
             return false;
         }
 
-        // Primary Admin has full access to all expenses within their scope
-        if ($user->isPrimaryAdmin()) {
+        // Users can delete their own expenses
+        if ($user->id === $pocketExpense->user_id) {
             return true;
         }
 
-        // Users can always delete their own expenses (if not approved)
-        if ($expense->user_id === $user->id) {
+        // Primary Administrator can delete any expense within client
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can delete expenses if they have managing access to the expense owner
-        if ($user->isAdmin()) {
-            return $this->canUserManageExpenseOwner($user, $expense);
-        }
-
-        // Business User and Card User can only delete their own expenses
-        if ($user->isBusinessUser() || $user->isCardUser()) {
-            return $expense->user_id === $user->id;
-        }
-
-        return false;
+        // Check if user has delegated permission to manage this expense owner
+        return $this->canManageExpenseUser($user, $pocketExpense->user_id, $pocketExpense->client_id);
     }
 
     /**
      * Determine whether the user can approve the pocket expense.
      *
      * @param User $user
-     * @param PocketExpense $expense
+     * @param PocketExpense $pocketExpense
      * @return bool
      */
-    public function approve(User $user, PocketExpense $expense): bool
+    public function approve(User $user, PocketExpense $pocketExpense): bool
     {
-        // Only authenticated users can approve expenses
-        if (!$user) {
+        // Ensure client context matches
+        if ($user->client_id !== $pocketExpense->client_id) {
             return false;
         }
 
-        // Check if user has OOP expenses feature permission
-        if (!$this->hasOopExpensePermission($user)) {
+        // Cannot approve own expenses
+        if ($user->id === $pocketExpense->user_id) {
             return false;
         }
 
-        // Must belong to the same client
-        if ($expense->client_id !== $user->client_id) {
-            return false;
-        }
-
-        // Can only approve submitted expenses
-        if ($expense->status !== 'submitted') {
-            return false;
-        }
-
-        // Users cannot approve their own expenses
-        if ($expense->user_id === $user->id) {
+        // Only submitted expenses can be approved
+        if ($pocketExpense->status !== 'submitted') {
             return false;
         }
 
         // Business User and Card User cannot approve expenses even with management rights
-        if ($user->isBusinessUser() || $user->isCardUser()) {
+        if (in_array($this->getUserRole($user), [self::ROLE_BUSINESS_USER, self::ROLE_CARD_USER])) {
             return false;
         }
 
-        // Primary Admin has full access to approve all expenses within their scope
-        if ($user->isPrimaryAdmin()) {
+        // Primary Administrator can approve any expense
+        if ($this->isPrimaryAdministrator($user)) {
             return true;
         }
 
-        // Admin can approve expenses if they have managing access to the expense owner
-        if ($user->isAdmin()) {
-            return $this->canUserManageExpenseOwner($user, $expense);
-        }
-
-        return false;
-    }
-
-    /**
-     * Determine whether the user can reject the pocket expense.
-     *
-     * @param User $user
-     * @param PocketExpense $expense
-     * @return bool
-     */
-    public function reject(User $user, PocketExpense $expense): bool
-    {
-        // Same logic as approve -
+        // Administrator can approve expenses they manage
+        if ($this->isAdministrator($user)) {
+            return $this->canManageExpenseUser($user, $pocket

@@ -7,6 +7,8 @@
 """
 
 from metagpt.roles.architect import Architect
+
+from industry.actions.laravel_design_api import LaravelWriteDesign
 from industry.utils.context_reader import ContextReader
 
 
@@ -43,6 +45,9 @@ class LaravelArchitect(Architect):
         - Watches: WritePRD messages from ProductManager
         """
         super().__init__(**kwargs)
+
+        # Use Laravel-specific WriteDesign that includes SYSTEM_CONSTRAINTS
+        self.set_actions([LaravelWriteDesign])
 
         # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
         self._update_constraints_from_context(ContextReader())

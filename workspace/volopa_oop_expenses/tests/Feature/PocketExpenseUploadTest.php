@@ -5,147 +5,189 @@
 
 namespace Tests\Feature;
 
+use Tests\TestCase;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\WithFaker;
-use Tests\TestCase;
+use Laravel\Passport\Passport;
 use App\Models\User;
 use App\Models\Client;
-use App\Models\Feature;
 use App\Models\PocketExpenseFileUpload;
-use App\Models\PocketExpenseUploadData;
+use App\Models\PocketExpenseUploadsData;
 use App\Models\PocketExpense;
 use App\Models\OptPocketExpenseType;
 use App\Models\PocketExpenseSourceClientConfig;
+use App\Models\TransactionCategory;
+use App\Models\TrackingCode;
+use App\Models\Project;
+use App\Models\Currency;
+use App\Models\Wallet;
+use App\Models\Feature;
 use App\Models\UserFeaturePermission;
 use App\Services\PocketExpenseCSVValidator;
 use App\Jobs\ProcessExpenseUpload;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Queue;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Http\UploadedFile;
 use Carbon\Carbon;
+use Mockery;
 
+/**
+ * PocketExpenseUploadTest
+ * 
+ * Feature tests for CSV upload functionality and batch expense processing.
+ * Tests file upload validation, CSV processing, background job execution,
+ * and multi-tenant data isolation for expense batch operations.
+ * 
+ * Test Coverage:
+ * - CSV file upload with validation and authorization
+ * - File format validation and structure checking
+ * - CSV content validation and error handling
+ * - Background job processing and status updates
+ * - Multi-tenant data isolation and security
+ * - Upload status tracking and progress monitoring
+ * - Error handling and validation scenarios
+ * - Business rule enforcement for batch processing
+ * - User notification and completion handling
+ */
 class PocketExpenseUploadTest extends TestCase
 {
     use RefreshDatabase, WithFaker;
 
     /**
-     * OOP Expenses feature ID for permission checks.
-     *
-     * @var int
-     */
-    private const OOP_EXPENSES_FEATURE_ID = 1;
-
-    /**
-     * API base URL for pocket expense uploads.
+     * Primary Administrator role identifier.
      *
      * @var string
      */
-    private const API_BASE_URL = '/api/uploads/pocket-expense/csv';
+    private const ROLE_PRIMARY_ADMIN = 'Primary Administrator';
 
     /**
-     * Maximum file size in KB (10MB).
+     * Administrator role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_ADMIN = 'Administrator';
+
+    /**
+     * Business User role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_BUSINESS_USER = 'Business User';
+
+    /**
+     * Card User role identifier.
+     *
+     * @var string
+     */
+    private const ROLE_CARD_USER = 'Card User';
+
+    /**
+     * Maximum file size in KB for CSV uploads.
      *
      * @var int
      */
-    private const MAX_FILE_SIZE_KB = 10240;
+    private const MAX_FILE_SIZE_KB = 10240; // 10MB
 
     /**
-     * Maximum CSV rows allowed per file.
+     * Maximum number of rows allowed per CSV file.
      *
      * @var int
      */
-    private const MAX_CSV_ROWS = 200;
+    private const MAX_ROWS_PER_FILE = 200;
 
     /**
-     * Valid CSV headers for testing.
+     * Required CSV header columns in exact order.
      *
-     * @var array<string>
+     * @var array<int, string>
      */
-    private const VALID_CSV_HEADERS = [
+    private const REQUIRED_HEADERS = [
         'Date',
         'Merchant Name',
         'Merchant Description',
         'Expense Type',
-        'Currency Code',
+        'Currency',
         'Amount',
+        'VAT Amount',
         'Merchant Address',
-        'VAT %',
+        'Notes',
         'Source',
         'Source Note',
-        'Notes'
+        'Category',
+        'Tracking Code',
+        'Project',
     ];
 
     /**
-     * Sample valid CSV data for testing.
+     * Test client instances.
      *
-     * @var array<array<string>>
+     * @var array<string, Client>
      */
-    private const SAMPLE_CSV_DATA = [
-        [
-            '01-01-2024',
-            'Test Restaurant',
-            'Business lunch meeting',
-            'Business Expense',
-            'USD',
-            '45.50',
-            '123 Main St, New York, NY',
-            '8.5',
-            'Corporate Card',
-            '',
-            'Client meeting expenses'
-        ],
-        [
-            '02-01-2024',
-            'Office Store',
-            'Monthly supplies',
-            'Business Expense',
-            'USD',
-            '125.75',
-            '456 Business Ave, New York, NY',
-            '10',
-            'Cash',
-            '',
-            'Office materials'
-        ]
-    ];
+    private array $clients = [];
 
     /**
-     * Test users for different roles.
+     * Test user instances.
      *
      * @var array<string, User>
      */
-    private array $testUsers = [];
+    private array $users = [];
 
     /**
-     * Test client.
+     * Test expense type instances.
      *
-     * @var Client|null
+     * @var array<string, OptPocketExpenseType>
      */
-    private ?Client $testClient = null;
+    private array $expenseTypes = [];
 
     /**
-     * Test feature.
+     * Test currency instances.
      *
-     * @var Feature|null
+     * @var array<string, Currency>
      */
-    private ?Feature $testFeature = null;
+    private array $currencies = [];
 
     /**
-     * Test expense types.
+     * Test expense source instances.
      *
-     * @var array<OptPocketExpenseType>
+     * @var array<string, PocketExpenseSourceClientConfig>
      */
-    private array $testExpenseTypes = [];
+    private array $expenseSources = [];
 
     /**
-     * Test expense sources.
+     * Test category instances.
      *
-     * @var array<PocketExpenseSourceClientConfig>
+     * @var array<string, TransactionCategory>
      */
-    private array $testExpenseSources = [];
+    private array $categories = [];
+
+    /**
+     * Test tracking code instances.
+     *
+     * @var array<string, TrackingCode>
+     */
+    private array $trackingCodes = [];
+
+    /**
+     * Test project instances.
+     *
+     * @var array<string, Project>
+     */
+    private array $projects = [];
+
+    /**
+     * Test feature instances.
+     *
+     * @var array<string, Feature>
+     */
+    private array $features = [];
+
+    /**
+     * Mock CSV validator service.
+     *
+     * @var \Mockery\MockInterface
+     */
+    private $mockCsvValidator;
 
     /**
      * Set up the test environment.
@@ -155,122 +197,83 @@ class PocketExpenseUploadTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        
-        // Set up storage for testing
-        Storage::fake('local');
-        
-        // Enable queue testing
+
+        // Disable actual queue processing for tests
         Queue::fake();
 
-        // Create test client
-        $this->testClient = Client::factory()->create([
-            'name' => 'Test Client Corp',
-            'code' => 'TESTCLIENT',
-            'active' => true,
+        // Create test storage disk
+        Storage::fake('local');
+
+        // Create test clients
+        $this->clients['client_a'] = Client::factory()->create([
+            'name' => 'Test Client A',
+            'code' => 'CLIENT_A',
+            'is_active' => true,
         ]);
 
-        // Create test feature
-        $this->testFeature = Feature::factory()->create([
-            'id' => self::OOP_EXPENSES_FEATURE_ID,
-            'name' => 'OOP Expenses',
-            'code' => 'oop_expenses',
-            'description' => 'Out-of-Pocket Expenses Management',
-            'active' => true,
+        $this->clients['client_b'] = Client::factory()->create([
+            'name' => 'Test Client B',
+            'code' => 'CLIENT_B',
+            'is_active' => true,
         ]);
 
-        // Create test users with different roles
-        $this->createTestUsers();
+        // Create test currencies
+        $this->currencies['usd'] = Currency::factory()->create([
+            'code' => 'USD',
+            'name' => 'US Dollar',
+            'symbol' => '$',
+            'is_active' => true,
+        ]);
+
+        $this->currencies['eur'] = Currency::factory()->create([
+            'code' => 'EUR',
+            'name' => 'Euro',
+            'symbol' => '€',
+            'is_active' => true,
+        ]);
+
+        // Create wallets for clients with base currencies
+        Wallet::factory()->create([
+            'client_id' => $this->clients['client_a']->id,
+            'currency_id' => $this->currencies['usd']->id,
+            'is_primary' => true,
+            'balance' => 10000.00,
+        ]);
+
+        Wallet::factory()->create([
+            'client_id' => $this->clients['client_b']->id,
+            'currency_id' => $this->currencies['eur']->id,
+            'is_primary' => true,
+            'balance' => 8000.00,
+        ]);
 
         // Create test expense types
-        $this->createTestExpenseTypes();
-
-        // Create test expense sources
-        $this->createTestExpenseSources();
-
-        // Grant OOP expenses permissions to test users
-        $this->grantOopExpensesPermissions();
-    }
-
-    /**
-     * Create test users with different roles.
-     *
-     * @return void
-     */
-    private function createTestUsers(): void
-    {
-        $this->testUsers['primary_admin'] = User::factory()->create([
-            'name' => 'Primary Admin User',
-            'email' => 'primary.admin@test.com',
-            'role' => 'primary_admin',
-            'client_id' => $this->testClient->id,
-            'active' => true,
-        ]);
-
-        $this->testUsers['admin'] = User::factory()->create([
-            'name' => 'Admin User',
-            'email' => 'admin@test.com',
-            'role' => 'admin',
-            'client_id' => $this->testClient->id,
-            'active' => true,
-        ]);
-
-        $this->testUsers['business_user'] = User::factory()->create([
-            'name' => 'Business User',
-            'email' => 'business.user@test.com',
-            'role' => 'business_user',
-            'client_id' => $this->testClient->id,
-            'active' => true,
-        ]);
-
-        $this->testUsers['card_user'] = User::factory()->create([
-            'name' => 'Card User',
-            'email' => 'card.user@test.com',
-            'role' => 'card_user',
-            'client_id' => $this->testClient->id,
-            'active' => true,
-        ]);
-
-        $this->testUsers['target_user'] = User::factory()->create([
-            'name' => 'Target User',
-            'email' => 'target.user@test.com',
-            'role' => 'business_user',
-            'client_id' => $this->testClient->id,
-            'active' => true,
-        ]);
-    }
-
-    /**
-     * Create test expense types.
-     *
-     * @return void
-     */
-    private function createTestExpenseTypes(): void
-    {
-        $this->testExpenseTypes['business_expense'] = OptPocketExpenseType::create([
-            'option' => 'Business Expense',
+        $this->expenseTypes['general'] = OptPocketExpenseType::create([
+            'option' => 'General Expense',
             'amount_sign' => 'negative',
         ]);
 
-        $this->testExpenseTypes['travel_expense'] = OptPocketExpenseType::create([
+        $this->expenseTypes['travel'] = OptPocketExpenseType::create([
             'option' => 'Travel Expense',
             'amount_sign' => 'negative',
         ]);
 
-        $this->testExpenseTypes['refund'] = OptPocketExpenseType::create([
+        $this->expenseTypes['refund'] = OptPocketExpenseType::create([
             'option' => 'Refund',
             'amount_sign' => 'positive',
         ]);
-    }
 
-    /**
-     * Create test expense sources.
-     *
-     * @return void
-     */
-    private function createTestExpenseSources(): void
-    {
-        // Global "Other" source
-        $this->testExpenseSources['other'] = PocketExpenseSourceClientConfig::create([
-            'uuid' => Str::uuid()->toString(),
-            'client_id' => null,
-            'name' => 'Other',
+        // Create test features
+        $this->features['pocket_expense'] = Feature::factory()->create([
+            'name' => 'Pocket Expense Management',
+            'code' => 'pocket_expense',
+            'description' => 'Manage pocket expenses',
+            'is_active' => true,
+        ]);
+
+        // Create test users for Client A
+        $this->users['primary_admin_a'] = User::factory()->create([
+            'name' => 'Primary Admin A',
+            'email' => 'primary.admin.a@test.com',
+            'role' => self::ROLE_PRIMARY_ADMIN,
+            'client_id
