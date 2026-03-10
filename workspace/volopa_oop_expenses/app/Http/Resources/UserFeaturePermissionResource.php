@@ -1,6 +1,3 @@
-## Code: app/Http/Resources/UserFeaturePermissionResource.php
-
-```php
 <?php
 
 namespace App\Http\Resources;
@@ -12,16 +9,19 @@ use Carbon\Carbon;
 /**
  * UserFeaturePermissionResource
  * 
- * API Resource for transforming UserFeaturePermission model responses.
- * Shapes output data structure and hides internal model fields for API responses
- * following Laravel best practices with proper data transformation.
+ * API resource for transforming UserFeaturePermission models into JSON responses.
+ * This resource shapes the output of user feature permission data for API consumers,
+ * hiding internal fields and providing computed attributes. Follows the mental model:
+ * Controller -> Service -> Model -> API Resource -> JSON with correct status codes.
  * 
- * Response Structure:
- * - Exposes essential permission data for frontend consumption
- * - Includes related user, client, feature, grantor, and manager information
- * - Formats timestamps consistently
- * - Hides sensitive internal fields and database specifics
- * - Provides clear permission status and metadata
+ * Key responsibilities:
+ * - Transform UserFeaturePermission model data into API-friendly format
+ * - Hide sensitive internal fields and database implementation details
+ * - Include computed attributes and relationship data
+ * - Provide consistent JSON structure across all permission endpoints
+ * - Support conditional field inclusion based on request context
+ * - Format dates and timestamps according to API standards
+ * - Include permission status and metadata information
  */
 class UserFeaturePermissionResource extends JsonResource
 {
@@ -40,77 +40,203 @@ class UserFeaturePermissionResource extends JsonResource
             'feature_id' => $this->feature_id,
             'grantor_id' => $this->grantor_id,
             'manager_user_id' => $this->manager_user_id,
-            'is_enabled' => (bool) $this->is_enabled,
-            'status' => $this->is_enabled ? 'active' : 'inactive',
-            'created_at' => $this->created_at ? $this->created_at->toISOString() : null,
-            'updated_at' => $this->updated_at ? $this->updated_at->toISOString() : null,
+            'is_enabled' => $this->is_enabled,
             
-            // Related user information
-            'user' => [
-                'id' => $this->user?->id,
-                'name' => $this->user?->name ?? 'Unknown User',
-                'email' => $this->user?->email,
-                'role' => $this->user?->role ?? 'Unknown Role',
+            // Computed status fields
+            'is_active' => $this->isActive(),
+            'is_inactive' => $this->isInactive(),
+            'description' => $this->getDescription(),
+            
+            // Permission capabilities from details_json
+            'capabilities' => $this->formatCapabilities(),
+            
+            // Relationship data
+            'user' => $this->whenLoaded('user', function () {
+                return [
+                    'id' => $this->user->id,
+                    'name' => $this->user->name,
+                    'email' => $this->user->email,
+                    'role' => $this->user->role,
+                ];
+            }),
+            
+            'client' => $this->whenLoaded('client', function () {
+                return [
+                    'id' => $this->client->id,
+                    'name' => $this->client->name,
+                    'code' => $this->client->code ?? null,
+                ];
+            }),
+            
+            'feature' => $this->whenLoaded('feature', function () {
+                return [
+                    'id' => $this->feature->id,
+                    'name' => $this->feature->name,
+                    'code' => $this->feature->code ?? null,
+                    'description' => $this->feature->description ?? null,
+                ];
+            }),
+            
+            'grantor' => $this->whenLoaded('grantor', function () {
+                return [
+                    'id' => $this->grantor->id,
+                    'name' => $this->grantor->name,
+                    'email' => $this->grantor->email,
+                    'role' => $this->grantor->role,
+                ];
+            }),
+            
+            'manager' => $this->when($this->manager_user_id, function () {
+                return $this->whenLoaded('manager', function () {
+                    return [
+                        'id' => $this->manager->id,
+                        'name' => $this->manager->name,
+                        'email' => $this->manager->email,
+                        'role' => $this->manager->role,
+                    ];
+                });
+            }),
+            
+            // Permission management context
+            'permission_context' => [
+                'was_granted_by_current_user' => $this->wasGrantedBy(auth()->user()->id ?? 0),
+                'is_managed_by_current_user' => $this->isManagedBy(auth()->user()->id ?? 0),
+                'belongs_to_current_user' => $this->belongsToUser(auth()->user()->id ?? 0),
+                'belongs_to_current_client' => $this->belongsToClient(auth()->user()->client_id ?? 0),
+                'is_for_oop_feature' => $this->isForFeature(16), // OOP_FEATURE_ID
             ],
             
-            // Related client information
-            'client' => [
-                'id' => $this->client?->id,
-                'name' => $this->client?->name ?? 'Unknown Client',
-                'code' => $this->client?->code,
+            // Audit information
+            'audit' => [
+                'granted_at' => $this->created_at?->toISOString(),
+                'last_updated_at' => $this->updated_at?->toISOString(),
+                'granted_by' => $this->whenLoaded('grantor', $this->grantor->name ?? 'Unknown'),
+                'managed_by' => $this->when($this->manager_user_id, function () {
+                    return $this->whenLoaded('manager', $this->manager->name ?? 'Unknown');
+                }),
             ],
             
-            // Related feature information
-            'feature' => [
-                'id' => $this->feature?->id,
-                'name' => $this->feature?->name ?? 'Unknown Feature',
-                'code' => $this->feature?->code,
-                'description' => $this->feature?->description,
-            ],
+            // Metadata and additional details
+            'metadata' => $this->formatMetadata(),
             
-            // Related grantor information
-            'grantor' => [
-                'id' => $this->grantor?->id,
-                'name' => $this->grantor?->name ?? 'Unknown Grantor',
-                'email' => $this->grantor?->email,
-                'role' => $this->grantor?->role ?? 'Unknown Role',
-            ],
-            
-            // Related manager information
-            'manager' => [
-                'id' => $this->manager?->id,
-                'name' => $this->manager?->name ?? 'Unknown Manager',
-                'email' => $this->manager?->email,
-                'role' => $this->manager?->role ?? 'Unknown Role',
-            ],
-            
-            // Permission metadata
-            'permission_info' => [
-                'granted_at' => $this->created_at ? $this->created_at->toISOString() : null,
-                'granted_by' => $this->grantor?->name ?? 'Unknown Grantor',
-                'managed_by' => $this->manager?->name ?? 'Unknown Manager',
-                'is_active' => (bool) $this->is_enabled,
-                'can_be_revoked' => $this->canBeRevoked(),
-            ],
-            
-            // Timestamps in human-readable format
-            'dates' => [
-                'created' => [
-                    'iso' => $this->created_at ? $this->created_at->toISOString() : null,
-                    'human' => $this->created_at ? $this->created_at->diffForHumans() : null,
-                    'formatted' => $this->created_at ? $this->created_at->format('Y-m-d H:i:s') : null,
-                ],
-                'updated' => [
-                    'iso' => $this->updated_at ? $this->updated_at->toISOString() : null,
-                    'human' => $this->updated_at ? $this->updated_at->diffForHumans() : null,
-                    'formatted' => $this->updated_at ? $this->updated_at->format('Y-m-d H:i:s') : null,
-                ],
-            ],
+            // Timestamps
+            'created_at' => $this->created_at?->toISOString(),
+            'updated_at' => $this->updated_at?->toISOString(),
         ];
     }
 
     /**
-     * Get additional data that should be returned with the resource array.
+     * Format permission capabilities from details_json.
+     *
+     * @return array<string, mixed>
+     */
+    private function formatCapabilities(): array
+    {
+        $detailsJson = $this->details_json ?? [];
+        
+        return [
+            'can_approve' => (bool) ($detailsJson['can_approve'] ?? false),
+            'can_manage' => (bool) ($detailsJson['can_manage'] ?? false),
+            'can_delegate' => (bool) ($detailsJson['can_delegate'] ?? false),
+            'has_approval_rights' => (bool) ($detailsJson['can_approve'] ?? false),
+            'has_management_rights' => (bool) ($detailsJson['can_manage'] ?? false),
+            'has_delegation_rights' => (bool) ($detailsJson['can_delegate'] ?? false),
+            'permission_level' => $this->determinePermissionLevel($detailsJson),
+        ];
+    }
+
+    /**
+     * Format metadata and additional information.
+     *
+     * @return array<string, mixed>
+     */
+    private function formatMetadata(): array
+    {
+        $detailsJson = $this->details_json ?? [];
+        
+        $metadata = [
+            'expiry_date' => null,
+            'notes' => null,
+            'granted_reason' => null,
+            'updated_reason' => null,
+            'has_expiry' => false,
+            'is_expired' => false,
+            'days_until_expiry' => null,
+        ];
+
+        // Process expiry date
+        if (isset($detailsJson['expiry_date']) && !empty($detailsJson['expiry_date'])) {
+            try {
+                $expiryDate = Carbon::parse($detailsJson['expiry_date']);
+                $metadata['expiry_date'] = $expiryDate->toISOString();
+                $metadata['has_expiry'] = true;
+                $metadata['is_expired'] = $expiryDate->isPast();
+                $metadata['days_until_expiry'] = $expiryDate->isFuture() ? 
+                    now()->diffInDays($expiryDate) : 0;
+            } catch (\Exception $e) {
+                // Invalid date format, leave as null
+            }
+        }
+
+        // Process text fields
+        $metadata['notes'] = $this->sanitizeString($detailsJson['notes'] ?? null);
+        $metadata['granted_reason'] = $this->sanitizeString($detailsJson['granted_reason'] ?? null);
+        $metadata['updated_reason'] = $this->sanitizeString($detailsJson['updated_reason'] ?? null);
+
+        // Add computed metadata
+        $metadata['permission_age_days'] = $this->created_at ? 
+            $this->created_at->diffInDays(now()) : 0;
+        $metadata['last_update_days_ago'] = $this->updated_at ? 
+            $this->updated_at->diffInDays(now()) : 0;
+
+        return $metadata;
+    }
+
+    /**
+     * Determine permission level based on capabilities.
+     *
+     * @param array<string, mixed> $detailsJson
+     * @return string
+     */
+    private function determinePermissionLevel(array $detailsJson): string
+    {
+        $canApprove = (bool) ($detailsJson['can_approve'] ?? false);
+        $canManage = (bool) ($detailsJson['can_manage'] ?? false);
+        $canDelegate = (bool) ($detailsJson['can_delegate'] ?? false);
+
+        if ($canApprove && $canManage && $canDelegate) {
+            return 'full';
+        }
+
+        if ($canApprove || $canManage) {
+            return 'elevated';
+        }
+
+        if ($canDelegate) {
+            return 'delegation';
+        }
+
+        return 'basic';
+    }
+
+    /**
+     * Sanitize string value for output.
+     *
+     * @param string|null $value
+     * @return string|null
+     */
+    private function sanitizeString(?string $value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return htmlspecialchars(trim($value), ENT_QUOTES, 'UTF-8');
+    }
+
+    /**
+     * Get additional attributes to include in response.
+     * This method can be overridden to include additional computed attributes.
      *
      * @param Request $request
      * @return array<string, mixed>
@@ -120,15 +246,16 @@ class UserFeaturePermissionResource extends JsonResource
         return [
             'meta' => [
                 'resource_type' => 'user_feature_permission',
-                'api_version' => 'v1',
+                'api_version' => '1.0',
                 'generated_at' => now()->toISOString(),
+                'client_timezone' => $request->header('X-Client-Timezone', 'UTC'),
             ],
         ];
     }
 
     /**
-     * Customize the response for a request.
-     *
+     * Customize the response for this resource.
+     * 
      * @param Request $request
      * @param \Illuminate\Http\JsonResponse $response
      * @return void
@@ -136,86 +263,16 @@ class UserFeaturePermissionResource extends JsonResource
     public function withResponse(Request $request, $response): void
     {
         $response->header('X-Resource-Type', 'UserFeaturePermission');
-        $response->header('X-API-Version', 'v1');
+        $response->header('X-API-Version', '1.0');
     }
 
     /**
-     * Determine if the permission can be revoked by the current user.
+     * Get the JSON serialization options that should be applied to the resource response.
      *
-     * @return bool
+     * @return int
      */
-    private function canBeRevoked(): bool
+    public function jsonOptions(): int
     {
-        $currentUser = auth()->user();
-        
-        if (!$currentUser) {
-            return false;
-        }
-
-        // Primary Administrator can revoke any permission
-        if ($currentUser->role === 'Primary Administrator') {
-            return true;
-        }
-
-        // Administrator can revoke permissions they manage
-        if ($currentUser->role === 'Administrator' && $this->manager_user_id === $currentUser->id) {
-            return true;
-        }
-
-        // Business User and Card User cannot revoke permissions
-        return false;
+        return JSON_PRESERVE_ZERO_FRACTION | JSON_UNESCAPED_UNICODE;
     }
-
-    /**
-     * Create a collection resource.
-     *
-     * @param mixed $resource
-     * @return \Illuminate\Http\Resources\Json\AnonymousResourceCollection
-     */
-    public static function collection($resource)
-    {
-        return parent::collection($resource)->additional([
-            'meta' => [
-                'resource_type' => 'user_feature_permission_collection',
-                'api_version' => 'v1',
-                'generated_at' => now()->toISOString(),
-                'total_count' => $resource instanceof \Illuminate\Pagination\LengthAwarePaginator 
-                    ? $resource->total() 
-                    : $resource->count(),
-            ],
-        ]);
-    }
-
-    /**
-     * Resolve the resource to an array when used conditionally.
-     *
-     * @param Request|null $request
-     * @return array<string, mixed>
-     */
-    public function resolve($request = null): array
-    {
-        // Ensure the resource is only resolved when the model exists
-        if (!$this->resource) {
-            return [];
-        }
-
-        return parent::resolve($request);
-    }
-
-    /**
-     * Determine if the resource should be returned.
-     *
-     * @param Request $request
-     * @return bool
-     */
-    public function shouldBeReturned(Request $request): bool
-    {
-        // Only return the resource if the permission exists and user has access
-        if (!$this->resource || !$this->id) {
-            return false;
-        }
-
-        $currentUser = auth()->user();
-        if (!$currentUser || !$currentUser->client_id) {
-            return false;
-        }
+}

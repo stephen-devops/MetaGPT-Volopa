@@ -1,6 +1,3 @@
-## Code: app/Models/UserFeaturePermission.php
-
-```php
 <?php
 
 namespace App\Models;
@@ -8,28 +5,30 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Builder;
+use Carbon\Carbon;
 
 /**
  * UserFeaturePermission Model
  * 
- * Represents delegation-based RBAC system for user feature permissions.
- * Manages permission grants between users within client contexts.
+ * Manages user-specific feature access permissions within the multi-tenant environment.
+ * This model enables delegation of OOP expense management rights from Primary Administrators 
+ * to other users within the same client.
  * 
  * @property int $id
- * @property int $user_id User receiving the permission
- * @property int $client_id Client context for multi-tenancy
- * @property int $feature_id Feature being granted access to
- * @property int $grantor_id User who granted this permission
- * @property int $manager_user_id User who manages this permission
- * @property bool $is_enabled Whether permission is active
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
- * 
- * @property-read \App\Models\User $user
- * @property-read \App\Models\Client $client
- * @property-read \App\Models\Feature $feature
- * @property-read \App\Models\User $grantor
- * @property-read \App\Models\User $manager
+ * @property int $user_id The user receiving the permission
+ * @property int $client_id The client context for this permission
+ * @property int $feature_id The feature being granted access to (e.g., 16 for OOP expenses)
+ * @property int $grantor_id The user who granted this permission
+ * @property int|null $manager_user_id Optional designated manager for this permission
+ * @property bool $is_enabled Whether this permission is currently active
+ * @property Carbon $created_at
+ * @property Carbon $updated_at
+ * @property-read User $user
+ * @property-read Client $client
+ * @property-read Feature $feature
+ * @property-read User $grantor
+ * @property-read User|null $manager
  */
 class UserFeaturePermission extends Model
 {
@@ -40,7 +39,7 @@ class UserFeaturePermission extends Model
      *
      * @var string
      */
-    protected $table = 'user_feature_permissions';
+    protected $table = 'user_feature_permission';
 
     /**
      * The attributes that are mass assignable.
@@ -62,7 +61,6 @@ class UserFeaturePermission extends Model
      * @var array<string, string>
      */
     protected $casts = [
-        'id' => 'integer',
         'user_id' => 'integer',
         'client_id' => 'integer',
         'feature_id' => 'integer',
@@ -74,21 +72,7 @@ class UserFeaturePermission extends Model
     ];
 
     /**
-     * The attributes that should be hidden for serialization.
-     *
-     * @var array<int, string>
-     */
-    protected $hidden = [];
-
-    /**
-     * The accessors to append to the model's array form.
-     *
-     * @var array<int, string>
-     */
-    protected $appends = [];
-
-    /**
-     * Default attribute values.
+     * The attributes that should have default values.
      *
      * @var array<string, mixed>
      */
@@ -97,7 +81,14 @@ class UserFeaturePermission extends Model
     ];
 
     /**
-     * Boot the model.
+     * The attributes that should be hidden for serialization.
+     *
+     * @var array<int, string>
+     */
+    protected $hidden = [];
+
+    /**
+     * Bootstrap the model and its traits.
      *
      * @return void
      */
@@ -105,8 +96,8 @@ class UserFeaturePermission extends Model
     {
         parent::boot();
 
-        // Ensure all queries are scoped by authenticated user's client context
-        static::addGlobalScope('client_scoped', function ($builder) {
+        // Automatically scope all queries by client_id for multi-tenancy
+        static::addGlobalScope('client_scope', function (Builder $builder) {
             if (auth()->check() && auth()->user()->client_id) {
                 $builder->where('client_id', auth()->user()->client_id);
             }
@@ -116,7 +107,7 @@ class UserFeaturePermission extends Model
     /**
      * Get the user who receives this permission.
      *
-     * @return BelongsTo<\App\Models\User, UserFeaturePermission>
+     * @return BelongsTo<User, UserFeaturePermission>
      */
     public function user(): BelongsTo
     {
@@ -126,7 +117,7 @@ class UserFeaturePermission extends Model
     /**
      * Get the client context for this permission.
      *
-     * @return BelongsTo<\App\Models\Client, UserFeaturePermission>
+     * @return BelongsTo<Client, UserFeaturePermission>
      */
     public function client(): BelongsTo
     {
@@ -134,9 +125,9 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the feature that this permission grants access to.
+     * Get the feature being granted access to.
      *
-     * @return BelongsTo<\App\Models\Feature, UserFeaturePermission>
+     * @return BelongsTo<Feature, UserFeaturePermission>
      */
     public function feature(): BelongsTo
     {
@@ -146,7 +137,7 @@ class UserFeaturePermission extends Model
     /**
      * Get the user who granted this permission.
      *
-     * @return BelongsTo<\App\Models\User, UserFeaturePermission>
+     * @return BelongsTo<User, UserFeaturePermission>
      */
     public function grantor(): BelongsTo
     {
@@ -154,9 +145,9 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the user who manages this permission.
+     * Get the optional designated manager for this permission.
      *
-     * @return BelongsTo<\App\Models\User, UserFeaturePermission>
+     * @return BelongsTo<User, UserFeaturePermission>
      */
     public function manager(): BelongsTo
     {
@@ -166,10 +157,10 @@ class UserFeaturePermission extends Model
     /**
      * Scope a query to only include enabled permissions.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder<UserFeaturePermission> $query
+     * @return Builder<UserFeaturePermission>
      */
-    public function scopeEnabled($query)
+    public function scopeEnabled(Builder $query): Builder
     {
         return $query->where('is_enabled', true);
     }
@@ -177,76 +168,78 @@ class UserFeaturePermission extends Model
     /**
      * Scope a query to only include disabled permissions.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder<UserFeaturePermission> $query
+     * @return Builder<UserFeaturePermission>
      */
-    public function scopeDisabled($query)
+    public function scopeDisabled(Builder $query): Builder
     {
         return $query->where('is_enabled', false);
     }
 
     /**
-     * Scope a query to filter by specific user.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $userId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeForUser($query, int $userId)
-    {
-        return $query->where('user_id', $userId);
-    }
-
-    /**
      * Scope a query to filter by specific feature.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param Builder<UserFeaturePermission> $query
      * @param int $featureId
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @return Builder<UserFeaturePermission>
      */
-    public function scopeForFeature($query, int $featureId)
+    public function scopeForFeature(Builder $query, int $featureId): Builder
     {
         return $query->where('feature_id', $featureId);
     }
 
     /**
-     * Scope a query to filter by specific manager.
+     * Scope a query to filter by specific user.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $managerId
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder<UserFeaturePermission> $query
+     * @param int $userId
+     * @return Builder<UserFeaturePermission>
      */
-    public function scopeForManager($query, int $managerId)
+    public function scopeForUser(Builder $query, int $userId): Builder
     {
-        return $query->where('manager_user_id', $managerId);
+        return $query->where('user_id', $userId);
     }
 
     /**
      * Scope a query to filter by specific grantor.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param Builder<UserFeaturePermission> $query
      * @param int $grantorId
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @return Builder<UserFeaturePermission>
      */
-    public function scopeForGrantor($query, int $grantorId)
+    public function scopeGrantedBy(Builder $query, int $grantorId): Builder
     {
         return $query->where('grantor_id', $grantorId);
     }
 
     /**
-     * Scope a query to filter by specific client.
+     * Scope a query to filter by specific manager.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder<UserFeaturePermission> $query
+     * @param int $managerId
+     * @return Builder<UserFeaturePermission>
      */
-    public function scopeForClient($query, int $clientId)
+    public function scopeManagedBy(Builder $query, int $managerId): Builder
     {
-        return $query->where('client_id', $clientId);
+        return $query->where('manager_user_id', $managerId);
     }
 
     /**
-     * Check if the permission is currently active.
+     * Scope a query to filter by client and feature combination.
+     *
+     * @param Builder<UserFeaturePermission> $query
+     * @param int $clientId
+     * @param int $featureId
+     * @return Builder<UserFeaturePermission>
+     */
+    public function scopeForClientFeature(Builder $query, int $clientId, int $featureId): Builder
+    {
+        return $query->where('client_id', $clientId)
+                    ->where('feature_id', $featureId);
+    }
+
+    /**
+     * Check if this permission is currently active.
      *
      * @return bool
      */
@@ -255,4 +248,105 @@ class UserFeaturePermission extends Model
         return $this->is_enabled === true;
     }
 
-    
+    /**
+     * Check if this permission is currently inactive.
+     *
+     * @return bool
+     */
+    public function isInactive(): bool
+    {
+        return $this->is_enabled === false;
+    }
+
+    /**
+     * Enable this permission.
+     *
+     * @return bool
+     */
+    public function enable(): bool
+    {
+        $this->is_enabled = true;
+        return $this->save();
+    }
+
+    /**
+     * Disable this permission.
+     *
+     * @return bool
+     */
+    public function disable(): bool
+    {
+        $this->is_enabled = false;
+        return $this->save();
+    }
+
+    /**
+     * Get a human-readable description of this permission.
+     *
+     * @return string
+     */
+    public function getDescription(): string
+    {
+        $featureName = $this->feature->name ?? 'Unknown Feature';
+        $userName = $this->user->name ?? 'Unknown User';
+        $clientName = $this->client->name ?? 'Unknown Client';
+        $status = $this->is_enabled ? 'Enabled' : 'Disabled';
+
+        return "{$userName} has {$status} access to {$featureName} for {$clientName}";
+    }
+
+    /**
+     * Check if the permission was granted by a specific user.
+     *
+     * @param int $userId
+     * @return bool
+     */
+    public function wasGrantedBy(int $userId): bool
+    {
+        return $this->grantor_id === $userId;
+    }
+
+    /**
+     * Check if the permission is managed by a specific user.
+     *
+     * @param int $userId
+     * @return bool
+     */
+    public function isManagedBy(int $userId): bool
+    {
+        return $this->manager_user_id === $userId;
+    }
+
+    /**
+     * Check if the permission belongs to a specific user.
+     *
+     * @param int $userId
+     * @return bool
+     */
+    public function belongsToUser(int $userId): bool
+    {
+        return $this->user_id === $userId;
+    }
+
+    /**
+     * Check if the permission belongs to a specific client.
+     *
+     * @param int $clientId
+     * @return bool
+     */
+    public function belongsToClient(int $clientId): bool
+    {
+        return $this->client_id === $clientId;
+    }
+
+    /**
+     * Check if the permission is for a specific feature.
+     *
+     * @param int $featureId
+     * @return bool
+     */
+    public function isForFeature(int $featureId): bool
+    {
+        return $this->feature_id === $featureId;
+    }
+}

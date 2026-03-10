@@ -109,11 +109,9 @@ class LaravelEngineer(Engineer):
 
     async def _think(self) -> bool:
         """Override _think to ensure correct src_path and token budget before code generation."""
-        # Cap max_token ONLY when Engineer is about to act (not at __init__ time,
-        # which would poison the shared config before Architect/ProjectManager run).
-        # 2048 tokens ≈ 8KB of PHP — sufficient for single-file generation.
+
         if self.context and self.context.config and self.context.config.llm:
-            self.context.config.llm.max_token = 2048
+            self.context.config.llm.max_token = 12288
 
         result = await super()._think()
 

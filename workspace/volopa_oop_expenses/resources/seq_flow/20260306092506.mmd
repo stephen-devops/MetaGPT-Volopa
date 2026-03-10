@@ -1,0 +1,72 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant C as Client
+    participant MW as Oauth2UserClient
+    participant UFPC as UserFeaturePermissionController
+    participant UFPS as UserFeaturePermissionService
+    participant UFPM as UserFeaturePermission
+    participant PEC as PocketExpenseController
+    participant PES as PocketExpenseService
+    participant FXS as FXConversionService
+    participant PE as PocketExpense
+    participant PEUC as PocketExpenseUploadController
+    participant PECSVV as PocketExpenseCSVValidator
+    participant PEFU as PocketExpenseFileUpload
+    participant PEUD as PocketExpenseUploadsData
+    participant Q as Queue
+    participant PEU as ProcessExpenseUpload
+    
+    Note over C,PEU: User Permission Management Flow
+    C->>MW: POST /api/v1/user-feature-permissions
+    MW->>UFPC: allow (authenticated)
+    UFPC->>UFPS: grantPermission(data)
+    UFPS->>UFPM: create(permission_data)
+    UFPM-->>UFPS: permission_instance
+    UFPS-->>UFPC: UserFeaturePermission
+    UFPC-->>C: 201 UserFeaturePermissionResource
+    
+    Note over C,PEU: Single Expense CRUD with FX Conversion Flow
+    C->>MW: POST /api/v1/pocket-expenses
+    MW->>PEC: allow (authenticated)
+    PEC->>FXS: getWalletBaseCurrency(client_id)
+    FXS-->>PEC: base_currency_data
+    PEC->>FXS: getFXRate(from_currency, to_currency, date)
+    FXS-->>PEC: fx_rate
+    PEC->>FXS: convertAmount(amount, fx_rate, commission)
+    FXS-->>PEC: converted_amount
+    PEC->>PES: createExpense(validated_data)
+    PES->>PE: create(expense_data)
+    PE-->>PES: expense_instance
+    PES-->>PEC: PocketExpense
+    PEC-->>C: 201 PocketExpenseResource
+    
+    Note over C,PEU: CSV Batch Upload Flow
+    C->>MW: POST /api/uploads/pocket-expense/csv
+    MW->>PEUC: allow (authenticated)
+    PEUC->>PEUC: validateFile(file)
+    PEUC->>PEFU: create(upload_record)
+    PEFU-->>PEUC: upload_instance
+    PEUC->>PECSVV: validate(csv_path, user_id, client_id)
+    PECSVV->>PECSVV: preloadReferenceData()
+    PECSVV->>PECSVV: validateHeaders(headers)
+    loop Each CSV Row
+        PECSVV->>PECSVV: validateRow(row_data, line_number)
+    end
+    PECSVV-->>PEUC: validation_result
+    alt Validation Failed
+        PEUC->>PEFU: update(status=validation_failed, errors)
+        PEUC-->>C: 422 Error Response
+    else Validation Passed
+        PEUC->>PEUD: bulkInsert(validated_rows)
+        PEUD-->>PEUC: success
+        PEUC->>PEFU: update(status=processing)
+        PEUC->>Q: dispatch(ProcessExpenseUpload)
+        PEUC-->>C: 200 Success Response
+        Q->>PEU: handle()
+        loop Batch Processing
+            PEU->>PES: createExpense(expense_data)
+            PES->>PE: create(expense_data)
+        end
+        PEU->>PEFU: update(status=completed)
+    end

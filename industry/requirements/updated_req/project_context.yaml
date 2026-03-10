@@ -790,38 +790,40 @@ interfaces:
     - name: "client"
       origin: EXISTING
       description: "Platform client/company table"
-      key_columns:
+      columns:
         - { name: "id", type: "PK" }
         - { name: "name", type: "VARCHAR(180)" }
-        - { name: "deleted", type: "TINYINT(1) UNSIGNED"}
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
 
     - name: "user"
       origin: EXISTING
       description: "Platform user accounts table"
-      key_columns:
+      primary_key: "id"
+      columns:
         - { name: "id", type: "PK" }
-        - { name: "name" }
-        - { name: "username" }
-        - { name: "deleted" }
+        - { name: "name", type: "VARCHAR(180)" }
+        - { name: "username", type: "VARCHAR(180)" }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
 
     - name: "transaction_category"
       origin: EXISTING
       description: "Expense/transaction category lookup, scoped per client"
-      key_columns:
-        - { name: "id", type: "PK" }
-        - { name: "name" }
-        - { name: "code" }
-        - { name: "client_id", type: "FK" }
-        - { name: "description" }
-        - { name: "deleted" }
+      primary_key: "id"
+      columns:
+        - { name: "id", type: "INT(10) UNSIGNED", constraints: ["NOT NULL", "AUTO_INCREMENT"] }
+        - { name: "name", type: "VARCHAR(180)" }
+        - { name: "code", type: "VARCHAR(180)" }
+        - { name: "client_id", type: "INT(10) UNSIGNED" }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0  }
 
     - name: "tracking_codes"
       origin: EXISTING
       description: "Tracking code records, scoped per client and user"
-      key_columns:
-        - { name: "id", type: "PK" }
-        - { name: "unit" }
-        - { name: "client_id", type: "FK" }
+      primary_key: "id"
+      columns:
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] } }
+        - { name: "unit", type: "VARCHAR(180)" }
+        - { name: "client_id", type: "INT(10) UNSIGNED" }
         - { name: "user_id", type: "FK" }
         - { name: "tracking_code_type_id", type: "FK" }
         - { name: "deleted" }
@@ -829,7 +831,7 @@ interfaces:
     - name: "configurable_projects"
       origin: EXISTING
       description: "Client-configurable project records for expense tagging"
-      key_columns:
+      columns:
         - { name: "id", type: "PK" }
         - { name: "name" }
         - { name: "code" }
@@ -838,7 +840,7 @@ interfaces:
     - name: "file_store"
       origin: EXISTING
       description: "Platform file storage records (receipts, attachments)"
-      key_columns:
+      columns:
         - { name: "id", type: "PK" }
         - { name: "user_id", type: "FK" }
         - { name: "uuid" }
@@ -851,7 +853,7 @@ interfaces:
     - name: "expense_additional_field"
       origin: EXISTING
       description: "Client-configurable additional fields for expenses"
-      key_columns:
+      columns:
         - { name: "id", type: "PK" }
         - { name: "client_id", type: "FK" }
         - { name: "field_type" }
@@ -863,7 +865,7 @@ interfaces:
     - name: "opt_file_type"
       origin: EXISTING
       description: "Lookup table for file types (referenced by file_store.file_type_id)"
-      key_columns:
+      columns:
         - { name: "id", type: "PK" }
         - { name: "option" }
 
