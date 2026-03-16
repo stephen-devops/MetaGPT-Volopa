@@ -90,8 +90,12 @@ constraints:
 
     donts:
       code_integrity:
-        - "Don't use a class or a method that doesn't exist in the current repository or was not defined in the added code"
-        - "Don't add methods that already exist in the current repository"
+        - constraint: "Don't use a class or a method that doesn't exist in the current repository or was not defined in the added code"
+          verification: "rag_symbol_lookup"
+          failure_mode: "Block generation"
+        - constraint: "Don't add methods that already exist in the current repository"
+          verification: "rag_collision_check"
+          failure_mode: "Block generation"
 
       api_patterns:
         - "Don't return raw Eloquent models"
@@ -234,71 +238,124 @@ constraints:
   # Injected into LaravelEngineer and (optionally) LaravelArchitect prompts.
   # ---------------------------------------------------------------------------
   verification_protocol:
-    description: "Before generating any design or code, the agent MUST produce a CHECK PLAN listing every symbol it intends to reference, with origin classification and evidence."
+    description: "Before generating any design or code, the agent MUST produce a CHECK PLAN listing every symbol it intends to reference, with origin classification and evidence from the RAG repository."
     applies_to: ["LaravelEngineer", "LaravelArchitect"]
+
+    output_format:
+      description: "Strict output ordering — the CHECK PLAN must be the first output before any design or code."
+      sequence:
+        - "1) CHECK PLAN (must be the first output)"
+        - "2) (After all checks complete and gate passes) Proceed with the main task output"
+      rule: "The first output must be a CHECK PLAN. No tool calls, code, or design are permitted before this."
 
     protocol_rules:
       - "Before generating any design or code, you MUST produce a CHECK PLAN."
       - "A CHECK PLAN lists every class, model, controller, service, job, policy, form request, resource, migration, route, table, and queue name you intend to reference."
       - "For each item, set Origin to one of: EXISTING, NEW, UNKNOWN."
+      - "Every UNKNOWN must be resolved to EXISTING or NEW via a RAG query before any generation begins."
       - "Do NOT generate any design or code until all items in the CHECK PLAN are classified and evidence is cited."
 
     origin_rules:
       EXISTING:
         definition: "Symbol already exists in the repository or platform"
-        action: "MUST cite evidence: file path and/or signature from the evidence sources below"
+        action: "MUST cite RAG evidence: symbol_name, symbol_type, file_path, and key type_data fields returned by rag_symbol_lookup"
         verification: "rag_symbol_lookup"
-        evidence_required: "path + public methods or column list"
+        query: '{"query":{"bool":{"must":[{"term":{"symbol_name.keyword":"<NAME>"}},{"term":{"symbol_type":"<TYPE>"}}]}}}'
+        evidence_required: "symbol_type + file_path + type_data summary from the RAG hit"
       NEW:
         definition: "Symbol is introduced by this project/change"
-        action: "MUST declare where it will be created (file path) and verify no collision with existing symbols"
+        action: "MUST declare the target file path and verify no collision via rag_collision_check (expect 0 hits)"
         verification: "rag_collision_check"
-        evidence_required: "target file path + confirmation no existing match"
+        query: '{"query":{"term":{"symbol_name.keyword":"<NAME>"}}}'
+        evidence_required: "target file path + 0 hits confirmation from RAG"
       UNKNOWN:
         definition: "Origin not yet determined — must be resolved before proceeding"
-        action: "MUST perform a lookup to resolve to EXISTING or NEW before any generation"
+        action: "MUST perform rag_symbol_lookup to resolve to EXISTING (hit found) or NEW (0 hits + collision check passes)"
         verification: "rag_symbol_lookup"
-        evidence_required: "lookup result that resolves to EXISTING (with path) or NEW (with collision check)"
+        query: '{"query":{"term":{"symbol_name.keyword":"<NAME>"}}}'
+        evidence_required: "RAG lookup result that resolves to EXISTING (with hit details) or NEW (with 0-hit confirmation)"
 
-    blocking_rule: "Do NOT generate any design or code until ALL items in the CHECK PLAN have been resolved (no UNKNOWN remaining) and evidence is cited for every EXISTING and NEW symbol."
+    blocking_rule: "Do NOT generate any design or code until ALL items in the CHECK PLAN have been resolved (no UNKNOWN remaining) and RAG evidence is cited for every EXISTING and NEW symbol."
 
-    evidence_sources:
-      description: "Current evidence sources are static YAML files that substitute for a future live RAG repository"
-      future_note: "These will be replaced by RepoRAG.lookup_symbol() and RepoRAG.collision_check() calls when the RAG repository is operational"
+    gate_failure_behavior:
+      description: "What happens when the evidence-gated verification loop detects failures."
+      rules:
+        - "If ANY CHECK PLAN item fails verification (EXISTING not found, or NEW collides), the gate FAILS."
+        - "On FAIL: the orchestrator re-prompts the agent with the specific failures and instructs it to correct its CHECK PLAN classifications."
+        - "The agent gets up to 3 total attempts (1 initial + 2 retries) to produce a passing CHECK PLAN."
+        - "If the gate still fails after all attempts, code generation is BLOCKED entirely — no code is produced."
+      fail_conditions:
+        - origin: "EXISTING"
+          rag_result: "NOT found"
+          verdict: "FAIL — UNVERIFIED: symbol may not exist in the repository"
+        - origin: "NEW"
+          rag_result: "found"
+          verdict: "FAIL — COLLISION: name already taken by an existing symbol"
+      pass_conditions:
+        - origin: "EXISTING"
+          rag_result: "found"
+          verdict: "PASS — verified in repository"
+        - origin: "NEW"
+          rag_result: "NOT found"
+          verdict: "PASS — safe to create"
+        - origin: "UNKNOWN"
+          rag_result: "found"
+          verdict: "PASS — reclassify to EXISTING"
+        - origin: "UNKNOWN"
+          rag_result: "NOT found"
+          verdict: "PASS — reclassify to NEW"
 
-      existing_symbols:
-        source: "environment_artifacts.yaml#interfaces"
-        contains: "Existing database tables, models, middleware, endpoints, infrastructure, user roles, validation patterns"
-        rag_equivalent: "RepoRAG.lookup_symbol(name) -> {found: bool, path: str, signature: str}"
+    rag_repository:
+      index: "volopa_platform_symbols"
+      host: "localhost:9200"
+      description: "OpenSearch index containing all EXISTING platform symbols from input YAML content"
+      indexed_symbol_types:
+        - database_table
+        - eloquent_model
+        - middleware
+        - endpoint
+        - infrastructure
+        - user_role
+        - reference_data
+        - route_file
+        - ui_path
+      document_schema:
+        symbol_name: "Unique symbol identifier (e.g. 'users', 'User', 'Oauth2UserClient', 'routes/api.php')"
+        symbol_type: "One of the indexed_symbol_types above"
+        origin: "EXISTING or UNKNOWN (NEW symbols are not indexed)"
+        file_path: "Source file path if known, null if not applicable, 'UNKNOWN' if applicable but undeclared"
+        description: "Human-readable description of the symbol"
+        source_spec: "YAML source reference where the symbol was defined"
+        type_data: "Nested object keyed by symbol_type containing type-specific fields (columns, relationships, capabilities, etc.)"
+        unresolved: "Boolean — true if origin is UNKNOWN or has unresolved notes"
+        unresolved_ref: "Reference to the unresolved decision (e.g. project_context.yaml#decisions.unresolved[DEC-UNRESOLVED-004])"
 
-      new_symbols:
-        source: "project_context.yaml#components_to_build"
-        contains: "All NEW components declared for this project with target file paths"
-        rag_equivalent: "RepoRAG.collision_check(name) -> {collision: bool, existing_path: str|null}"
-
-      database_tables:
-        source: "project_context.yaml#interfaces.database_tables"
-        contains: "Full column definitions, foreign keys, indexes for all project tables"
-
-      platform_models:
-        source: "environment_artifacts.yaml#interfaces.standard_volopa_models"
-        contains: "Existing Eloquent models with known/inferred relationships"
-
-      platform_tables:
-        source: "environment_artifacts.yaml#interfaces.existing_database_tables"
-        contains: "Existing platform tables referenced by this project"
+    query_patterns:
+      rag_symbol_lookup:
+        description: "Look up a known or suspected EXISTING symbol by name and optionally type"
+        by_name: '{"query":{"term":{"symbol_name.keyword":"<NAME>"}}}'
+        by_name_and_type: '{"query":{"bool":{"must":[{"term":{"symbol_name.keyword":"<NAME>"}},{"term":{"symbol_type":"<TYPE>"}}]}}}'
+        hit_means: "Symbol is EXISTING — cite file_path, symbol_type, and type_data from the hit"
+        no_hit_means: "Symbol is not in the repo — classify as NEW (after collision check)"
+      rag_collision_check:
+        description: "Verify a NEW symbol name does not collide with any existing symbol"
+        query: '{"query":{"term":{"symbol_name.keyword":"<NAME>"}}}'
+        zero_hits: "No collision — safe to create as NEW"
+        nonzero_hits: "Collision detected — the symbol already exists; reclassify as EXISTING"
 
     check_plan_format:
-      description: "Expected format of the CHECK PLAN the agent must produce"
+      description: "Expected format of the CHECK PLAN the agent must produce. Each line must cite RAG evidence."
       example: |
         CHECK PLAN
-        - PocketExpenseFileUpload     -> NEW      -> collision check -> no match in repo, create at app/Models/PocketExpenseFileUpload.php
-        - PocketExpenseUploadController -> NEW    -> collision check -> no match in repo, create at app/Http/Controllers/PocketExpenseUploadController.php
-        - PocketExpenseCSVValidator    -> NEW      -> collision check -> no match in repo, create at app/Services/PocketExpenseCSVValidator.php
-        - User (model)                -> EXISTING  -> found at environment_artifacts.yaml#standard_volopa_models[User]
-        - Oauth2UserClient (middleware) -> EXISTING -> found at environment_artifacts.yaml#standard_volopa_middleware[Oauth2UserClient]
-        - pocket_expense_file_uploads (table) -> NEW -> collision check -> no match, defined in project_context.yaml#interfaces.database_tables
-        - ProcessExpenseUpload (job)  -> NEW      -> collision check -> no match in repo, create at app/Jobs/ProcessExpenseUpload.php
+        - PocketExpenseFileUpload      -> NEW       -> rag_collision_check("PocketExpenseFileUpload") -> 0 hits, create at app/Models/PocketExpenseFileUpload.php
+        - PocketExpenseUploadController -> NEW      -> rag_collision_check("PocketExpenseUploadController") -> 0 hits, create at app/Http/Controllers/PocketExpenseUploadController.php
+        - PocketExpenseCSVValidator     -> NEW       -> rag_collision_check("PocketExpenseCSVValidator") -> 0 hits, create at app/Services/PocketExpenseCSVValidator.php
+        - User (eloquent_model)         -> EXISTING  -> rag_symbol_lookup("User", "eloquent_model") -> 1 hit, file_path: UNKNOWN, table: users
+        - Oauth2UserClient (middleware) -> EXISTING  -> rag_symbol_lookup("Oauth2UserClient", "middleware") -> 1 hit, file_path: UNKNOWN, applied_to: routes/api.php
+        - users (database_table)        -> EXISTING  -> rag_symbol_lookup("users", "database_table") -> 1 hit, file_path: null, columns: [id, name, email, ...]
+        - routes/api.php (route_file)   -> EXISTING  -> rag_symbol_lookup("routes/api.php", "route_file") -> 1 hit, file_path: routes/api.php, note: "append, not replace"
+        - pocket_expense_file_uploads   -> NEW       -> rag_collision_check("pocket_expense_file_uploads") -> 0 hits, defined in project_context.yaml#interfaces.database_tables
+        - ProcessExpenseUpload (job)    -> NEW       -> rag_collision_check("ProcessExpenseUpload") -> 0 hits, create at app/Jobs/ProcessExpenseUpload.php
 
 # =============================================================================
 

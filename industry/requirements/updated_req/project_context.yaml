@@ -658,7 +658,7 @@ interfaces:
       columns:
         - { name: "id", type: "INT(10) UNSIGNED", constraints: ["NOT NULL", "AUTO_INCREMENT"] }
         - { name: "uuid", type: "VARCHAR(36)", default: "NULL" }
-        - { name: "client_id", type: "INT(10) UNSIGNED", default: "NULL" }
+        - { name: "client_id", type: "BIGINT UNSIGNED", default: "NULL" }
         - { name: "name", type: "VARCHAR(100)", constraints: ["NOT NULL"] }
         - { name: "is_default", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
         - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
@@ -669,7 +669,7 @@ interfaces:
       unique_keys:
         - { name: "oop_expense_source_client_name_unique", columns: ["client_id", "name"] }
       foreign_keys:
-        - { column: "client_id", references: "client(id)", ref_origin: EXISTING }
+        - { column: "client_id", references: "clients(id)", ref_origin: EXISTING }
 
     - name: "pocket_expense"
       origin: NEW
@@ -678,8 +678,8 @@ interfaces:
       columns:
         - { name: "id", type: "INT(10) UNSIGNED", constraints: ["NOT NULL", "AUTO_INCREMENT"] }
         - { name: "uuid", type: "VARCHAR(36)", default: "NULL" }
-        - { name: "user_id", type: "INT(11) UNSIGNED", constraints: ["NOT NULL"] }
-        - { name: "client_id", type: "INT(11) UNSIGNED", default: "NULL" }
+        - { name: "user_id", type: "BIGINT UNSIGNED", constraints: ["NOT NULL"] }
+        - { name: "client_id", type: "BIGINT UNSIGNED", default: "NULL" }
         - { name: "date", type: "DATE", constraints: ["NOT NULL"] }
         - { name: "merchant_name", type: "VARCHAR(180)", constraints: ["NOT NULL"] }
         - { name: "merchant_description", type: "VARCHAR(255)", default: "NULL" }
@@ -690,17 +690,21 @@ interfaces:
         - { name: "vat_amount", type: "DECIMAL(12,2)", default: "NULL" }
         - { name: "notes", type: "TEXT", default: "NULL" }
         - { name: "status", type: "ENUM('draft','submitted','approved','rejected')", default: "draft" }
-        - { name: "created_by_user_id", type: "INT(11)", constraints: ["NOT NULL"] }
-        - { name: "updated_by_user_id", type: "INT(11) UNSIGNED", default: "NULL" }
-        - { name: "approved_by_user_id", type: "INT(11) UNSIGNED", default: "NULL" }
+        - { name: "created_by_user_id", type: "BIGINT UNSIGNED", constraints: ["NOT NULL"] }
+        - { name: "updated_by_user_id", type: "BIGINT UNSIGNED", default: "NULL" }
+        - { name: "approved_by_user_id", type: "BIGINT UNSIGNED", default: "NULL" }
         - { name: "create_time", type: "DATETIME", default: "CURRENT_TIMESTAMP" }
         - { name: "update_time", type: "DATETIME", default: "NULL", on_update: "CURRENT_TIMESTAMP" }
         - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
         - { name: "delete_time", type: "DATETIME", default: "NULL" }
       primary_key: "id"
+      indexes:
+        - { name: "pocket_expense_user_id_foreign", column: "user_id" }
+        - { name: "pocket_expense_client_id_foreign", column: "client_id" }
+        - { name: "pocket_expense_expense_type_foreign", column: "expense_type" }
       foreign_keys:
-        - { column: "user_id", references: "user(id)", ref_origin: EXISTING }
-        - { column: "client_id", references: "client(id)", ref_origin: EXISTING }
+        - { column: "user_id", references: "users(id)", ref_origin: EXISTING }
+        - { column: "client_id", references: "clients(id)", ref_origin: EXISTING }
         - { column: "expense_type", references: "opt_pocket_expense_type(id)", ref_origin: NEW }
 
     - name: "pocket_expense_metadata"
@@ -717,13 +721,23 @@ interfaces:
         - { name: "file_store_id", type: "INT(10) UNSIGNED", default: "NULL" }
         - { name: "expense_source_id", type: "INT(10) UNSIGNED", default: "NULL" }
         - { name: "additional_field_id", type: "INT(10) UNSIGNED", default: "NULL" }
-        - { name: "user_id", type: "INT(11) UNSIGNED", constraints: ["NOT NULL"] }
+        - { name: "user_id", type: "BIGINT UNSIGNED", constraints: ["NOT NULL"] }
         - { name: "details_json", type: "JSON", default: "NULL" }
         - { name: "create_time", type: "DATETIME", default: "CURRENT_TIMESTAMP" }
         - { name: "update_time", type: "DATETIME", default: "NULL", on_update: "CURRENT_TIMESTAMP" }
         - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
         - { name: "delete_time", type: "DATETIME", default: "NULL" }
       primary_key: "id"
+      unique_keys:
+        - { name: "unique_expense_metadata_type", columns: ["pocket_expense_id", "metadata_type", "deleted"] }
+      indexes:
+        - { name: "metadata_expense_id_index", column: "pocket_expense_id" }
+        - { name: "metadata_type_index", column: "metadata_type" }
+        - { name: "metadata_category_index", column: "transaction_category_id" }
+        - { name: "metadata_tracking_code_index", column: "tracking_code_id" }
+        - { name: "metadata_project_index", column: "project_id" }
+        - { name: "metadata_file_index", column: "file_store_id" }
+        - { name: "metadata_source_index", column: "expense_source_id" }
       foreign_keys:
         - { column: "pocket_expense_id", references: "pocket_expense(id)", ref_origin: NEW }
         - { column: "transaction_category_id", references: "transaction_category(id)", ref_origin: EXISTING }
@@ -732,7 +746,7 @@ interfaces:
         - { column: "file_store_id", references: "file_store(id)", ref_origin: EXISTING }
         - { column: "expense_source_id", references: "pocket_expense_source_client_config(id)", ref_origin: NEW }
         - { column: "additional_field_id", references: "expense_additional_field(id)", ref_origin: EXISTING }
-        - { column: "user_id", references: "user(id)", ref_origin: EXISTING }
+        - { column: "user_id", references: "users(id)", ref_origin: EXISTING }
 
     # --- CSV Upload Tables ---
     - name: "pocket_expense_file_uploads"
@@ -740,23 +754,23 @@ interfaces:
       source: "SD-OOP_Pocket_expense.json#data_model"
       description: "Audit trail for CSV batch uploads"
       columns:
-        - { name: "id", type: "bigint(20) unsigned", constraints: ["NOT NULL", "AUTO_INCREMENT"] }
-        - { name: "uuid", type: "char(36)", default: "NULL" }
-        - { name: "user_id", type: "bigint(20) unsigned", constraints: ["NOT NULL"], comment: "Target user for expenses" }
-        - { name: "client_id", type: "bigint(20) unsigned", constraints: ["NOT NULL"], comment: "Client/company context" }
-        - { name: "created_by_user_id", type: "bigint(20) unsigned", constraints: ["NOT NULL"], comment: "Admin who uploaded" }
-        - { name: "file_name", type: "varchar(255)", constraints: ["NOT NULL"] }
-        - { name: "file_path", type: "varchar(255)", constraints: ["NOT NULL"] }
-        - { name: "total_records", type: "int(10) unsigned", default: 0, constraints: ["NOT NULL"] }
-        - { name: "valid_records", type: "int(10) unsigned", default: 0, constraints: ["NOT NULL"] }
-        - { name: "validation_errors", type: "json", default: "NULL", comment: "Structured error data" }
+        - { name: "id", type: "BIGINT(20) UNSIGNED", constraints: ["NOT NULL", "AUTO_INCREMENT"] }
+        - { name: "uuid", type: "VARCHAR(36)", default: "NULL" }
+        - { name: "user_id", type: "BIGINT(20) UNSIGNED", constraints: ["NOT NULL"], comment: "Target user for expenses" }
+        - { name: "client_id", type: "BIGINT(20) UNSIGNED", constraints: ["NOT NULL"], comment: "Client/company context" }
+        - { name: "created_by_user_id", type: "BIGINT(20) UNSIGNED", constraints: ["NOT NULL"], comment: "Admin who uploaded" }
+        - { name: "file_name", type: "VARCHAR(255)", constraints: ["NOT NULL"] }
+        - { name: "file_path", type: "VARCHAR(255)", constraints: ["NOT NULL"] }
+        - { name: "total_records", type: "INT(10) UNSIGNED", default: 0, constraints: ["NOT NULL"] }
+        - { name: "valid_records", type: "INT(10) UNSIGNED", default: 0, constraints: ["NOT NULL"] }
+        - { name: "validation_errors", type: "JSON", default: "NULL", comment: "Structured error data" }
         - { name: "status", type: "ENUM('uploaded','validation_failed','validation_passed','processing','completed','failed','sync_failed')", default: "uploaded" }
-        - { name: "uploaded_at", type: "timestamp", default: "NULL" }
-        - { name: "validated_at", type: "timestamp", default: "NULL" }
-        - { name: "processed_at", type: "timestamp", default: "NULL" }
-        - { name: "created_at", type: "timestamp", default: "NULL" }
-        - { name: "updated_at", type: "timestamp", default: "NULL" }
-        - { name: "deleted_at", type: "timestamp", default: "NULL" }
+        - { name: "uploaded_at", type: "TIMESTAMP", default: "NULL" }
+        - { name: "validated_at", type: "TIMESTAMP", default: "NULL" }
+        - { name: "processed_at", type: "TIMESTAMP", default: "NULL" }
+        - { name: "created_at", type: "TIMESTAMP", default: "NULL" }
+        - { name: "updated_at", type: "TIMESTAMP", default: "NULL" }
+        - { name: "deleted_at", type: "TIMESTAMP", default: "NULL" }
       primary_key: "id"
       indexes:
         - { name: "pocket_expense_file_uploads_user_id_index", column: "user_id" }
@@ -774,8 +788,8 @@ interfaces:
       description: "Local staging table for validated expense rows pending sync to main service"
       note: "In upload service database"
       columns:
-        - { name: "id", type: "BIGINT", constraints: ["PRIMARY KEY", "AUTO_INCREMENT"] }
-        - { name: "upload_id", type: "BIGINT", constraints: ["NOT NULL"], comment: "FK to pocket_expense_file_uploads" }
+        - { name: "id", type: "BIGINT UNSIGNED", constraints: ["PRIMARY KEY", "AUTO_INCREMENT"] }
+        - { name: "upload_id", type: "BIGINT UNSIGNED", constraints: ["NOT NULL"], comment: "FK to pocket_expense_file_uploads" }
         - { name: "line_number", type: "INT", constraints: ["NOT NULL"] }
         - { name: "status", type: "ENUM('pending','processing','synced','failed')", default: "pending" }
         - { name: "expense_data", type: "JSON", constraints: ["NOT NULL"], comment: "Complete validated expense as JSON" }
@@ -786,23 +800,23 @@ interfaces:
         - { name: "idx_pending_sync", columns: ["status"], where: "status IN ('pending', 'failed')" }
 
     # Referenced Existing Tables ---
-
-    - name: "client"
+    - name: "users"
       origin: EXISTING
-      description: "Platform client/company table"
-      columns:
-        - { name: "id", type: "PK" }
-        - { name: "name", type: "VARCHAR(180)" }
-        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
-
-    - name: "user"
-      origin: EXISTING
-      description: "Platform user accounts table"
+      description: "Platform user table - all user roles"
       primary_key: "id"
       columns:
-        - { name: "id", type: "PK" }
-        - { name: "name", type: "VARCHAR(180)" }
-        - { name: "username", type: "VARCHAR(180)" }
+        - { name: "id", type: "BIGINT UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "name", type: "VARCHAR(180)", nullable: true }
+        - { name: "username", type: "VARCHAR(180)", nullable: true }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
+
+    - name: "clients"
+      origin: EXISTING
+      description: "Platform client/company table — multi-tenancy anchor."
+      primary_key: "id"
+      columns:
+        - { name: "id", type: "BIGINT UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "name", type: "VARCHAR(180)", nullable: true }
         - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
 
     - name: "transaction_category"
@@ -810,64 +824,77 @@ interfaces:
       description: "Expense/transaction category lookup, scoped per client"
       primary_key: "id"
       columns:
-        - { name: "id", type: "INT(10) UNSIGNED", constraints: ["NOT NULL", "AUTO_INCREMENT"] }
-        - { name: "name", type: "VARCHAR(180)" }
-        - { name: "code", type: "VARCHAR(180)" }
-        - { name: "client_id", type: "INT(10) UNSIGNED" }
-        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0  }
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "name", type: "VARCHAR(180)", nullable: true }
+        - { name: "code", type: "VARCHAR(180)", nullable: true }
+        - { name: "client_id", type: "BIGINT UNSIGNED", nullable: true }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
+      foreign_keys:
+        - { column: "client_id", references: "clients(id)", on_delete: "CASCADE", ref_origin: EXISTING }
 
     - name: "tracking_codes"
       origin: EXISTING
-      description: "Tracking code records, scoped per client and user"
+      description: "Platform tracking codes for cost centre / department tracking. Scoped per client and user."
       primary_key: "id"
       columns:
-        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] } }
-        - { name: "unit", type: "VARCHAR(180)" }
-        - { name: "client_id", type: "INT(10) UNSIGNED" }
-        - { name: "user_id", type: "FK" }
-        - { name: "tracking_code_type_id", type: "FK" }
-        - { name: "deleted" }
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "unit", type: "VARCHAR(180)", nullable: true }
+        - { name: "client_id", type: "BIGINT UNSIGNED", nullable: true }
+        - { name: "user_id", type: "BIGINT UNSIGNED", nullable: true }
+        - { name: "tracking_code_type_id", type: "INT(10) UNSIGNED", nullable: true }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
+      foreign_keys:
+        - { column: "client_id", references: "clients(id)", on_delete: "CASCADE", ref_origin: EXISTING }
+        - { column: "user_id", references: "users(id)", on_delete: "CASCADE", ref_origin: EXISTING }
 
     - name: "configurable_projects"
       origin: EXISTING
       description: "Client-configurable project records for expense tagging"
+      primary_key: "id"
       columns:
-        - { name: "id", type: "PK" }
-        - { name: "name" }
-        - { name: "code" }
-        - { name: "deleted" }
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "name", type: "VARCHAR(180)", nullable: true }
+        - { name: "code", type: "VARCHAR(180)", nullable: true }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
 
     - name: "file_store"
       origin: EXISTING
       description: "Platform file storage records (receipts, attachments)"
+      primary_key: "id"
       columns:
-        - { name: "id", type: "PK" }
-        - { name: "user_id", type: "FK" }
-        - { name: "uuid" }
-        - { name: "description" }
-        - { name: "file_type_id", type: "FK" }
-        - { name: "file_name" }
-        - { name: "file_extension" }
-        - { name: "deleted" }
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "user_id", type: "BIGINT UNSIGNED", nullable: true }
+        - { name: "uuid", type: "VARCHAR(36)", nullable: true }
+        - { name: "file_type_id", type: "INT(10) UNSIGNED", nullable: true }
+        - { name: "file_name", type: "VARCHAR(255)", constraints: ["NOT NULL"] }
+        - { name: "file_extension", type: "VARCHAR(10)", constraints: ["NOT NULL"] }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
+      foreign_keys:
+        - { column: "user_id", references: "users(id)", on_delete: "CASCADE", ref_origin: EXISTING }
+        - { column: "file_type_id", references: "opt_file_type(id)", on_delete: "SET NULL", ref_origin: EXISTING }
 
     - name: "expense_additional_field"
       origin: EXISTING
       description: "Client-configurable additional fields for expenses"
+      primary_key: "id"
       columns:
-        - { name: "id", type: "PK" }
-        - { name: "client_id", type: "FK" }
-        - { name: "field_type" }
-        - { name: "label" }
-        - { name: "is_done" }
-        - { name: "report_show" }
-        - { name: "deleted" }
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "client_id", type: "BIGINT UNSIGNED", nullable: true }
+        - { name: "field_type", type: "VARCHAR(255)", constraints: ["NOT NULL"] }
+        - { name: "label", type: "VARCHAR(100)", constraints: ["NOT NULL"] }
+        - { name: "is_done", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
+        - { name: "report_show", type: "TINYINT(1) UNSIGNED", constraints: ["NOT NULL"], default: 0 }
+        - { name: "deleted", type: "TINYINT(1) UNSIGNED", nullable: false, default: 0 }
+      foreign_keys:
+        - { column: "client_id", references: "clients(id)", on_delete: "CASCADE", ref_origin: EXISTING }
 
     - name: "opt_file_type"
       origin: EXISTING
       description: "Lookup table for file types (referenced by file_store.file_type_id)"
+      primary_key: "id"
       columns:
-        - { name: "id", type: "PK" }
-        - { name: "option" }
+        - { name: "id", type: "INT(10) UNSIGNED", nullable: false, constraints: ["AUTO_INCREMENT"] }
+        - { name: "option", type: "VARCHAR(128)", constraints: ["NOT NULL"], default: "" }
 
   csv_column_schema:
     source: "SD-OOP_Pocket_expense.json#csv_file_definition"

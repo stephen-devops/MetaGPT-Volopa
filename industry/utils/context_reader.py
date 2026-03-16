@@ -554,8 +554,7 @@ class ContextReader:
 
         Produces the VERIFICATION PROTOCOL block that instructs the agent to
         emit a CHECK PLAN before generating any design or code.  Evidence
-        sources currently point to static YAML files; these will be replaced
-        by live RAG queries in a future iteration.
+        is sourced from the live OpenSearch RAG index.
         """
         data = self.get("environment", "constraints", "verification_protocol")
 
@@ -569,6 +568,17 @@ class ContextReader:
             "",
         ]
 
+        # Output format (strict ordering)
+        output_fmt = data.get("output_format", {})
+        if output_fmt:
+            lines.append("OUTPUT FORMAT (STRICT):")
+            for step in output_fmt.get("sequence", []):
+                lines.append(f"  {step}")
+            rule = output_fmt.get("rule", "")
+            if rule:
+                lines.append(f"  {rule}")
+            lines.append("")
+
         # Protocol rules
         for rule in data.get("protocol_rules", []):
             lines.append(f"  - {rule}")
@@ -580,6 +590,9 @@ class ContextReader:
             lines.append(f"  * {origin}: {details.get('definition', '')}")
             lines.append(f"    Action: {details.get('action', '')}")
             lines.append(f"    Verification: {details.get('verification', '')}")
+            query = details.get("query", "")
+            if query:
+                lines.append(f"    Query: {query}")
             lines.append(f"    Evidence required: {details.get('evidence_required', '')}")
         lines.append("")
 
@@ -589,28 +602,60 @@ class ContextReader:
             lines.append(f"BLOCKING RULE: {blocking}")
             lines.append("")
 
-        # Evidence sources
-        sources = data.get("evidence_sources", {})
-        if sources:
-            lines.append("Evidence sources (current: static YAML; future: live RAG):")
-            for key, source_info in sources.items():
-                if key in ("description", "future_note"):
+        # Gate failure behavior
+        gate = data.get("gate_failure_behavior", {})
+        if gate:
+            lines.append("GATE FAILURE BEHAVIOR:")
+            for rule in gate.get("rules", []):
+                lines.append(f"  - {rule}")
+            fail_conds = gate.get("fail_conditions", [])
+            if fail_conds:
+                lines.append("  Fail conditions:")
+                for fc in fail_conds:
+                    lines.append(f"    - {fc.get('origin', '?')} + {fc.get('rag_result', '?')} -> {fc.get('verdict', '?')}")
+            pass_conds = gate.get("pass_conditions", [])
+            if pass_conds:
+                lines.append("  Pass conditions:")
+                for pc in pass_conds:
+                    lines.append(f"    - {pc.get('origin', '?')} + {pc.get('rag_result', '?')} -> {pc.get('verdict', '?')}")
+            lines.append("")
+
+        # RAG repository
+        rag_repo = data.get("rag_repository", {})
+        if rag_repo:
+            lines.append(f"RAG Repository: {rag_repo.get('index', '')} @ {rag_repo.get('host', '')}")
+            lines.append(f"  {rag_repo.get('description', '')}")
+            symbol_types = rag_repo.get("indexed_symbol_types", [])
+            if symbol_types:
+                lines.append(f"  Indexed symbol types: {', '.join(symbol_types)}")
+            doc_schema = rag_repo.get("document_schema", {})
+            if doc_schema:
+                lines.append("  Document fields:")
+                for field, desc in doc_schema.items():
+                    lines.append(f"    {field}: {desc}")
+            lines.append("")
+
+        # Query patterns
+        patterns = data.get("query_patterns", {})
+        if patterns:
+            lines.append("Query patterns:")
+            for qname, qinfo in patterns.items():
+                if not isinstance(qinfo, dict):
                     continue
-                if isinstance(source_info, dict):
-                    src = source_info.get("source", "")
-                    contains = source_info.get("contains", "")
-                    rag_eq = source_info.get("rag_equivalent", "")
-                    lines.append(f"  - {key}: {src}")
-                    if contains:
-                        lines.append(f"    Contains: {contains}")
-                    if rag_eq:
-                        lines.append(f"    RAG equivalent: {rag_eq}")
+                lines.append(f"  {qname}: {qinfo.get('description', '')}")
+                for key, val in qinfo.items():
+                    if key == "description":
+                        continue
+                    lines.append(f"    {key}: {val}")
             lines.append("")
 
         # CHECK PLAN format example
         fmt = data.get("check_plan_format", {})
         if fmt:
             lines.append("Expected CHECK PLAN format:")
+            desc = fmt.get("description", "")
+            if desc:
+                lines.append(f"  {desc}")
             example = fmt.get("example", "")
             if example:
                 for ex_line in example.strip().splitlines():

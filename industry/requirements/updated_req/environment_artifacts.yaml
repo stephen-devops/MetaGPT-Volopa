@@ -398,24 +398,6 @@ interfaces:
           - "SD-OOP_User_Management_System.json#access_control_flow.revoking_managing_rights"
 
   # ---------------------------------------------------------------------------
-  # Existing Validation Infrastructure
-  # ---------------------------------------------------------------------------
-  existing_validation_infrastructure:
-    description: "Laravel validation patterns used across the platform"
-    origin: EXISTING
-    patterns:
-      - name: "Laravel validation rules syntax"
-        type: "Validation Pattern"
-        example: "required|file|mimes:csv,txt|max:10240"
-        referenced_in: "SD-OOP_Pocket_expense.json#api_contract.server_side_validation"
-
-      - name: "exists rule for FK validation"
-        type: "Validation Pattern"
-        example: "required|exists:users,id"
-        referenced_in: "SD-OOP_Pocket_expense.json#api_contract.server_side_validation"
-        note: "Validates against existing platform tables (users, clients)"
-
-  # ---------------------------------------------------------------------------
   # FX Query Contract
   # ---------------------------------------------------------------------------
   fx_query_contract:
