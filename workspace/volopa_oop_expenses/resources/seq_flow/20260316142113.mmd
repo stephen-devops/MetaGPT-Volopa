@@ -1,0 +1,97 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant C as Client
+    participant MW as Oauth2UserClient
+    participant PC as PocketExpenseController
+    participant PS as PocketExpenseService
+    participant FX as FXConversionService
+    participant PE as PocketExpense
+    participant PR as PocketExpenseResource
+    participant UC as PocketExpenseUploadController
+    participant CSV as PocketExpenseCSVValidator
+    participant PFU as PocketExpenseFileUpload
+    participant PUD as PocketExpenseUploadsData
+    participant Q as Queue
+    participant PEU as ProcessExpenseUpload
+    participant UPC as UserFeaturePermissionController
+    participant UPS as UserPermissionService
+    participant UFP as UserFeaturePermission
+    
+    Note over C,UFP: User Permission Management Flow
+    C->>MW: POST /api/v1/user-feature-permissions
+    MW->>UPC: authorize request
+    UPC->>UPS: grantPermission(userId, clientId, featureId, grantorId, managerId)
+    UPS->>UFP: create(permissionData)
+    UFP-->>UPS: return permission
+    UPS-->>UPC: return permission
+    UPC->>UserFeaturePermissionResource: transform(permission)
+    UserFeaturePermissionResource-->>UPC: formatted response
+    UPC-->>MW: 201 Created
+    MW-->>C: permission granted
+    
+    Note over C,PR: Single Expense CRUD with FX Flow
+    C->>MW: POST /api/v1/pocket-expenses
+    MW->>PC: authorize request
+    PC->>StorePocketExpenseRequest: validate()
+    StorePocketExpenseRequest->>PocketExpensePolicy: authorize()
+    PocketExpensePolicy-->>StorePocketExpenseRequest: authorized
+    StorePocketExpenseRequest-->>PC: validated data
+    PC->>PS: createExpense(validatedData)
+    PS->>FX: getWalletBaseCurrency(clientId)
+    FX-->>PS: baseCurrencyInfo
+    PS->>FX: getFXRate(fromCurrency, toCurrency, date)
+    FX-->>PS: fxRate
+    PS->>FX: calculateConvertedAmount(amount, rate, commission)
+    FX-->>PS: convertedAmount
+    PS->>PE: create(expenseData)
+    PE-->>PS: savedExpense
+    PS-->>PC: expense
+    PC->>PR: transform(expense)
+    PR-->>PC: formatted response
+    PC-->>MW: 201 Created
+    MW-->>C: expense created
+    
+    Note over C,PEU: CSV Batch Upload Flow
+    C->>MW: POST /api/uploads/pocket-expense/csv
+    MW->>UC: authorize request
+    UC->>UploadPocketExpenseCSVRequest: validate()
+    UploadPocketExpenseCSVRequest-->>UC: validated
+    UC->>UC: storeFile(csvFile)
+    UC->>PFU: create(uploadRecord)
+    PFU-->>UC: uploadRecord
+    UC->>CSV: validate(csvPath, targetUserId, clientId, adminId)
+    CSV->>CSV: preloadReferenceData(clientId)
+    CSV->>CSV: validateHeaders(csvHeaders)
+    CSV->>CSV: validateRow(rowData, lineNumber)
+    CSV-->>UC: validationResult
+    alt validation failed
+        UC->>PFU: update(status='validation_failed', errors)
+        UC-->>MW: 422 Validation Error
+        MW-->>C: validation errors
+    else validation passed
+        UC->>PUD: bulkInsert(validatedRows)
+        UC->>PFU: update(status='processing')
+        UC->>Q: dispatch(ProcessExpenseUpload, uploadId)
+        Q->>PEU: handle()
+        PEU->>PUD: getBatch(100)
+        PEU->>PS: createExpense(batchData)
+        PS->>PE: create(expenseData)
+        PE-->>PS: savedExpense
+        PS-->>PEU: synced
+        PEU->>PFU: update(status='completed')
+        UC-->>MW: 200 Success
+        MW-->>C: upload processing
+    end
+    
+    Note over C,PR: Expense Retrieval Flow
+    C->>MW: GET /api/v1/pocket-expenses
+    MW->>PC: authorize request
+    PC->>PS: getUserExpenses(user, client)
+    PS->>PE: where(user_id, client_id).paginate()
+    PE-->>PS: expenses
+    PS-->>PC: paginatedExpenses
+    PC->>PocketExpenseCollection: transform(expenses)
+    PocketExpenseCollection-->>PC: formatted collection
+    PC-->>MW: 200 OK
+    MW-->>C: expenses list

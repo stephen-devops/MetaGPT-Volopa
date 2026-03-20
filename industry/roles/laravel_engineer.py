@@ -6,12 +6,18 @@
 @Desc    : Laravel Engineer role for Volopa OOP Expense system
 """
 
+import json
 from typing import Optional, Set
 
 from metagpt.roles.engineer import Engineer
+from metagpt.actions.write_code import WriteCode
 from metagpt.actions.write_code_review import WriteCodeReview
-from metagpt.schema import CodingContext
+from metagpt.actions.project_management_an import TASK_LIST
+from metagpt.schema import CodingContext, Document
 from metagpt.logs import logger
+from metagpt.utils.common import get_markdown_code_block_type
+from metagpt.utils.project_repo import ProjectRepo
+
 from industry.utils.context_reader import ContextReader
 from industry.utils.check_plan_dispatcher import CheckPlanDispatcher
 from industry.utils.repo_verifier import RepoVerifier
@@ -49,7 +55,63 @@ and re-produce the CHECK PLAN per the VERIFICATION PROTOCOL in your constraints.
 Do NOT produce any code. Output ONLY the corrected CHECK PLAN.
 """
 
-MAX_CHECK_PLAN_RETRIES = 2  # 3 total attempts (1 initial + 2 retries)
+MAX_CHECK_PLAN_RETRIES = 2  # 3 total attempts
+
+# ~25K tokens.  Leaves room for system prompt (~10K), design_doc (~30K),
+# task_doc (~10K), evidence (~2K), prompt template (~1K), and max_token output
+# (12K) within the 200K context limit.
+MAX_CODE_CONTEXT_CHARS = 100_000
+
+
+async def _size_limited_get_codes(
+    task_doc: Document, exclude: str, project_repo: ProjectRepo, use_inc: bool = False
+) -> str:
+    """Size-limited replacement for WriteCode.get_codes.
+
+    Includes full source for files until MAX_CODE_CONTEXT_CHARS is reached,
+    then switches to filename-only entries for the rest. The design doc already
+    carries the full classDiagram with all interfaces, so the LLM can generate
+    correct code even without seeing full source of every sibling file.
+    """
+    if not task_doc:
+        return ""
+    if not task_doc.content:
+        task_doc = await project_repo.docs.task.get(filename=task_doc.filename)
+    m = json.loads(task_doc.content)
+    code_filenames = m.get(TASK_LIST.key, [])
+
+    codes = []
+    total_chars = 0
+    hit_limit = False
+    src_file_repo = project_repo.srcs
+
+    for filename in code_filenames:
+        if filename == exclude:
+            continue
+        doc = await src_file_repo.get(filename=filename)
+        if not doc:
+            continue
+
+        if hit_limit:
+            codes.append(f"### File Name: `{filename}` (see design doc for interface)\n")
+            continue
+
+        code_block_type = get_markdown_code_block_type(filename)
+        entry = f"### File Name: `{filename}`\n```{code_block_type}\n{doc.content}```\n\n"
+
+        if total_chars + len(entry) > MAX_CODE_CONTEXT_CHARS:
+            hit_limit = True
+            logger.info(
+                f"Code context cap reached at {total_chars} chars "
+                f"({len(codes)} files with source). "
+                f"Remaining files will use names-only."
+            )
+            codes.append(f"### File Name: `{filename}` (see design doc for interface)\n")
+        else:
+            codes.append(entry)
+            total_chars += len(entry)
+
+    return "\n".join(codes)
 
 
 class LaravelEngineer(Engineer):
@@ -202,6 +264,8 @@ class LaravelEngineer(Engineer):
 
                 logger.info(f"CHECK PLAN: Attempt {attempt} — requesting check plan")
                 check_plan_raw = await self.llm.aask(prompt)
+                logger.info("CHECK PLAN output raw")
+                logger.info(f"{check_plan_raw}")
                 items = CheckPlanDispatcher.parse(check_plan_raw)
 
                 if not items:
@@ -244,32 +308,41 @@ class LaravelEngineer(Engineer):
                     f"{injected}/{len(self.code_todos)} todos")
 
         # ── Code generation (only reached if gate passed) ──
-        changed_files = set()
-        for todo in self.code_todos:
-            coding_context = await todo.run()
-            if review:
-                action = WriteCodeReview(
-                    i_context=coding_context,
-                    repo=self.repo,
-                    input_args=self.input_args,
-                    context=self.context,
-                    llm=self.llm,
-                )
-                self._init_action(action)
-                coding_context = await action.run()
+        # Monkey-patch WriteCode.get_codes with size-limited version to prevent
+        # token overflow when cumulative source from many files exceeds context.
+        _original_get_codes = WriteCode.get_codes
+        WriteCode.get_codes = staticmethod(_size_limited_get_codes)
 
-            dependencies = {
-                coding_context.design_doc.root_relative_path,
-                coding_context.task_doc.root_relative_path,
-            }
-            if self.config.inc:
-                dependencies.add(coding_context.code_plan_and_change_doc.root_relative_path)
-            await self.repo.srcs.save(
-                filename=coding_context.filename,
-                dependencies=list(dependencies),
-                content=coding_context.code_doc.content,
-            )
-            changed_files.add(coding_context.code_doc.filename)
+        changed_files = set()
+        try:
+            for todo in self.code_todos:
+                coding_context = await todo.run()
+                if review:
+                    action = WriteCodeReview(
+                        i_context=coding_context,
+                        repo=self.repo,
+                        input_args=self.input_args,
+                        context=self.context,
+                        llm=self.llm,
+                    )
+                    self._init_action(action)
+                    coding_context = await action.run()
+
+                dependencies = {
+                    coding_context.design_doc.root_relative_path,
+                    coding_context.task_doc.root_relative_path,
+                }
+                if self.config.inc:
+                    dependencies.add(coding_context.code_plan_and_change_doc.root_relative_path)
+                await self.repo.srcs.save(
+                    filename=coding_context.filename,
+                    dependencies=list(dependencies),
+                    content=coding_context.code_doc.content,
+                )
+                changed_files.add(coding_context.code_doc.filename)
+        finally:
+            # Restore original get_codes even if code generation fails
+            WriteCode.get_codes = _original_get_codes
 
         if not changed_files:
             logger.info("Nothing has changed.")

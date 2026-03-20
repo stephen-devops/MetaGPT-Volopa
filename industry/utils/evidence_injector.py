@@ -144,10 +144,10 @@ class EvidenceInjector:
 
     @staticmethod
     def inject_into_todos(code_todos: list[Action], evidence_text: str) -> int:
-        """Append evidence_text to task_doc.content in each todo's CodingContext.
+        """Append evidence_text to design_doc.content in each todo's CodingContext.
 
-        Deserializes CodingContext from todo.i_context.content, appends
-        evidence_text to task_doc.content, and re-serializes back.
+        design_doc.content is only used as text in the prompt template's {design}
+        slot and is never parsed as JSON, so appending evidence is safe.
 
         Returns the count of successfully injected todos.
         """
@@ -165,14 +165,14 @@ class EvidenceInjector:
                     )
                     continue
 
-                if ctx.task_doc is None:
+                if ctx.design_doc is None:
                     logger.warning(
-                        f"EvidenceInjector: No task_doc in CodingContext "
+                        f"EvidenceInjector: No design_doc in CodingContext "
                         f"for {ctx.filename}"
                     )
                     continue
 
-                ctx.task_doc.content += evidence_text
+                ctx.design_doc.content += evidence_text
                 todo.i_context.content = ctx.model_dump_json()
                 injected += 1
             except Exception as e:

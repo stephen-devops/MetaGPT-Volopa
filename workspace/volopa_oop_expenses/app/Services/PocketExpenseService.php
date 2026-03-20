@@ -1,1293 +1,752 @@
-## Code: app/Services/PocketExpenseService.php
-
-```php
 <?php
 
 namespace App\Services;
 
-use App\Models\User;
 use App\Models\PocketExpense;
 use App\Models\PocketExpenseMetadata;
+use App\Models\User;
+use App\Models\Client;
 use App\Models\OptPocketExpenseType;
 use App\Models\PocketExpenseSourceClientConfig;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Carbon\Carbon;
+use InvalidArgumentException;
+use RuntimeException;
 
 /**
  * PocketExpenseService
  * 
- * Service class for managing pocket expenses within the multi-tenant system.
- * Handles expense CRUD operations, metadata management, status transitions,
- * and business logic for OOP expense management. Provides business logic layer
- * between controllers and models with comprehensive validation and audit support.
- * 
- * Key responsibilities:
- * - Create, update, and delete expenses with validation
- * - Manage expense metadata (source, category, project, files)
- * - Handle expense status transitions and approval workflow
- * - Process FX conversions and amount calculations
- * - Provide expense queries and filtering capabilities
- * - Support multi-tenant expense scoping
- * - Maintain audit trails and expense history
+ * Core business logic service for pocket expense CRUD operations.
+ * Handles expense creation, updates, deletion, and FX conversion integration.
+ * Implements multi-tenant client scoping and comprehensive validation.
  */
 class PocketExpenseService
 {
     /**
-     * Default expense status for new expenses
+     * FX Conversion Service instance.
      *
-     * @var string
+     * @var \App\Services\FXConversionService
      */
-    private const DEFAULT_STATUS = 'draft';
+    protected FXConversionService $fxService;
 
     /**
-     * Maximum number of expenses per query result
-     *
-     * @var int
+     * Maximum expense age in years.
      */
-    private const MAX_QUERY_LIMIT = 1000;
+    const MAX_EXPENSE_AGE_YEARS = 3;
 
     /**
-     * Default query limit for expense lists
-     *
-     * @var int
+     * Maximum merchant name length.
      */
-    private const DEFAULT_QUERY_LIMIT = 50;
+    const MAX_MERCHANT_NAME_LENGTH = 180;
 
     /**
-     * Maximum file attachments per expense
-     *
-     * @var int
+     * Valid currency code pattern (3-letter ISO).
      */
-    private const MAX_FILE_ATTACHMENTS = 5;
+    const CURRENCY_PATTERN = '/^[A-Z]{3}$/';
 
     /**
-     * Cache timeout for expense data (in minutes)
+     * Create a new PocketExpenseService instance.
      *
-     * @var int
+     * @param \App\Services\FXConversionService $fxService
      */
-    private const CACHE_TIMEOUT_MINUTES = 15;
-
-    /**
-     * Default metadata types for new expenses
-     *
-     * @var array<int, string>
-     */
-    private const DEFAULT_METADATA_TYPES = [
-        'expense_source',
-        'category',
-        'project',
-        'tracking_code',
-        'file_attachment'
-    ];
-
-    /**
-     * Valid expense statuses for validation
-     *
-     * @var array<int, string>
-     */
-    private const VALID_STATUSES = [
-        'draft',
-        'submitted',
-        'approved',
-        'rejected'
-    ];
-
-    /**
-     * Maximum amount for expense validation
-     *
-     * @var float
-     */
-    private const MAX_EXPENSE_AMOUNT = 999999999999.99;
-
-    /**
-     * Minimum amount for expense validation
-     *
-     * @var float
-     */
-    private const MIN_EXPENSE_AMOUNT = 0.01;
-
-    /**
-     * Create a new pocket expense with metadata.
-     * 
-     * Validates input data, creates expense record, processes metadata,
-     * handles FX calculations, and maintains audit trails. Supports
-     * multi-tenant scoping and role-based creation permissions.
-     *
-     * @param array<string, mixed> $expenseData
-     * @return PocketExpense
-     * @throws \InvalidArgumentException
-     * @throws \RuntimeException
-     */
-    public function createExpense(array $expenseData): PocketExpense
+    public function __construct(FXConversionService $fxService)
     {
-        // Validate required fields
-        $this->validateExpenseData($expenseData);
-
-        // Extract and normalize data
-        $normalizedData = $this->normalizeExpenseData($expenseData);
-        $metadataArray = $normalizedData['_metadata'] ?? [];
-        unset($normalizedData['_metadata']);
-
-        try {
-            DB::beginTransaction();
-
-            // Create the expense record
-            $expense = PocketExpense::create([
-                'uuid' => $normalizedData['uuid'] ?? (string) Str::uuid(),
-                'user_id' => (int) $normalizedData['user_id'],
-                'client_id' => (int) $normalizedData['client_id'],
-                'date' => Carbon::parse($normalizedData['date'])->format('Y-m-d'),
-                'merchant_name' => $normalizedData['merchant_name'],
-                'merchant_description' => $normalizedData['merchant_description'] ?? null,
-                'expense_type' => (int) $normalizedData['expense_type'],
-                'currency' => strtoupper($normalizedData['currency']),
-                'amount' => (float) $normalizedData['amount'],
-                'merchant_address' => $normalizedData['merchant_address'] ?? null,
-                'vat_amount' => isset($normalizedData['vat_amount']) ? (float) $normalizedData['vat_amount'] : null,
-                'notes' => $normalizedData['notes'] ?? null,
-                'status' => $normalizedData['status'] ?? self::DEFAULT_STATUS,
-                'created_by_user_id' => (int) $normalizedData['created_by_user_id'],
-                'updated_by_user_id' => null,
-                'approved_by_user_id' => null,
-                'create_time' => now(),
-                'update_time' => now(),
-                'deleted' => false,
-                'delete_time' => null
-            ]);
-
-            // Process metadata if provided
-            if (!empty($metadataArray)) {
-                $this->createExpenseMetadata($expense, $metadataArray);
-            }
-
-            // Log the expense creation
-            $this->logExpenseAction('created', $expense, $normalizedData['created_by_user_id'], [
-                'initial_status' => $expense->status,
-                'amount' => $expense->amount,
-                'currency' => $expense->currency,
-                'metadata_types' => array_keys($metadataArray)
-            ]);
-
-            DB::commit();
-
-            return $expense->fresh(['expenseType', 'user', 'client', 'metadata']);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            
-            Log::error('Failed to create expense', [
-                'expense_data' => $expenseData,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-
-            throw new \RuntimeException('Failed to create expense: ' . $e->getMessage());
-        }
+        $this->fxService = $fxService;
     }
 
     /**
-     * Update an existing pocket expense.
-     * 
-     * Validates permissions, updates expense data, manages metadata changes,
-     * handles status transitions, and maintains audit trails. Supports
-     * partial updates and metadata synchronization.
+     * Create a new pocket expense with FX conversion and validation.
      *
-     * @param int $expenseId
-     * @param array<string, mixed> $updateData
-     * @return PocketExpense
+     * @param array $data
+     * @return \App\Models\PocketExpense
      * @throws \InvalidArgumentException
      * @throws \RuntimeException
      */
-    public function updateExpense(int $expenseId, array $updateData): PocketExpense
+    public function createExpense(array $data): PocketExpense
     {
-        $expense = PocketExpense::find($expenseId);
+        // Validate required fields
+        $this->validateExpenseData($data);
 
-        if (!$expense) {
-            throw new \InvalidArgumentException("Expense with ID {$expenseId} not found");
-        }
+        // Apply FX conversion if needed
+        $data = $this->applyFXConversion($data);
 
-        // Check if expense can be updated
-        if (!$expense->canBeEdited() && !$this->isStatusOnlyUpdate($updateData)) {
-            throw new \InvalidArgumentException('Expense cannot be updated in its current status');
+        // Start database transaction
+        return DB::transaction(function () use ($data) {
+            try {
+                // Create the main expense record
+                $expense = PocketExpense::createExpense([
+                    'user_id' => $data['user_id'],
+                    'client_id' => $data['client_id'],
+                    'date' => $data['date'],
+                    'merchant_name' => $this->sanitizeMerchantName($data['merchant_name']),
+                    'merchant_description' => $data['merchant_description'] ?? null,
+                    'expense_type' => $data['expense_type'] ?? null,
+                    'currency' => strtoupper($data['currency']),
+                    'amount' => abs((float) $data['amount']),
+                    'merchant_address' => $data['merchant_address'] ?? null,
+                    'vat_amount' => isset($data['vat_amount']) ? abs((float) $data['vat_amount']) : null,
+                    'notes' => $this->sanitizeNotes($data['notes'] ?? null),
+                    'status' => $data['status'] ?? PocketExpense::STATUS_DRAFT,
+                    'created_by_user_id' => $data['created_by_user_id'],
+                ]);
+
+                // Create associated metadata if provided
+                if (!empty($data['metadata'])) {
+                    $this->createExpenseMetadata($expense, $data['metadata'], $data['created_by_user_id']);
+                }
+
+                // Log expense creation
+                Log::info('Pocket expense created', [
+                    'expense_id' => $expense->id,
+                    'uuid' => $expense->uuid,
+                    'user_id' => $expense->user_id,
+                    'client_id' => $expense->client_id,
+                    'amount' => $expense->amount,
+                    'currency' => $expense->currency,
+                    'created_by' => $expense->created_by_user_id,
+                ]);
+
+                return $expense;
+
+            } catch (\Exception $e) {
+                Log::error('Failed to create pocket expense', [
+                    'error' => $e->getMessage(),
+                    'user_id' => $data['user_id'] ?? null,
+                    'client_id' => $data['client_id'] ?? null,
+                    'amount' => $data['amount'] ?? null,
+                    'currency' => $data['currency'] ?? null,
+                ]);
+
+                throw new RuntimeException('Failed to create expense: ' . $e->getMessage(), 0, $e);
+            }
+        });
+    }
+
+    /**
+     * Update an existing pocket expense with validation and FX conversion.
+     *
+     * @param \App\Models\PocketExpense $expense
+     * @param array $data
+     * @return \App\Models\PocketExpense
+     * @throws \InvalidArgumentException
+     * @throws \RuntimeException
+     */
+    public function updateExpense(PocketExpense $expense, array $data): PocketExpense
+    {
+        // Check if expense can be edited
+        if (!$expense->canEdit()) {
+            throw new RuntimeException('Expense cannot be edited in current status: ' . $expense->status);
         }
 
         // Validate update data
-        $this->validateExpenseUpdateData($updateData, $expense);
+        $this->validateExpenseUpdateData($data);
 
-        // Extract and normalize data
-        $normalizedData = $this->normalizeExpenseUpdateData($updateData, $expense);
-        $metadataArray = $normalizedData['_metadata'] ?? [];
-        unset($normalizedData['_metadata']);
-
-        try {
-            DB::beginTransaction();
-
-            $originalData = $expense->toArray();
-
-            // Update expense fields
-            $expense->fill($normalizedData);
-            
-            // Always update the update_time and updated_by_user_id
-            $expense->update_time = now();
-            if (auth()->check()) {
-                $expense->updated_by_user_id = auth()->user()->id;
-            }
-
-            // Handle status-specific updates
-            if (isset($normalizedData['status'])) {
-                $this->handleStatusTransition($expense, $expense->status, $normalizedData['status']);
-            }
-
-            $expense->save();
-
-            // Process metadata updates if provided
-            if (!empty($metadataArray)) {
-                $this->updateExpenseMetadata($expense, $metadataArray);
-            }
-
-            // Log the expense update
-            $this->logExpenseAction('updated', $expense, $expense->updated_by_user_id, [
-                'original_data' => $originalData,
-                'updated_fields' => array_keys($normalizedData),
-                'status_changed' => isset($normalizedData['status']),
-                'metadata_updated' => !empty($metadataArray)
-            ]);
-
-            DB::commit();
-
-            return $expense->fresh(['expenseType', 'user', 'client', 'metadata']);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            
-            Log::error('Failed to update expense', [
-                'expense_id' => $expenseId,
-                'update_data' => $updateData,
-                'error' => $e->getMessage()
-            ]);
-
-            throw new \RuntimeException('Failed to update expense: ' . $e->getMessage());
+        // Apply FX conversion if currency or amount changed
+        if (isset($data['currency']) || isset($data['amount'])) {
+            $data = $this->applyFXConversion(array_merge($expense->toArray(), $data));
         }
+
+        // Start database transaction
+        return DB::transaction(function () use ($expense, $data) {
+            try {
+                // Update expense fields
+                $updateFields = [];
+
+                if (isset($data['date'])) {
+                    $updateFields['date'] = $data['date'];
+                }
+
+                if (isset($data['merchant_name'])) {
+                    $updateFields['merchant_name'] = $this->sanitizeMerchantName($data['merchant_name']);
+                }
+
+                if (isset($data['merchant_description'])) {
+                    $updateFields['merchant_description'] = $data['merchant_description'];
+                }
+
+                if (isset($data['expense_type'])) {
+                    $updateFields['expense_type'] = $data['expense_type'];
+                }
+
+                if (isset($data['currency'])) {
+                    $updateFields['currency'] = strtoupper($data['currency']);
+                }
+
+                if (isset($data['amount'])) {
+                    $updateFields['amount'] = abs((float) $data['amount']);
+                }
+
+                if (isset($data['merchant_address'])) {
+                    $updateFields['merchant_address'] = $data['merchant_address'];
+                }
+
+                if (isset($data['vat_amount'])) {
+                    $updateFields['vat_amount'] = isset($data['vat_amount']) ? abs((float) $data['vat_amount']) : null;
+                }
+
+                if (isset($data['notes'])) {
+                    $updateFields['notes'] = $this->sanitizeNotes($data['notes']);
+                }
+
+                if (isset($data['updated_by_user_id'])) {
+                    $updateFields['updated_by_user_id'] = $data['updated_by_user_id'];
+                }
+
+                // Update the expense
+                $expense->update($updateFields);
+
+                // Update metadata if provided
+                if (isset($data['metadata'])) {
+                    $this->updateExpenseMetadata($expense, $data['metadata'], $data['updated_by_user_id'] ?? $expense->created_by_user_id);
+                }
+
+                // Reload to get fresh data
+                $expense->refresh();
+
+                // Log expense update
+                Log::info('Pocket expense updated', [
+                    'expense_id' => $expense->id,
+                    'uuid' => $expense->uuid,
+                    'user_id' => $expense->user_id,
+                    'client_id' => $expense->client_id,
+                    'updated_fields' => array_keys($updateFields),
+                    'updated_by' => $expense->updated_by_user_id,
+                ]);
+
+                return $expense;
+
+            } catch (\Exception $e) {
+                Log::error('Failed to update pocket expense', [
+                    'expense_id' => $expense->id,
+                    'error' => $e->getMessage(),
+                    'update_data' => $data,
+                ]);
+
+                throw new RuntimeException('Failed to update expense: ' . $e->getMessage(), 0, $e);
+            }
+        });
     }
 
     /**
      * Delete a pocket expense (soft delete).
-     * 
-     * Validates permissions, performs soft delete, handles metadata cleanup,
-     * and maintains audit trails. Supports cascade handling for related data.
      *
-     * @param int $expenseId
+     * @param \App\Models\PocketExpense $expense
      * @return bool
-     * @throws \InvalidArgumentException
      * @throws \RuntimeException
      */
-    public function deleteExpense(int $expenseId): bool
+    public function deleteExpense(PocketExpense $expense): bool
     {
-        $expense = PocketExpense::find($expenseId);
-
-        if (!$expense) {
-            throw new \InvalidArgumentException("Expense with ID {$expenseId} not found");
+        if (!$expense->canDelete()) {
+            throw new RuntimeException('Expense cannot be deleted in current status: ' . $expense->status);
         }
 
-        // Check if expense can be deleted
-        if (!$expense->canBeDeleted()) {
-            throw new \InvalidArgumentException('Expense cannot be deleted in its current status');
-        }
+        return DB::transaction(function () use ($expense) {
+            try {
+                // Soft delete the expense
+                $result = $expense->softDelete();
 
-        try {
-            DB::beginTransaction();
+                if ($result) {
+                    // Soft delete associated metadata
+                    $expense->metadata()->update([
+                        'deleted' => true,
+                        'delete_time' => now(),
+                    ]);
 
-            // Soft delete related metadata
-            PocketExpenseMetadata::where('pocket_expense_id', $expenseId)
-                ->update([
-                    'deleted' => true,
-                    'delete_time' => now(),
-                    'update_time' => now()
+                    Log::info('Pocket expense deleted', [
+                        'expense_id' => $expense->id,
+                        'uuid' => $expense->uuid,
+                        'user_id' => $expense->user_id,
+                        'client_id' => $expense->client_id,
+                        'deleted_at' => $expense->delete_time,
+                    ]);
+                }
+
+                return $result;
+
+            } catch (\Exception $e) {
+                Log::error('Failed to delete pocket expense', [
+                    'expense_id' => $expense->id,
+                    'error' => $e->getMessage(),
                 ]);
 
-            // Soft delete the expense
-            $expense->deleted = true;
-            $expense->delete_time = now();
-            $expense->update_time = now();
-            
-            if (auth()->check()) {
-                $expense->updated_by_user_id = auth()->user()->id;
+                throw new RuntimeException('Failed to delete expense: ' . $e->getMessage(), 0, $e);
             }
-            
-            $expense->save();
-
-            // Log the expense deletion
-            $this->logExpenseAction('deleted', $expense, $expense->updated_by_user_id, [
-                'deletion_reason' => 'User requested deletion',
-                'original_status' => $expense->status
-            ]);
-
-            DB::commit();
-
-            return true;
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            
-            Log::error('Failed to delete expense', [
-                'expense_id' => $expenseId,
-                'error' => $e->getMessage()
-            ]);
-
-            throw new \RuntimeException('Failed to delete expense: ' . $e->getMessage());
-        }
+        });
     }
 
     /**
-     * Get expenses for a specific user and client with filtering.
-     * 
-     * Provides comprehensive expense querying with filtering, sorting,
-     * pagination, and multi-tenant scoping. Supports role-based access
-     * control and performance optimization through eager loading.
+     * Get expenses for a specific user and client with pagination.
      *
-     * @param int $userId
-     * @param int $clientId
-     * @param array<string, mixed> $filters
-     * @return Collection<int, PocketExpense>
+     * @param \App\Models\User $user
+     * @param \App\Models\Client $client
+     * @param array $filters
+     * @param int $perPage
+     * @return \Illuminate\Pagination\LengthAwarePaginator
      */
-    public function getUserExpenses(int $userId, int $clientId, array $filters = []): Collection
+    public function getUserExpenses(User $user, Client $client, array $filters = [], int $perPage = 15): LengthAwarePaginator
     {
-        $query = PocketExpense::where('user_id', $userId)
-            ->where('client_id', $clientId)
-            ->with(['expenseType', 'metadata.expenseSource', 'createdBy', 'updatedBy', 'approvedBy']);
+        $query = PocketExpense::forUserAndClient($user->id, $client->id)
+                              ->with(['expenseType', 'createdBy', 'updatedBy', 'approvedBy', 'metadata']);
 
         // Apply filters
         $query = $this->applyExpenseFilters($query, $filters);
 
-        // Apply sorting
-        $sortBy = $filters['sort_by'] ?? 'create_time';
-        $sortDirection = $filters['sort_direction'] ?? 'desc';
-        $query->orderBy($sortBy, $sortDirection);
+        // Default ordering by creation date (newest first)
+        $query->orderBy('create_time', 'desc');
 
-        // Apply limit
-        $limit = isset($filters['limit']) ? min((int) $filters['limit'], self::MAX_QUERY_LIMIT) : self::DEFAULT_QUERY_LIMIT;
-        if ($limit > 0) {
-            $query->limit($limit);
-        }
-
-        return $query->get();
+        return $query->paginate($perPage);
     }
 
     /**
-     * Approve a pocket expense.
-     * 
-     * Handles expense approval workflow with permission validation,
-     * status transition, approver assignment, and audit logging.
-     * Updates expense status to approved and records approval details.
+     * Get all expenses for a client (admin view).
      *
-     * @param int $expenseId
-     * @param int $approverId
-     * @return PocketExpense
-     * @throws \InvalidArgumentException
-     * @throws \RuntimeException
+     * @param \App\Models\Client $client
+     * @param array $filters
+     * @param int $perPage
+     * @return \Illuminate\Pagination\LengthAwarePaginator
      */
-    public function approveExpense(int $expenseId, int $approverId): PocketExpense
+    public function getClientExpenses(Client $client, array $filters = [], int $perPage = 15): LengthAwarePaginator
     {
-        $expense = PocketExpense::find($expenseId);
+        $query = PocketExpense::active()
+                              ->forClient($client->id)
+                              ->with(['user', 'expenseType', 'createdBy', 'updatedBy', 'approvedBy', 'metadata']);
 
-        if (!$expense) {
-            throw new \InvalidArgumentException("Expense with ID {$expenseId} not found");
-        }
+        // Apply filters
+        $query = $this->applyExpenseFilters($query, $filters);
 
-        // Check if expense can be approved
-        if (!$expense->canBeApproved()) {
-            throw new \InvalidArgumentException('Expense cannot be approved in its current status');
-        }
+        // Default ordering by creation date (newest first)
+        $query->orderBy('create_time', 'desc');
 
-        // Validate approver
-        $approver = User::find($approverId);
-        if (!$approver || $approver->client_id !== $expense->client_id) {
-            throw new \InvalidArgumentException('Invalid approver or approver not in same client');
-        }
+        return $query->paginate($perPage);
+    }
 
-        // Users cannot approve their own expenses
-        if ($expense->user_id === $approverId) {
-            throw new \InvalidArgumentException('Users cannot approve their own expenses');
+    /**
+     * Apply FX conversion to expense data if needed.
+     *
+     * @param array $data
+     * @return array
+     */
+    public function applyFXConversion(array $data): array
+    {
+        if (!isset($data['client_id'], $data['currency'], $data['amount'])) {
+            return $data;
         }
 
         try {
-            DB::beginTransaction();
-
-            $originalStatus = $expense->status;
-
-            // Update expense status and approver
-            $expense->status = PocketExpense::STATUS_APPROVED;
-            $expense->approved_by_user_id = $approverId;
-            $expense->updated_by_user_id = $approverId;
-            $expense->update_time = now();
-            $expense->save();
-
-            // Log the approval
-            $this->logExpenseAction('approved', $expense, $approverId, [
-                'original_status' => $originalStatus,
-                'approved_at' => now()->toISOString(),
-                'approver_name' => $approver->name
-            ]);
-
-            DB::commit();
-
-            return $expense->fresh(['expenseType', 'user', 'client', 'approvedBy']);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
+            // Get wallet base currency for the client
+            $walletInfo = $this->fxService->getWalletBaseCurrency((int) $data['client_id']);
             
-            Log::error('Failed to approve expense', [
-                'expense_id' => $expenseId,
-                'approver_id' => $approverId,
-                'error' => $e->getMessage()
-            ]);
-
-            throw new \RuntimeException('Failed to approve expense: ' . $e->getMessage());
-        }
-    }
-
-    /**
-     * Reject a pocket expense.
-     *
-     * @param int $expenseId
-     * @param int $rejectorId
-     * @param string|null $rejectionReason
-     * @return PocketExpense
-     * @throws \InvalidArgumentException
-     * @throws \RuntimeException
-     */
-    public function rejectExpense(int $expenseId, int $rejectorId, ?string $rejectionReason = null): PocketExpense
-    {
-        $expense = PocketExpense::find($expenseId);
-
-        if (!$expense) {
-            throw new \InvalidArgumentException("Expense with ID {$expenseId} not found");
-        }
-
-        // Check if expense can be rejected
-        if (!$expense->canBeRejected()) {
-            throw new \InvalidArgumentException('Expense cannot be rejected in its current status');
-        }
-
-        // Validate rejector
-        $rejector = User::find($rejectorId);
-        if (!$rejector || $rejector->client_id !== $expense->client_id) {
-            throw new \InvalidArgumentException('Invalid rejector or rejector not in same client');
-        }
-
-        // Users cannot reject their own expenses
-        if ($expense->user_id === $rejectorId) {
-            throw new \InvalidArgumentException('Users cannot reject their own expenses');
-        }
-
-        try {
-            DB::beginTransaction();
-
-            $originalStatus = $expense->status;
-
-            // Update expense status
-            $expense->status = PocketExpense::STATUS_REJECTED;
-            $expense->updated_by_user_id = $rejectorId;
-            $expense->update_time = now();
-            $expense->save();
-
-            // Add rejection reason to notes if provided
-            if ($rejectionReason) {
-                $currentNotes = $expense->notes ? $expense->notes . "\n\n" : '';
-                $rejectionNote = "REJECTED (" . now()->format('Y-m-d H:i') . "): " . $rejectionReason;
-                $expense->notes = $currentNotes . $rejectionNote;
-                $expense->save();
+            if (empty($walletInfo['currency']) || $walletInfo['currency'] === $data['currency']) {
+                // No conversion needed
+                return $data;
             }
 
-            // Log the rejection
-            $this->logExpenseAction('rejected', $expense, $rejectorId, [
-                'original_status' => $originalStatus,
-                'rejected_at' => now()->toISOString(),
-                'rejector_name' => $rejector->name,
-                'rejection_reason' => $rejectionReason
+            $expenseDate = isset($data['date']) ? Carbon::parse($data['date']) : Carbon::now();
+            
+            // Get FX rate from expense currency to wallet base currency
+            $fxRate = $this->fxService->getFXRate(
+                $data['currency'],
+                $walletInfo['currency'],
+                $expenseDate
+            );
+
+            if ($fxRate === null) {
+                Log::warning('FX rate not available for conversion', [
+                    'from_currency' => $data['currency'],
+                    'to_currency' => $walletInfo['currency'],
+                    'date' => $expenseDate->toDateString(),
+                    'client_id' => $data['client_id'],
+                ]);
+                return $data;
+            }
+
+            // Calculate converted amount with commission
+            $commission = $walletInfo['commission'] ?? 0.0;
+            $convertedAmount = $this->fxService->calculateConvertedAmount(
+                (float) $data['amount'],
+                $fxRate,
+                $commission
+            );
+
+            // Add conversion information to data
+            $data['converted_amount'] = $convertedAmount;
+            $data['converted_currency'] = $walletInfo['currency'];
+            $data['fx_rate'] = $fxRate;
+            $data['fx_commission'] = $commission;
+
+            Log::info('FX conversion applied to expense', [
+                'original_amount' => $data['amount'],
+                'original_currency' => $data['currency'],
+                'converted_amount' => $convertedAmount,
+                'converted_currency' => $walletInfo['currency'],
+                'fx_rate' => $fxRate,
+                'commission' => $commission,
+                'client_id' => $data['client_id'],
             ]);
-
-            DB::commit();
-
-            return $expense->fresh(['expenseType', 'user', 'client']);
 
         } catch (\Exception $e) {
-            DB::rollBack();
-            
-            Log::error('Failed to reject expense', [
-                'expense_id' => $expenseId,
-                'rejector_id' => $rejectorId,
-                'error' => $e->getMessage()
+            Log::error('FX conversion failed', [
+                'error' => $e->getMessage(),
+                'client_id' => $data['client_id'],
+                'currency' => $data['currency'],
+                'amount' => $data['amount'],
             ]);
-
-            throw new \RuntimeException('Failed to reject expense: ' . $e->getMessage());
+            
+            // Continue without conversion on FX service errors
         }
+
+        return $data;
     }
 
     /**
-     * Submit expense for approval.
+     * Submit an expense for approval.
      *
-     * @param int $expenseId
-     * @return PocketExpense
-     * @throws \InvalidArgumentException
+     * @param \App\Models\PocketExpense $expense
+     * @param int $submittedByUserId
+     * @return \App\Models\PocketExpense
      * @throws \RuntimeException
      */
-    public function submitExpense(int $expenseId): PocketExpense
+    public function submitExpense(PocketExpense $expense, int $submittedByUserId): PocketExpense
     {
-        $expense = PocketExpense::find($expenseId);
-
-        if (!$expense) {
-            throw new \InvalidArgumentException("Expense with ID {$expenseId} not found");
+        if (!$expense->submit($submittedByUserId)) {
+            throw new RuntimeException('Cannot submit expense in current status: ' . $expense->status);
         }
 
-        // Check if expense can be submitted
-        if (!$expense->canBeSubmitted()) {
-            throw new \InvalidArgumentException('Expense cannot be submitted in its current status');
-        }
-
-        try {
-            DB::beginTransaction();
-
-            $originalStatus = $expense->status;
-
-            // Update expense status
-            $expense->status = PocketExpense::STATUS_SUBMITTED;
-            $expense->update_time = now();
-            
-            if (auth()->check()) {
-                $expense->updated_by_user_id = auth()->user()->id;
-            }
-            
-            $expense->save();
-
-            // Log the submission
-            $this->logExpenseAction('submitted', $expense, $expense->updated_by_user_id, [
-                'original_status' => $originalStatus,
-                'submitted_at' => now()->toISOString()
-            ]);
-
-            DB::commit();
-
-            return $expense->fresh(['expenseType', 'user', 'client']);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            
-            Log::error('Failed to submit expense', [
-                'expense_id' => $expenseId,
-                'error' => $e->getMessage()
-            ]);
-
-            throw new \RuntimeException('Failed to submit expense: ' . $e->getMessage());
-        }
+        $expense->refresh();
+        return $expense;
     }
 
     /**
-     * Return expense to draft status.
+     * Approve an expense.
      *
-     * @param int $expenseId
-     * @return PocketExpense
-     * @throws \InvalidArgumentException
+     * @param \App\Models\PocketExpense $expense
+     * @param int $approvedByUserId
+     * @return \App\Models\PocketExpense
      * @throws \RuntimeException
      */
-    public function returnToDraft(int $expenseId): PocketExpense
+    public function approveExpense(PocketExpense $expense, int $approvedByUserId): PocketExpense
     {
-        $expense = PocketExpense::find($expenseId);
-
-        if (!$expense) {
-            throw new \InvalidArgumentException("Expense with ID {$expenseId} not found");
+        if (!$expense->approve($approvedByUserId)) {
+            throw new RuntimeException('Cannot approve expense in current status: ' . $expense->status);
         }
 
-        // Check valid status transitions to draft
-        if (!in_array($expense->status, [PocketExpense::STATUS_SUBMITTED, PocketExpense::STATUS_REJECTED])) {
-            throw new \InvalidArgumentException('Expense cannot be returned to draft from its current status');
+        $expense->refresh();
+        return $expense;
+    }
+
+    /**
+     * Reject an expense.
+     *
+     * @param \App\Models\PocketExpense $expense
+     * @param int $rejectedByUserId
+     * @return \App\Models\PocketExpense
+     * @throws \RuntimeException
+     */
+    public function rejectExpense(PocketExpense $expense, int $rejectedByUserId): PocketExpense
+    {
+        if (!$expense->reject($rejectedByUserId)) {
+            throw new RuntimeException('Cannot reject expense in current status: ' . $expense->status);
         }
 
-        try {
-            DB::beginTransaction();
-
-            $originalStatus = $expense->status;
-
-            // Update expense status
-            $expense->status = PocketExpense::STATUS_DRAFT;
-            $expense->approved_by_user_id = null; // Clear approver if returning from approved
-            $expense->update_time = now();
-            
-            if (auth()->check()) {
-                $expense->updated_by_user_id = auth()->user()->id;
-            }
-            
-            $expense->save();
-
-            // Log the status change
-            $this->logExpenseAction('returned_to_draft', $expense, $expense->updated_by_user_id, [
-                'original_status' => $originalStatus,
-                'returned_at' => now()->toISOString()
-            ]);
-
-            DB::commit();
-
-            return $expense->fresh(['expenseType', 'user', 'client']);
-
-        } catch (\Exception $e) {
-            DB::rollBack();
-            
-            Log::error('Failed to return expense to draft', [
-                'expense_id' => $expenseId,
-                'error' => $e->getMessage()
-            ]);
-
-            throw new \RuntimeException('Failed to return expense to draft: ' . $e->getMessage());
-        }
+        $expense->refresh();
+        return $expense;
     }
 
     /**
      * Get expense statistics for a client.
      *
-     * @param int $clientId
-     * @param array<string, mixed> $filters
-     * @return array<string, mixed>
+     * @param \App\Models\Client $client
+     * @param array $filters
+     * @return array
      */
-    public function getExpenseStatistics(int $clientId, array $filters = []): array
+    public function getExpenseStatistics(Client $client, array $filters = []): array
     {
-        $query = PocketExpense::where('client_id', $clientId);
-
-        // Apply date filters if provided
-        if (isset($filters['start_date'])) {
-            $query->where('date', '>=', Carbon::parse($filters['start_date']));
-        }
-        if (isset($filters['end_date'])) {
-            $query->where('date', '<=', Carbon::parse($filters['end_date']));
-        }
-
-        // Apply user filter if provided
-        if (isset($filters['user_id'])) {
-            $query->where('user_id', $filters['user_id']);
+        $query = PocketExpense::active()->forClient($client->id);
+        
+        // Apply date range filter if provided
+        if (!empty($filters['date_from']) && !empty($filters['date_to'])) {
+            $query->dateRange(
+                Carbon::parse($filters['date_from']),
+                Carbon::parse($filters['date_to'])
+            );
         }
 
+        // Get statistics
         $totalExpenses = $query->count();
-        $totalAmount = $query->sum('amount') ?? 0;
+        $totalAmount = $query->sum('amount');
+        $averageAmount = $totalExpenses > 0 ? ($totalAmount / $totalExpenses) : 0;
 
-        $statusCounts = $query->select('status', DB::raw('count(*) as count'))
-            ->groupBy('status')
-            ->pluck('count', 'status')
-            ->toArray();
+        // Status breakdown
+        $statusStats = PocketExpense::active()
+                                   ->forClient($client->id)
+                                   ->selectRaw('status, COUNT(*) as count, SUM(amount) as total_amount')
+                                   ->groupBy('status')
+                                   ->get()
+                                   ->keyBy('status');
 
-        $currencyTotals = $query->select('currency', DB::raw('sum(amount) as total'))
-            ->groupBy('currency')
-            ->pluck('total', 'currency')
-            ->toArray();
-
-        $expenseTypeCounts = $query->join('opt_pocket_expense_type', 'pocket_expense.expense_type', '=', 'opt_pocket_expense_type.id')
-            ->select('opt_pocket_expense_type.option', DB::raw('count(*) as count'))
-            ->groupBy('opt_pocket_expense_type.option')
-            ->pluck('count', 'option')
-            ->toArray();
+        // Currency breakdown
+        $currencyStats = PocketExpense::active()
+                                     ->forClient($client->id)
+                                     ->selectRaw('currency, COUNT(*) as count, SUM(amount) as total_amount')
+                                     ->groupBy('currency')
+                                     ->get()
+                                     ->keyBy('currency');
 
         return [
             'total_expenses' => $totalExpenses,
             'total_amount' => $totalAmount,
-            'average_amount' => $totalExpenses > 0 ? $totalAmount / $totalExpenses : 0,
-            'status_breakdown' => [
-                'draft' => $statusCounts['draft'] ?? 0,
-                'submitted' => $statusCounts['submitted'] ?? 0,
-                'approved' => $statusCounts['approved'] ?? 0,
-                'rejected' => $statusCounts['rejected'] ?? 0
-            ],
-            'currency_totals' => $currencyTotals,
-            'expense_type_breakdown' => $expenseTypeCounts,
-            'approval_rate' => $this->calculateApprovalRate($clientId, $filters),
-            'recent_activity' => $this->getRecentActivity($clientId, $filters)
+            'average_amount' => round($averageAmount, 2),
+            'status_breakdown' => $statusStats,
+            'currency_breakdown' => $currencyStats,
         ];
-    }
-
-    /**
-     * Get expenses by status for a client.
-     *
-     * @param int $clientId
-     * @param string $status
-     * @param array<string, mixed> $filters
-     * @return Collection<int, PocketExpense>
-     */
-    public function getExpensesByStatus(int $clientId, string $status, array $filters = []): Collection
-    {
-        if (!in_array($status, self::VALID_STATUSES)) {
-            throw new \InvalidArgumentException("Invalid status: {$status}");
-        }
-
-        $query = PocketExpense::where('client_id', $clientId)
-            ->where('status', $status)
-            ->with(['expenseType', 'user', 'metadata']);
-
-        // Apply additional filters
-        $query = $this->applyExpenseFilters($query, $filters);
-
-        // Apply sorting
-        $sortBy = $filters['sort_by'] ?? 'create_time';
-        $sortDirection = $filters['sort_direction'] ?? 'desc';
-        $query->orderBy($sortBy, $sortDirection);
-
-        // Apply limit
-        $limit = isset($filters['limit']) ? min((int) $filters['limit'], self::MAX_QUERY_LIMIT) : self::DEFAULT_QUERY_LIMIT;
-        if ($limit > 0) {
-            $query->limit($limit);
-        }
-
-        return $query->get();
-    }
-
-    /**
-     * Search expenses by criteria.
-     *
-     * @param int $clientId
-     * @param string $searchTerm
-     * @param array<string, mixed> $filters
-     * @return Collection<int, PocketExpense>
-     */
-    public function searchExpenses(int $clientId, string $searchTerm, array $filters = []): Collection
-    {
-        $query = PocketExpense::where('client_id', $clientId)
-            ->where(function ($q) use ($searchTerm) {
-                $q->where('merchant_name', 'like', "%{$searchTerm}%")
-                  ->orWhere('merchant_description', 'like', "%{$searchTerm}%")
-                  ->orWhere('notes', 'like', "%{$searchTerm}%")
-                  ->orWhere('uuid', 'like', "%{$searchTerm}%");
-            })
-            ->with(['expenseType', 'user', 'metadata']);
-
-        // Apply additional filters
-        $query = $this->applyExpenseFilters($query, $filters);
-
-        // Apply sorting
-        $sortBy = $filters['sort_by'] ?? 'create_time';
-        $sortDirection = $filters['sort_direction'] ?? 'desc';
-        $query->orderBy($sortBy, $sortDirection);
-
-        // Apply limit
-        $limit = isset($filters['limit']) ? min((int) $filters['limit'], self::MAX_QUERY_LIMIT) : self::DEFAULT_QUERY_LIMIT;
-        if ($limit > 0) {
-            $query->limit($limit);
-        }
-
-        return $query->get();
-    }
-
-    /**
-     * Get pending expenses for approval.
-     *
-     * @param int $clientId
-     * @param array<string, mixed> $filters
-     * @return Collection<int, PocketExpense>
-     */
-    public function getPendingExpenses(int $clientId, array $filters = []): Collection
-    {
-        return $this->getExpensesByStatus($clientId, PocketExpense::STATUS_SUBMITTED, $filters);
     }
 
     /**
      * Validate expense data for creation.
      *
-     * @param array<string, mixed> $expenseData
+     * @param array $data
      * @throws \InvalidArgumentException
      */
-    private function validateExpenseData(array $expenseData): void
+    protected function validateExpenseData(array $data): void
     {
-        $required = ['user_id', 'client_id', 'date', 'merchant_name', 'expense_type', 'currency', 'amount', 'created_by_user_id'];
+        $required = ['user_id', 'client_id', 'date', 'merchant_name', 'currency', 'amount', 'created_by_user_id'];
         
         foreach ($required as $field) {
-            if (!isset($expenseData[$field])) {
-                throw new \InvalidArgumentException("Required field '{$field}' is missing");
+            if (!isset($data[$field]) || $data[$field] === null || $data[$field] === '') {
+                throw new InvalidArgumentException("Required field '{$field}' is missing or empty.");
             }
         }
 
-        // Validate user exists and belongs to client
-        $user = User::find($expenseData['user_id']);
-        if (!$user || $user->client_id !== (int) $expenseData['client_id']) {
-            throw new \InvalidArgumentException('User does not exist or belongs to different client');
+        $this->validateCommonExpenseData($data);
+    }
+
+    /**
+     * Validate expense data for updates.
+     *
+     * @param array $data
+     * @throws \InvalidArgumentException
+     */
+    protected function validateExpenseUpdateData(array $data): void
+    {
+        $this->validateCommonExpenseData($data);
+    }
+
+    /**
+     * Validate common expense data fields.
+     *
+     * @param array $data
+     * @throws \InvalidArgumentException
+     */
+    protected function validateCommonExpenseData(array $data): void
+    {
+        // Validate date
+        if (isset($data['date'])) {
+            try {
+                $expenseDate = Carbon::parse($data['date']);
+                $maxAge = Carbon::now()->subYears(self::MAX_EXPENSE_AGE_YEARS);
+                
+                if ($expenseDate < $maxAge) {
+                    throw new InvalidArgumentException('Expense date cannot be older than ' . self::MAX_EXPENSE_AGE_YEARS . ' years.');
+                }
+                
+                if ($expenseDate > Carbon::now()) {
+                    throw new InvalidArgumentException('Expense date cannot be in the future.');
+                }
+            } catch (\Exception $e) {
+                throw new InvalidArgumentException('Invalid expense date format: ' . $data['date']);
+            }
         }
 
-        // Validate expense type exists
-        $expenseType = OptPocketExpenseType::find($expenseData['expense_type']);
-        if (!$expenseType) {
-            throw new \InvalidArgumentException('Invalid expense type');
+        // Validate currency
+        if (isset($data['currency'])) {
+            $currency = strtoupper($data['currency']);
+            if (!preg_match(self::CURRENCY_PATTERN, $currency)) {
+                throw new InvalidArgumentException('Currency must be a 3-letter ISO code: ' . $data['currency']);
+            }
         }
 
         // Validate amount
-        $amount = (float) $expenseData['amount'];
-        if ($amount < self::MIN_EXPENSE_AMOUNT || $amount > self::MAX_EXPENSE_AMOUNT) {
-            throw new \InvalidArgumentException('Amount must be between ' . self::MIN_EXPENSE_AMOUNT . ' and ' . self::MAX_EXPENSE_AMOUNT);
-        }
-
-        // Validate VAT amount if provided
-        if (isset($expenseData['vat_amount'])) {
-            $vatAmount = (float) $expenseData['vat_amount'];
-            if ($vatAmount > $amount) {
-                throw new \InvalidArgumentException('VAT amount cannot be greater than expense amount');
+        if (isset($data['amount'])) {
+            if (!is_numeric($data['amount']) || (float) $data['amount'] <= 0) {
+                throw new InvalidArgumentException('Amount must be a positive number: ' . $data['amount']);
             }
         }
 
-        // Validate date
-        try {
-            $date = Carbon::parse($expenseData['date']);
-            if ($date->isFuture()) {
-                throw new \InvalidArgumentException('Expense date cannot be in the future');
-            }
-            if ($date->lt(now()->subYears(3))) {
-                throw new \InvalidArgumentException('Expense date cannot be older than 3 years');
-            }
-        } catch (\Exception $e) {
-            throw new \InvalidArgumentException('Invalid date format');
-        }
-
-        // Validate status if provided
-        if (isset($expenseData['status']) && !in_array($expenseData['status'], self::VALID_STATUSES)) {
-            throw new \InvalidArgumentException('Invalid status');
-        }
-    }
-
-    /**
-     * Normalize expense data for database storage.
-     *
-     * @param array<string, mixed> $expenseData
-     * @return array<string, mixed>
-     */
-    private function normalizeExpenseData(array $expenseData): array
-    {
-        $normalized = $expenseData;
-
-        // Normalize string fields
-        $stringFields = ['merchant_name', 'merchant_description', 'merchant_address', 'notes'];
-        foreach ($stringFields as $field) {
-            if (isset($normalized[$field])) {
-                $normalized[$field] = trim(strip_tags($normalized[$field]));
-                if (empty($normalized[$field])) {
-                    $normalized[$field] = null;
-                }
+        // Validate VAT amount
+        if (isset($data['vat_amount']) && $data['vat_amount'] !== null) {
+            if (!is_numeric($data['vat_amount']) || (float) $data['vat_amount'] < 0) {
+                throw new InvalidArgumentException('VAT amount must be a non-negative number: ' . $data['vat_amount']);
             }
         }
 
-        // Normalize currency to uppercase
-        if (isset($normalized['currency'])) {
-            $normalized['currency'] = strtoupper(trim($normalized['currency']));
+        // Validate merchant name length
+        if (isset($data['merchant_name']) && strlen($data['merchant_name']) > self::MAX_MERCHANT_NAME_LENGTH) {
+            throw new InvalidArgumentException('Merchant name cannot exceed ' . self::MAX_MERCHANT_NAME_LENGTH . ' characters.');
         }
 
-        // Normalize numeric fields
-        if (isset($normalized['amount'])) {
-            $normalized['amount'] = round((float) $normalized['amount'], 2);
-        }
-        if (isset($normalized['vat_amount'])) {
-            $normalized['vat_amount'] = round((float) $normalized['vat_amount'], 2);
+        // Validate status
+        if (isset($data['status']) && !PocketExpense::isValidStatus($data['status'])) {
+            throw new InvalidArgumentException('Invalid expense status: ' . $data['status']);
         }
 
-        // Set defaults
-        $normalized['status'] = $normalized['status'] ?? self::DEFAULT_STATUS;
-        $normalized['uuid'] = $normalized['uuid'] ?? (string) Str::uuid();
-
-        return $normalized;
-    }
-
-    /**
-     * Validate expense update data.
-     *
-     * @param array<string, mixed> $updateData
-     * @param PocketExpense $expense
-     * @throws \InvalidArgumentException
-     */
-    private function validateExpenseUpdateData(array $updateData, PocketExpense $expense): void
-    {
-        // Validate amount if being updated
-        if (isset($updateData['amount'])) {
-            $amount = (float) $updateData['amount'];
-            if ($amount < self::MIN_EXPENSE_AMOUNT || $amount > self::MAX_EXPENSE_AMOUNT) {
-                throw new \InvalidArgumentException('Amount must be between ' . self::MIN_EXPENSE_AMOUNT . ' and ' . self::MAX_EXPENSE_AMOUNT);
+        // Validate expense type exists
+        if (isset($data['expense_type']) && $data['expense_type'] !== null) {
+            if (!OptPocketExpenseType::find($data['expense_type'])) {
+                throw new InvalidArgumentException('Invalid expense type ID: ' . $data['expense_type']);
             }
         }
 
-        // Validate VAT amount if being updated
-        if (isset($updateData['vat_amount'])) {
-            $vatAmount = (float) $updateData['vat_amount'];
-            $checkAmount = isset($updateData['amount']) ? (float) $updateData['amount'] : $expense->amount;
-            if ($vatAmount > $checkAmount) {
-                throw new \InvalidArgumentException('VAT amount cannot be greater than expense amount');
-            }
+        // Validate user and client exist
+        if (isset($data['user_id']) && !User::find($data['user_id'])) {
+            throw new InvalidArgumentException('Invalid user ID: ' . $data['user_id']);
         }
 
-        // Validate date if being updated
-        if (isset($updateData['date'])) {
-            try {
-                $date = Carbon::parse($updateData['date']);
-                if ($date->isFuture()) {
-                    throw new \InvalidArgumentException('Expense date cannot be in the future');
-                }
-                if ($date->lt(now()->subYears(3))) {
-                    throw new \InvalidArgumentException('Expense date cannot be older than 3 years');
-                }
-            } catch (\Exception $e) {
-                throw new \InvalidArgumentException('Invalid date format');
-            }
+        if (isset($data['client_id']) && !Client::find($data['client_id'])) {
+            throw new InvalidArgumentException('Invalid client ID: ' . $data['client_id']);
         }
-
-        // Validate expense type if being updated
-        if (isset($updateData['expense_type'])) {
-            $expenseType = OptPocketExpenseType::find($updateData['expense_type']);
-            if (!$expenseType) {
-                throw new \InvalidArgumentException('Invalid expense type');
-            }
-        }
-
-        // Validate status transition if being updated
-        if (isset($updateData['status'])) {
-            if (!in_array($updateData['status'], self::VALID_STATUSES)) {
-                throw new \InvalidArgumentException('Invalid status');
-            }
-            if (!$expense->isValidStatusTransition($expense->status, $updateData['status'])) {
-                throw new \InvalidArgumentException("Invalid status transition from '{$expense->status}' to '{$updateData['status']}'");
-            }
-        }
-    }
-
-    /**
-     * Normalize expense update data.
-     *
-     * @param array<string, mixed> $updateData
-     * @param PocketExpense $expense
-     * @return array<string, mixed>
-     */
-    private function normalizeExpenseUpdateData(array $updateData, PocketExpense $expense): array
-    {
-        $normalized = [];
-
-        // Only include fields that are being updated
-        $allowedFields = [
-            'date', 'merchant_name', 'merchant_description', 'expense_type',
-            'currency', 'amount', 'merchant_address', 'vat_amount', 'notes', 'status'
-        ];
-
-        foreach ($allowedFields as $field) {
-            if (array_key_exists($field, $updateData)) {
-                $normalized[$field] = $updateData[$field];
-            }
-        }
-
-        // Normalize string fields
-        $stringFields = ['merchant_name', 'merchant_description', 'merchant_address', 'notes'];
-        foreach ($stringFields as $field) {
-            if (isset($normalized[$field])) {
-                $normalized[$field] = trim(strip_tags($normalized[$field]));
-                if (empty($normalized[$field])) {
-                    $normalized[$field] = null;
-                }
-            }
-        }
-
-        // Normalize currency to uppercase
-        if (isset($normalized['currency'])) {
-            $normalized['currency'] = strtoupper(trim($normalized['currency']));
-        }
-
-        // Normalize numeric fields
-        if (isset($normalized['amount'])) {
-            $normalized['amount'] = round((float) $normalized['amount'], 2);
-        }
-        if (isset($normalized['vat_amount'])) {
-            $normalized['vat_amount'] = round((float) $normalized['vat_amount'], 2);
-        }
-
-        // Extract metadata if present
-        if (isset($updateData['_metadata'])) {
-            $normalized['_metadata'] = $updateData['_metadata'];
-        }
-
-        return $normalized;
-    }
-
-    /**
-     * Create expense metadata records.
-     *
-     * @param PocketExpense $expense
-     * @param array<string, mixed> $metadataArray
-     */
-    private function createExpenseMetadata(PocketExpense $expense, array $metadataArray): void
-    {
-        $userId = auth()->check() ? auth()->user()->id : $expense->created_by_user_id;
-
-        // Create expense source metadata
-        if (isset($metadataArray['source_id'])) {
-            PocketExpenseMetadata::create([
-                'pocket_expense_id' => $expense->id,
-                'metadata_type' => 'expense_source',
-                'expense_source_id' => (int) $metadataArray['source_id'],
-                'user_id' => $userId,
-                'details_json' => isset($metadataArray['source_note']) ? ['source_note' => $metadataArray['source_note']] : null,
-                'create_time' => now(),
-                'update_time' => now(),
-                'deleted' => false,
-                'delete_time' => null
-            ]);
-        }
-
-        // Create category metadata
-        if (isset($metadataArray['category_id'])) {
-            PocketExpenseMetadata::create([
-                'pocket_expense_id' => $expense->id,
-                'metadata_type' => 'category',
-                'transaction_category_id' => (int) $metadataArray['category_id'],
-                'user_id' => $userId,
-                'create_time' => now(),
-                'update_time' => now(),
-                'deleted' => false,
-                'delete_time' => null
-            ]);
-        }
-
-        // Create project metadata
-        if (isset($metadataArray['project_id'])) {
-            PocketExpenseMetadata::create([
-                'pocket_expense_id' => $expense->id,
-                'metadata_type' => 'project',
-                'project_id' => (int) $metadataArray['project_id'],
-                'user_id' => $userId,
-                'create_time' => now(),
-                'update_time' => now(),
-                'deleted' => false,
-                'delete_time' => null
-            ]);
-        }
-
-        // Create tracking code metadata
-        if (isset($metadataArray['tracking_code_id'])) {
-            PocketExpenseMetadata::create([
-                'pocket_expense_id' => $expense->id,
-                'metadata_type' => 'tracking_code',
-                'tracking_code_id' => (int) $metadataArray['tracking_code_id'],
-                'user_id' => $userId,
-                'create_time' => now(),
-                'update_time' => now(),
-                'deleted' => false,
-                'delete_time' => null
-            ]);
-        }
-
-        // Create file attachment metadata
-        if (isset($metadataArray['file_attachments']) && is_array($metadataArray['file_attachments'])) {
-            $attachments = array_slice($metadataArray['file_attachments'], 0, self::MAX_FILE_ATTACHMENTS);
-            foreach ($attachments as $fileId) {
-                PocketExpenseMetadata::create([
-                    'pocket_expense_id' => $expense->id,
-                    'metadata_type' => 'file_attachment',
-                    'file_store_id' => (int) $fileId,
-                    'user_id' => $userId,
-                    'create_time' => now(),
-                    'update_time' => now(),
-                    'deleted' => false,
-                    'delete_time' => null
-                ]);
-            }
-        }
-    }
-
-    /**
-     * Update expense metadata records.
-     *
-     * @param PocketExpense $expense
-     * @param array<string, mixed> $metadataArray
-     */
-    private function updateExpenseMetadata(PocketExpense $expense, array $metadataArray): void
-    {
-        $userId = auth()->check() ? auth()->user()->id : $expense->updated_by_user_id;
-
-        // Update or create expense source metadata
-        if (isset($metadataArray['source_id'])) {
-            $sourceMetadata = PocketExpenseMetadata::where('pocket_expense_id', $expense->id)
-                ->where('metadata_type', 'expense_source')
-                ->first();
-
-            if ($sourceMetadata) {
-                $sourceMetadata->expense_source_id = (int) $metadataArray['source_id'];
-                $sourceMetadata->details_json = isset($metadataArray['source_note']) ? ['source_note' => $metadataArray['source_note']] : null;
-                $sourceMetadata->update_time = now();
-                $sourceMetadata->save();
-            } else {
-                PocketExpenseMetadata::create([
-                    'pocket_expense_id' => $expense->id,
-                    'metadata_type' => 'expense_source',
-                    'expense_source_id' => (int) $metadataArray['source_id'],
-                    'user_id' => $userId,
-                    'details_json' => isset($metadataArray['source_note']) ? ['source_note' => $metadataArray['source_note']] : null,
-                    'create_time' => now(),
-                    'update_time' => now(),
-                    'deleted' => false,
-                    'delete_time' => null
-                ]);
-            }
-        }
-
-        // Handle other metadata types similarly (category, project, etc.)
-        $metadataTypes = [
-            'category_id' => ['type' => 'category', 'field' => 'transaction_category_id'],
-            'project_id' => ['type' => 'project', 'field' => 'project_id'],
-            'tracking_code_id' => ['type' => 'tracking_code', 'field' => 'tracking_code_id']
-        ];
-
-        foreach ($metadataTypes as $inputField => $config) {
-            if (isset($metadataArray[$inputField])) {
-                $metadata = PocketExpenseMetadata::where('pocket_expense_id', $expense->id)
-                    ->where('metadata_type', $config['type'])
-                    ->first();
-
-                if ($metadata) {
-                    $metadata->{$config['field']} = (int) $metadataArray[$inputField];
-                    $metadata->update_time = now();
-                    $metadata->save();
-                } else {
-                    $createData = [
-                        'pocket_expense_id' => $expense->id,
-                        'metadata_type' => $config['type'],
-                        $config['field'] => (int) $metadataArray[$inputField],
-                        'user_id' => $userId,
-                        'create_time' => now(),
-                        'update_time' => now(),
-                        'deleted' => false,
-                        'delete_time' => null
-                    ];
-                    PocketExpenseMetadata::create($createData);
-                }
-            }
-        }
-
-        // Handle file attachments
-        if (isset($metadataArray['file_attachments']) && is_array($metadataArray['file_attachments'])) {
-            // Remove existing file attachment metadata
-            PocketExpenseMetadata::where('pocket_expense_id', $expense->id)
-                ->where('metadata_type', 'file_attachment')
-                ->update([
-                    'deleted' => true,
-                    'delete_time' => now(),
-                    'update_time' => now()
-                ]);
-
-            // Create new file attachment metadata
-            $attachments = array_slice($metadataArray['file_attachments'], 0, self::MAX_FILE_ATTACHMENTS);
-            foreach ($attachments as $fileId) {
-                PocketExpenseMetadata::create([
-                    'pocket_expense_id' => $expense->id,
-                    'metadata_type' => 'file_attachment',
-                    'file_store_id' => (int) $fileId,
-                    'user_id' => $userId,
-                    'create_time' => now(),
-                    'update_time' => now(),
-                    'deleted' => false,
-                    'delete_time' => null
-                ]);
-            }
-        }
-    }
-
-    /**
-     * Handle expense status transitions.
-     *
-     * @param PocketExpense $expense
-     * @param string $fromStatus
-     * @param string $toStatus
-     */
-    private function handleStatusTransition(PocketExpense $expense, string $fromStatus, string $toStatus): void
-    {
-        switch ($toStatus) {
-            case PocketExpense::STATUS_APPROVED:
-                if (auth()->check()) {
-                    $expense->approved_by_user_id = auth()->user()->id;
-                }
-                break;
-
-            case PocketExpense::STATUS_DRAFT:
-                // Clear approver when returning to draft
-                $expense->approved_by_user_id = null;
-                break;
-
-            case PocketExpense::STATUS_SUBMITTED:
-            case PocketExpense::STATUS_REJECTED:
-                // No specific handling needed
-                break;
-        }
-    }
-
-    /**
-     * Check if update is status-only (allowed even when expense is not editable).
-     *
-     * @param array<string, mixed> $updateData
-     * @return bool
-     */
-    private function isStatusOnlyUpdate(array $updateData): bool
-    {
-        $allowedStatusOnlyFields = ['status'];
-        $updateFields = array_keys($updateData);
-        
-        return count($updateFields) === 1 && in_array($updateFields[0], $allowedStatusOnlyFields);
     }
 
     /**
      * Apply filters to expense query.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param array<string, mixed> $filters
+     * @param array $filters
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    private function applyExpenseFilters($query, array $filters)
+    protected function applyExpenseFilters($query, array $filters)
     {
-        // Date range filters
-        if (isset($filters['start_date'])) {
-            $query->where('date', '>=', Carbon::parse($filters['start_date']));
-        }
-        if (isset($filters['end_date'])) {
-            $query->where('date', '<=', Carbon::parse($filters['end_date']));
+        // Status filter
+        if (!empty($filters['status'])) {
+            if (is_array($filters['status'])) {
+                $query->whereIn('status', $filters['status']);
+            } else {
+                $query->withStatus($filters['status']);
+            }
         }
 
-        // Status filter
-        if (isset($filters['status']) && in_array($filters['status'], self::VALID_STATUSES)) {
-            $query->where('status', $filters['status']);
+        // Date range filter
+        if (!empty($filters['date_from']) || !empty($filters['date_to'])) {
+            $dateFrom = !empty($filters['date_from']) ? Carbon::parse($filters['date_from']) : Carbon::now()->subYear();
+            $dateTo = !empty($filters['date_to']) ? Carbon::parse($filters['date_to']) : Carbon::now();
+            $query->dateRange($dateFrom, $dateTo);
         }
 
         // Currency filter
-        if (isset($filters['currency'])) {
-            $query->where('currency', strtoupper($filters['currency']));
-        }
-
-        // Amount range filters
-        if (isset($filters['min_amount'])) {
-            $query->where('amount', '>=', (float) $filters['min_amount']);
-        }
-        if (isset($filters['max_amount'])) {
-            $query->where('amount', '<=', (float) $filters['max_amount']);
+        if (!empty($filters['currency'])) {
+            if (is_array($filters['currency'])) {
+                $query->whereIn('currency', $filters['currency']);
+            } else {
+                $query->withCurrency($filters['currency']);
+            }
         }
 
         // Expense type filter
-        if (isset($filters['expense_type'])) {
-            $query->where('expense_type', (int) $filters['expense_type']);
+        if (!empty($filters['expense_type'])) {
+            $query->withExpenseType($filters['expense_type']);
         }
 
-        // Merchant name filter
-        if (isset($filters['merchant_name'])) {
-            $query->where('merchant_name', 'like', '%' . $filters['merchant_name'] . '%');
+        // Amount range filter
+        if (!empty($filters['amount_min'])) {
+            $query->where('amount', '>=', (float) $filters['amount_min']);
         }
 
-        // Created by filter
-        if (isset($filters['created_by'])) {
-            $query->where('created_by_user_id', (int) $filters['created_by']);
+        if (!empty($filters['amount_max'])) {
+            $query->where('amount', '<=', (float) $filters['amount_max']);
+        }
+
+        // Search filter (merchant name, description, notes)
+        if (!empty($filters['search'])) {
+            $searchTerm = '%' . $filters['search'] . '%';
+            $query->where(function ($subQuery) use ($searchTerm) {
+                $subQuery->where('merchant_name', 'like', $searchTerm)
+                         ->orWhere('merchant_description', 'like', $searchTerm)
+                         ->orWhere('notes', 'like', $searchTerm);
+            });
+        }
+
+        // User filter (for admin views)
+        if (!empty($filters['user_id'])) {
+            $query->forUser($filters['user_id']);
         }
 
         return $query;
     }
 
     /**
-     * Calculate approval rate for expenses.
+     * Create expense metadata entries.
      *
-     * @param int $clientId
-     * @param array<string, mixed> $filters
-     * @return float
+     * @param \App\Models\PocketExpense $expense
+     * @param array $metadataArray
+     * @param int $userId
      */
-    private function calculateApprovalRate(int $clientId, array $filters = []): float
+    protected function createExpenseMetadata(PocketExpense $expense, array $metadataArray, int $userId): void
     {
-        $query = PocketExpense::where('client_id', $clientId)
+        foreach ($metadataArray as $metadata) {
+            if (!isset($metadata['metadata_type'])) {
+                continue;
+            }
+
+            PocketExpenseMetadata::create([
+                'pocket_expense_id' => $expense->id,
+                'metadata_type' => $metadata['metadata_type'],
+                'transaction_category_id' => $metadata['transaction_category_id'] ?? null,
+                'tracking_code_id' => $metadata['tracking_code_id'] ?? null,
+                'project_id' => $metadata['project_id'] ?? null,
+                'file_store_id' => $metadata['file_store_id'] ?? null,
+                'expense_source_id' => $metadata['expense_source_id'] ?? null,
+                'additional_field_id' => $metadata['additional_field_id'] ?? null,
+                'user_id' => $userId,
+                'details_json' => isset($metadata['details_json']) ? json_encode($metadata['details_json']) : null,
+                'deleted' => false,
+            ]);
+        }
+    }
+
+    /**
+     * Update expense metadata entries.
+     *
+     * @param \App\Models\PocketExpense $expense
+     * @param array $metadataArray
+     * @param int $userId
+     */
+    protected function updateExpenseMetadata(PocketExpense $expense, array $metadataArray, int $userId): void
+    {
+        // Soft delete existing metadata
+        $expense->metadata()->update([
+            'deleted' => true,
+            'delete_time' => now(),
+        ]);
+
+        // Create new metadata entries
+        $this->createExpenseMetadata($expense, $metadataArray, $userId);
+    }
+
+    /**
+     * Sanitize merchant name to fit database constraints.
+     *
+     * @param string $merchantName
+     * @return string
+     */
+    protected function sanitizeMerchantName(string $merchantName): string
+    {
+        return substr(trim($merchantName), 0, self::MAX_MERCHANT_NAME_LENGTH);
+    }
+
+    /**
+     * Sanitize notes to prevent SQL injection and trim whitespace.
+     *
+     * @param string|null $notes
+     * @return string|null
+     */
+    protected function sanitizeNotes(?string $notes): ?string
+    {
+        if ($notes === null) {
+            return null;
+        }
+
+        return trim(strip_tags($notes));
+    }
+}

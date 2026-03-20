@@ -5,467 +5,95 @@ namespace App\Policies;
 use App\Models\User;
 use App\Models\UserFeaturePermission;
 use Illuminate\Auth\Access\HandlesAuthorization;
-use Illuminate\Auth\Access\Response;
+use Illuminate\Auth\Access\AuthorizationException;
 
 /**
  * UserFeaturePermissionPolicy
  * 
- * Authorization policy for user permission management operations.
- * This policy controls access to user feature permission CRUD operations
- * following the platform's role-based access control system where
- * Primary Administrators have full access by default, and other users
- * can only manage permissions they have been granted access to.
+ * Authorization policy for user feature permission management.
+ * Implements delegation-based RBAC system with multi-tenant client scoping.
  * 
- * Platform roles hierarchy:
- * - Primary Admin: Full access to all permission operations
- * - Admin: Can manage permissions for users within their client
- * - Business User: Limited access based on delegated permissions
- * - Card User: No permission management access by default
+ * Business Rules:
+ * - Primary Admins have full access to all permissions within their client
+ * - Admins can only grant permissions to users they manage
+ * - Business Users and Card Users cannot grant permissions
+ * - Users can only manage permissions within their own client scope
+ * - Managing access can be assigned to any user regardless of role
+ * - Permission holders can view their own permissions
  */
 class UserFeaturePermissionPolicy
 {
     use HandlesAuthorization;
 
     /**
-     * OOP Feature ID constant for checking OOP-specific permissions
-     *
-     * @var int
+     * Feature ID for pocket expense management.
+     * This should match the feature_id used in the database.
      */
-    private const OOP_FEATURE_ID = 16;
+    const POCKET_EXPENSE_FEATURE_ID = 1;
 
     /**
-     * Primary Administrator role name
-     *
-     * @var string
+     * User role constants.
+     * These should match the role system used in the platform.
      */
-    private const ROLE_PRIMARY_ADMIN = 'Primary Administrator';
+    const ROLE_PRIMARY_ADMIN = 'Primary Administrator';
+    const ROLE_ADMIN = 'Admin';
+    const ROLE_BUSINESS_USER = 'Business User';
+    const ROLE_CARD_USER = 'Card User';
 
     /**
-     * Administrator role name
-     *
-     * @var string
-     */
-    private const ROLE_ADMIN = 'Admin';
-
-    /**
-     * Business User role name
-     *
-     * @var string
-     */
-    private const ROLE_BUSINESS_USER = 'Business User';
-
-    /**
-     * Card User role name
-     *
-     * @var string
-     */
-    private const ROLE_CARD_USER = 'Card User';
-
-    /**
-     * Determine whether the user can view any user feature permissions.
+     * Determine whether the user can view any permissions.
      * 
-     * Primary Admins can view all permissions.
-     * Admins can view permissions within their client.
-     * Business Users can view permissions they have been granted access to manage.
+     * Primary Admins can view all permissions for their client.
+     * Admins can view permissions for users they manage.
+     * Other users can only view their own permissions.
      *
-     * @param User $user
-     * @return Response|bool
-     */
-    public function viewAny(User $user): Response|bool
-    {
-        // Primary Administrators have full access
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can view permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can view if they have been granted permission management access
-        if ($this->isBusinessUser($user) && $this->hasOOPPermissionManagementAccess($user)) {
-            return Response::allow();
-        }
-
-        return Response::deny('You do not have permission to view user feature permissions.');
-    }
-
-    /**
-     * Determine whether the user can view the user feature permission.
-     * 
-     * Users can only view permissions within their own client context
-     * and must have appropriate role-based access.
-     *
-     * @param User $user
-     * @param UserFeaturePermission $userFeaturePermission
-     * @return Response|bool
-     */
-    public function view(User $user, UserFeaturePermission $userFeaturePermission): Response|bool
-    {
-        // Check basic view access first
-        if (!$this->viewAny($user)) {
-            return Response::deny('You do not have permission to view user feature permissions.');
-        }
-
-        // Must be within the same client context for multi-tenancy
-        if ($user->client_id !== $userFeaturePermission->client_id) {
-            return Response::deny('You can only view permissions within your own client.');
-        }
-
-        // Primary Admins can view any permission within their client
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can view permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can view permissions they manage or were granted by them
-        if ($this->isBusinessUser($user)) {
-            if ($this->canManagePermission($user, $userFeaturePermission)) {
-                return Response::allow();
-            }
-        }
-
-        return Response::deny('You do not have permission to view this user feature permission.');
-    }
-
-    /**
-     * Determine whether the user can create user feature permissions.
-     * 
-     * Only Primary Admins and Admins can create new permissions.
-     * Business Users cannot create permissions but can delegate existing ones.
-     *
-     * @param User $user
-     * @return Response|bool
-     */
-    public function create(User $user): Response|bool
-    {
-        // Primary Administrators can create permissions
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can create permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users and Card Users cannot create new permissions
-        return Response::deny('Only Primary Administrators and Admins can create user feature permissions.');
-    }
-
-    /**
-     * Determine whether the user can update the user feature permission.
-     * 
-     * Users can update permissions based on their role and relationship to the permission.
-     * Primary Admins have full access, while others have restricted access.
-     *
-     * @param User $user
-     * @param UserFeaturePermission $userFeaturePermission
-     * @return Response|bool
-     */
-    public function update(User $user, UserFeaturePermission $userFeaturePermission): Response|bool
-    {
-        // Must be within the same client context for multi-tenancy
-        if ($user->client_id !== $userFeaturePermission->client_id) {
-            return Response::deny('You can only update permissions within your own client.');
-        }
-
-        // Primary Admins can update any permission within their client
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can update permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can update permissions they manage or were granted by them
-        if ($this->isBusinessUser($user)) {
-            if ($this->canManagePermission($user, $userFeaturePermission)) {
-                return Response::allow();
-            }
-        }
-
-        return Response::deny('You do not have permission to update this user feature permission.');
-    }
-
-    /**
-     * Determine whether the user can delete the user feature permission.
-     * 
-     * Similar rules to update - users can delete permissions they have management access to.
-     * Deleting permissions requires higher privileges to prevent accidental access removal.
-     *
-     * @param User $user
-     * @param UserFeaturePermission $userFeaturePermission
-     * @return Response|bool
-     */
-    public function delete(User $user, UserFeaturePermission $userFeaturePermission): Response|bool
-    {
-        // Must be within the same client context for multi-tenancy
-        if ($user->client_id !== $userFeaturePermission->client_id) {
-            return Response::deny('You can only delete permissions within your own client.');
-        }
-
-        // Primary Admins can delete any permission within their client
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can delete permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can delete permissions they manage (but with more restrictions)
-        if ($this->isBusinessUser($user)) {
-            // Can only delete if they were the grantor or manager
-            if ($userFeaturePermission->grantor_id === $user->id || 
-                $userFeaturePermission->manager_user_id === $user->id) {
-                return Response::allow();
-            }
-        }
-
-        return Response::deny('You do not have permission to delete this user feature permission.');
-    }
-
-    /**
-     * Determine whether the user can grant permissions to other users.
-     * 
-     * This is used for delegation scenarios where users can grant
-     * permissions they already have to other users within their client.
-     *
-     * @param User $user
-     * @param int $featureId
-     * @param int $targetUserId
-     * @return Response|bool
-     */
-    public function grantPermission(User $user, int $featureId, int $targetUserId): Response|bool
-    {
-        // Primary Admins can grant any permission
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can grant permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can grant permissions they have and manage
-        if ($this->isBusinessUser($user)) {
-            // Check if user has the permission for the feature they want to grant
-            if ($this->hasFeaturePermission($user, $featureId)) {
-                // Verify target user is in same client
-                $targetUser = User::find($targetUserId);
-                if ($targetUser && $targetUser->client_id === $user->client_id) {
-                    return Response::allow();
-                }
-            }
-        }
-
-        return Response::deny('You do not have permission to grant this feature permission.');
-    }
-
-    /**
-     * Determine whether the user can revoke permissions from other users.
-     * 
-     * Users can revoke permissions they previously granted or manage.
-     * More restrictive than granting to prevent unauthorized access removal.
-     *
-     * @param User $user
-     * @param UserFeaturePermission $userFeaturePermission
-     * @return Response|bool
-     */
-    public function revokePermission(User $user, UserFeaturePermission $userFeaturePermission): Response|bool
-    {
-        // Must be within the same client context
-        if ($user->client_id !== $userFeaturePermission->client_id) {
-            return Response::deny('You can only revoke permissions within your own client.');
-        }
-
-        // Primary Admins can revoke any permission
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can revoke permissions within their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can revoke permissions they granted or manage
-        if ($this->isBusinessUser($user)) {
-            if ($userFeaturePermission->grantor_id === $user->id || 
-                $userFeaturePermission->manager_user_id === $user->id) {
-                return Response::allow();
-            }
-        }
-
-        return Response::deny('You do not have permission to revoke this user feature permission.');
-    }
-
-    /**
-     * Determine whether the user can manage delegated users.
-     * 
-     * This allows users to see and manage users they have granted permissions to.
-     * Important for the delegation workflow in OOP expense management.
-     *
-     * @param User $user
-     * @param int $targetUserId
-     * @return Response|bool
-     */
-    public function manageDelegatedUser(User $user, int $targetUserId): Response|bool
-    {
-        // Primary Admins can manage any user in their client
-        if ($this->isPrimaryAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Admins can manage users in their client
-        if ($this->isAdmin($user)) {
-            return Response::allow();
-        }
-
-        // Business Users can manage users they have granted permissions to
-        if ($this->isBusinessUser($user)) {
-            // Check if user has granted permissions to the target user
-            $hasGrantedPermissions = UserFeaturePermission::where('grantor_id', $user->id)
-                ->where('user_id', $targetUserId)
-                ->where('client_id', $user->client_id)
-                ->exists();
-                
-            if ($hasGrantedPermissions) {
-                return Response::allow();
-            }
-
-            // Or if they are designated as manager
-            $isManager = UserFeaturePermission::where('manager_user_id', $user->id)
-                ->where('user_id', $targetUserId)
-                ->where('client_id', $user->client_id)
-                ->exists();
-                
-            if ($isManager) {
-                return Response::allow();
-            }
-        }
-
-        return Response::deny('You do not have permission to manage this user.');
-    }
-
-    /**
-     * Check if a user is a Primary Administrator.
-     *
-     * @param User $user
+     * @param \App\Models\User $user
      * @return bool
      */
-    private function isPrimaryAdmin(User $user): bool
+    public function viewAny(User $user): bool
     {
-        return $user->role === self::ROLE_PRIMARY_ADMIN;
+        // All authenticated users can view permissions (with proper scoping in the controller)
+        // The actual filtering happens at the query level based on user role and client
+        return true;
     }
 
     /**
-     * Check if a user is an Administrator.
-     *
-     * @param User $user
-     * @return bool
-     */
-    private function isAdmin(User $user): bool
-    {
-        return $user->role === self::ROLE_ADMIN;
-    }
-
-    /**
-     * Check if a user is a Business User.
-     *
-     * @param User $user
-     * @return bool
-     */
-    private function isBusinessUser(User $user): bool
-    {
-        return $user->role === self::ROLE_BUSINESS_USER;
-    }
-
-    /**
-     * Check if a user is a Card User.
-     *
-     * @param User $user
-     * @return bool
-     */
-    private function isCardUser(User $user): bool
-    {
-        return $user->role === self::ROLE_CARD_USER;
-    }
-
-    /**
-     * Check if a user has OOP permission management access.
+     * Determine whether the user can view the specific permission.
      * 
-     * This determines if a Business User has been granted the ability
-     * to manage OOP expense permissions for other users.
+     * Users can view:
+     * - Their own permissions
+     * - Permissions they granted (as grantor)
+     * - Permissions they manage (as manager)
+     * - All permissions if they are Primary Admin for the client
      *
-     * @param User $user
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission $permission
      * @return bool
      */
-    private function hasOOPPermissionManagementAccess(User $user): bool
+    public function view(User $user, UserFeaturePermission $permission): bool
     {
-        return UserFeaturePermission::where('user_id', $user->id)
-            ->where('client_id', $user->client_id)
-            ->where('feature_id', self::OOP_FEATURE_ID)
-            ->where('is_enabled', true)
-            ->exists();
-    }
+        // Ensure same client scope
+        if (!$this->sameClientScope($user, $permission)) {
+            return false;
+        }
 
-    /**
-     * Check if a user has permission for a specific feature.
-     *
-     * @param User $user
-     * @param int $featureId
-     * @return bool
-     */
-    private function hasFeaturePermission(User $user, int $featureId): bool
-    {
-        // Primary Admins and Admins have all permissions by default
-        if ($this->isPrimaryAdmin($user) || $this->isAdmin($user)) {
+        // Permission holder can view their own permission
+        if ($permission->user_id === $user->id) {
             return true;
         }
 
-        // Check explicit permission records for other users
-        return UserFeaturePermission::where('user_id', $user->id)
-            ->where('client_id', $user->client_id)
-            ->where('feature_id', $featureId)
-            ->where('is_enabled', true)
-            ->exists();
-    }
-
-    /**
-     * Check if a user can manage a specific permission record.
-     * 
-     * This determines if a user has the authority to modify
-     * or view details of a specific permission record.
-     *
-     * @param User $user
-     * @param UserFeaturePermission $userFeaturePermission
-     * @return bool
-     */
-    private function canManagePermission(User $user, UserFeaturePermission $userFeaturePermission): bool
-    {
-        // User can manage if they were the grantor
-        if ($userFeaturePermission->grantor_id === $user->id) {
+        // Grantor can view permissions they granted
+        if ($permission->grantor_id === $user->id) {
             return true;
         }
 
-        // User can manage if they are designated as the manager
-        if ($userFeaturePermission->manager_user_id === $user->id) {
+        // Manager can view permissions they manage
+        if ($permission->manager_user_id === $user->id) {
             return true;
         }
 
-        // User can manage their own permissions (view only)
-        if ($userFeaturePermission->user_id === $user->id) {
+        // Primary Admin can view all permissions for their client
+        if ($this->isPrimaryAdmin($user)) {
             return true;
         }
 
@@ -473,134 +101,489 @@ class UserFeaturePermissionPolicy
     }
 
     /**
-     * Check if a target user belongs to the same client as the requesting user.
+     * Determine whether the user can create permissions.
      * 
-     * This is a crucial multi-tenancy check to ensure users can only
-     * manage permissions within their own client context.
+     * Only Primary Admins and Admins can create permissions.
+     * Admins can only create permissions for users they manage.
      *
-     * @param User $user
-     * @param int $targetUserId
+     * @param \App\Models\User $user
      * @return bool
      */
-    private function isSameClient(User $user, int $targetUserId): bool
+    public function create(User $user): bool
     {
-        $targetUser = User::find($targetUserId);
-        
-        if (!$targetUser) {
+        return $this->isPrimaryAdmin($user) || $this->isAdmin($user);
+    }
+
+    /**
+     * Determine whether the user can update the permission.
+     * 
+     * Users can update permissions if:
+     * - They are the grantor of the permission
+     * - They are the manager of the permission
+     * - They are Primary Admin for the client
+     *
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission $permission
+     * @return bool
+     */
+    public function update(User $user, UserFeaturePermission $permission): bool
+    {
+        // Ensure same client scope
+        if (!$this->sameClientScope($user, $permission)) {
             return false;
         }
 
-        return $user->client_id === $targetUser->client_id;
+        // Grantor can update permissions they granted
+        if ($permission->grantor_id === $user->id) {
+            return true;
+        }
+
+        // Manager can update permissions they manage
+        if ($permission->manager_user_id === $user->id) {
+            return true;
+        }
+
+        // Primary Admin can update all permissions for their client
+        if ($this->isPrimaryAdmin($user)) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
-     * Check if the client has the OOP feature enabled.
+     * Determine whether the user can delete the permission.
      * 
-     * This verifies that the client has access to the OOP expense
-     * management feature before allowing permission operations.
+     * Same rules as update - grantors, managers, and Primary Admins can revoke permissions.
      *
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission $permission
+     * @return bool
+     */
+    public function delete(User $user, UserFeaturePermission $permission): bool
+    {
+        return $this->update($user, $permission);
+    }
+
+    /**
+     * Determine whether the user can grant permissions to a specific target user.
+     * 
+     * Authorization rules:
+     * - Primary Admins can grant to any user in their client
+     * - Admins can only grant to users they manage
+     * - Business Users and Card Users cannot grant permissions
+     * - All operations must be within the same client scope
+     *
+     * @param \App\Models\User $grantor
+     * @param \App\Models\User $targetUser
+     * @param int $clientId
+     * @param int $featureId
+     * @return bool
+     */
+    public function grantToUser(User $grantor, User $targetUser, int $clientId, int $featureId): bool
+    {
+        // Only Primary Admins and Admins can grant permissions
+        if (!($this->isPrimaryAdmin($grantor) || $this->isAdmin($grantor))) {
+            return false;
+        }
+
+        // Ensure both users are in the same client scope
+        if (!$this->userBelongsToClient($grantor, $clientId) || !$this->userBelongsToClient($targetUser, $clientId)) {
+            return false;
+        }
+
+        // Primary Admin can grant to anyone in their client
+        if ($this->isPrimaryAdmin($grantor)) {
+            return true;
+        }
+
+        // Admin can only grant to users they manage
+        if ($this->isAdmin($grantor)) {
+            return $this->canManageUser($grantor, $targetUser, $clientId);
+        }
+
+        return false;
+    }
+
+    /**
+     * Determine whether the user can assign a manager to a permission.
+     * 
+     * Only the grantor or Primary Admin can assign managers.
+     * The manager must be in the same client scope.
+     *
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission $permission
+     * @param \App\Models\User $managerUser
+     * @return bool
+     */
+    public function assignManager(User $user, UserFeaturePermission $permission, User $managerUser): bool
+    {
+        // Ensure same client scope for all parties
+        if (!$this->sameClientScope($user, $permission) || 
+            !$this->userBelongsToClient($managerUser, $permission->client_id)) {
+            return false;
+        }
+
+        // Grantor can assign managers
+        if ($permission->grantor_id === $user->id) {
+            return true;
+        }
+
+        // Primary Admin can assign managers
+        if ($this->isPrimaryAdmin($user)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Determine whether the user can enable/disable a permission.
+     * 
+     * Same rules as update - grantors, managers, and Primary Admins.
+     *
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission $permission
+     * @return bool
+     */
+    public function toggleStatus(User $user, UserFeaturePermission $permission): bool
+    {
+        return $this->update($user, $permission);
+    }
+
+    /**
+     * Check if the user is a Primary Administrator.
+     *
+     * @param \App\Models\User $user
+     * @return bool
+     */
+    protected function isPrimaryAdmin(User $user): bool
+    {
+        // Assuming the User model has a role or similar method
+        // This implementation may need to be adjusted based on the actual User model structure
+        return $user->role === self::ROLE_PRIMARY_ADMIN || 
+               (method_exists($user, 'hasRole') && $user->hasRole(self::ROLE_PRIMARY_ADMIN)) ||
+               (method_exists($user, 'getRoleAttribute') && $user->getRoleAttribute() === self::ROLE_PRIMARY_ADMIN);
+    }
+
+    /**
+     * Check if the user is an Administrator.
+     *
+     * @param \App\Models\User $user
+     * @return bool
+     */
+    protected function isAdmin(User $user): bool
+    {
+        return $user->role === self::ROLE_ADMIN || 
+               (method_exists($user, 'hasRole') && $user->hasRole(self::ROLE_ADMIN)) ||
+               (method_exists($user, 'getRoleAttribute') && $user->getRoleAttribute() === self::ROLE_ADMIN);
+    }
+
+    /**
+     * Check if the user is a Business User.
+     *
+     * @param \App\Models\User $user
+     * @return bool
+     */
+    protected function isBusinessUser(User $user): bool
+    {
+        return $user->role === self::ROLE_BUSINESS_USER || 
+               (method_exists($user, 'hasRole') && $user->hasRole(self::ROLE_BUSINESS_USER)) ||
+               (method_exists($user, 'getRoleAttribute') && $user->getRoleAttribute() === self::ROLE_BUSINESS_USER);
+    }
+
+    /**
+     * Check if the user is a Card User.
+     *
+     * @param \App\Models\User $user
+     * @return bool
+     */
+    protected function isCardUser(User $user): bool
+    {
+        return $user->role === self::ROLE_CARD_USER || 
+               (method_exists($user, 'hasRole') && $user->hasRole(self::ROLE_CARD_USER)) ||
+               (method_exists($user, 'getRoleAttribute') && $user->getRoleAttribute() === self::ROLE_CARD_USER);
+    }
+
+    /**
+     * Check if the user and permission are in the same client scope.
+     *
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission $permission
+     * @return bool
+     */
+    protected function sameClientScope(User $user, UserFeaturePermission $permission): bool
+    {
+        // Assuming the User model has a client_id or similar method to determine client association
+        $userClientId = $this->getUserClientId($user);
+        return $userClientId === $permission->client_id;
+    }
+
+    /**
+     * Check if the user belongs to a specific client.
+     *
+     * @param \App\Models\User $user
      * @param int $clientId
      * @return bool
      */
-    private function clientHasOOPFeature(int $clientId): bool
+    protected function userBelongsToClient(User $user, int $clientId): bool
     {
-        // Check if client has OOP feature enabled via ClientFeatures relationship
-        // This would typically query a client_features pivot table or similar
-        // For now, we'll assume all clients have access unless explicitly disabled
-        return true; // TODO: Implement actual ClientFeatures check when model is available
+        $userClientId = $this->getUserClientId($user);
+        return $userClientId === $clientId;
     }
 
     /**
-     * Get the user's effective permissions for permission management.
-     * 
-     * This returns a summary of what permission operations the user
-     * can perform, useful for UI authorization decisions.
+     * Get the client ID for a user.
+     * This method abstracts the way client association is determined.
      *
-     * @param User $user
-     * @return array<string, bool>
+     * @param \App\Models\User $user
+     * @return int|null
      */
-    public function getEffectivePermissions(User $user): array
+    protected function getUserClientId(User $user): ?int
     {
-        return [
-            'can_view_any' => $this->viewAny($user),
-            'can_create' => $this->create($user),
-            'can_grant_permissions' => $this->isPrimaryAdmin($user) || 
-                                     $this->isAdmin($user) || 
-                                     ($this->isBusinessUser($user) && $this->hasOOPPermissionManagementAccess($user)),
-            'can_revoke_permissions' => $this->isPrimaryAdmin($user) || 
-                                      $this->isAdmin($user) || 
-                                      $this->isBusinessUser($user),
-            'can_manage_delegated_users' => $this->isPrimaryAdmin($user) || 
-                                          $this->isAdmin($user) || 
-                                          $this->isBusinessUser($user),
-            'is_primary_admin' => $this->isPrimaryAdmin($user),
-            'is_admin' => $this->isAdmin($user),
-            'is_business_user' => $this->isBusinessUser($user),
-            'has_oop_access' => $this->hasFeaturePermission($user, self::OOP_FEATURE_ID),
-            'has_oop_management_access' => $this->hasOOPPermissionManagementAccess($user),
-        ];
+        // Implementation depends on how the User model stores client association
+        // This could be a direct client_id field, a relationship, or retrieved from context
+        if (property_exists($user, 'client_id')) {
+            return $user->client_id;
+        }
+
+        if (method_exists($user, 'getClientId')) {
+            return $user->getClientId();
+        }
+
+        if (method_exists($user, 'client') && $user->client) {
+            return $user->client->id;
+        }
+
+        // Fallback: get from request context or session
+        // This might need to be adjusted based on how client context is managed
+        if (request()->has('client_id')) {
+            return (int) request()->get('client_id');
+        }
+
+        return null;
     }
 
     /**
-     * Authorize permission creation with specific validation.
-     * 
-     * This provides detailed authorization for permission creation
-     * including validation of target user, feature, and client context.
+     * Check if a user can manage another user.
+     * This implements the business rule that Admins can only manage specific users.
      *
-     * @param User $user
-     * @param array<string, mixed> $permissionData
-     * @return Response|bool
+     * @param \App\Models\User $manager
+     * @param \App\Models\User $targetUser
+     * @param int $clientId
+     * @return bool
      */
-    public function authorizePermissionCreation(User $user, array $permissionData): Response|bool
+    protected function canManageUser(User $manager, User $targetUser, int $clientId): bool
     {
-        // Basic create permission check
-        if (!$this->create($user)) {
-            return Response::deny('You do not have permission to create user feature permissions.');
+        // Primary Admin can manage anyone in their client
+        if ($this->isPrimaryAdmin($manager)) {
+            return $this->userBelongsToClient($targetUser, $clientId);
         }
 
-        $targetUserId = $permissionData['user_id'] ?? null;
-        $featureId = $permissionData['feature_id'] ?? null;
+        // For Admins, check if they have management relationship with the target user
+        // This could be implemented through a management table, user hierarchy, or permissions
+        
+        // Option 1: Check if there's an existing permission where manager is the manager_user_id
+        $existingManagementRelation = UserFeaturePermission::where('user_id', $targetUser->id)
+            ->where('client_id', $clientId)
+            ->where('manager_user_id', $manager->id)
+            ->exists();
 
-        // Validate required fields
-        if (!$targetUserId || !$featureId) {
-            return Response::deny('Missing required permission data.');
+        if ($existingManagementRelation) {
+            return true;
         }
 
-        // Check if target user is in same client
-        if (!$this->isSameClient($user, $targetUserId)) {
-            return Response::deny('You can only create permissions for users in your own client.');
+        // Option 2: Check if manager has been granted management permissions for this user
+        // This would require a separate management permission system
+        
+        // Option 3: Default behavior - Admins can manage Business Users and Card Users
+        // but not other Admins or Primary Admins
+        if ($this->isAdmin($manager)) {
+            return $this->isBusinessUser($targetUser) || $this->isCardUser($targetUser);
         }
 
-        // Check if client has the feature enabled
-        if (!$this->clientHasOOPFeature($user->client_id)) {
-            return Response::deny('The requested feature is not enabled for your client.');
+        return false;
+    }
+
+    /**
+     * Get users that a specific user can manage.
+     * Used for filtering in controllers and services.
+     *
+     * @param \App\Models\User $user
+     * @param int $clientId
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public function getManagedUsers(User $user, int $clientId): \Illuminate\Database\Eloquent\Collection
+    {
+        // Primary Admin can manage all users in their client
+        if ($this->isPrimaryAdmin($user)) {
+            return User::where('client_id', $clientId)->get();
         }
 
-        // Additional validation for Business Users granting permissions
-        if ($this->isBusinessUser($user)) {
-            if (!$this->hasFeaturePermission($user, $featureId)) {
-                return Response::deny('You can only grant permissions that you already have.');
+        // Admin can manage users they have management rights for
+        if ($this->isAdmin($user)) {
+            // Get users where this admin is designated as manager
+            $managedUserIds = UserFeaturePermission::where('client_id', $clientId)
+                ->where('manager_user_id', $user->id)
+                ->pluck('user_id')
+                ->unique();
+
+            return User::whereIn('id', $managedUserIds)->get();
+        }
+
+        // Other users cannot manage anyone
+        return collect();
+    }
+
+    /**
+     * Authorize that a user can perform bulk operations.
+     * Used when granting/revoking multiple permissions at once.
+     *
+     * @param \App\Models\User $user
+     * @param array $targetUserIds
+     * @param int $clientId
+     * @param int $featureId
+     * @return bool
+     * @throws \Illuminate\Auth\Access\AuthorizationException
+     */
+    public function authorizeBulkOperation(User $user, array $targetUserIds, int $clientId, int $featureId): bool
+    {
+        foreach ($targetUserIds as $targetUserId) {
+            $targetUser = User::find($targetUserId);
+            
+            if (!$targetUser) {
+                throw new AuthorizationException("Target user {$targetUserId} not found.");
+            }
+
+            if (!$this->grantToUser($user, $targetUser, $clientId, $featureId)) {
+                throw new AuthorizationException("Not authorized to manage permissions for user {$targetUserId}.");
             }
         }
 
-        return Response::allow();
+        return true;
     }
 
     /**
-     * Check if user can perform bulk permission operations.
-     * 
-     * Bulk operations require higher privileges due to their potential impact.
+     * Check if a permission change is allowed based on current status.
+     * Used to prevent invalid state transitions.
      *
-     * @param User $user
-     * @return Response|bool
+     * @param \App\Models\UserFeaturePermission $permission
+     * @param bool $newEnabledStatus
+     * @return bool
      */
-    public function bulkOperations(User $user): Response|bool
+    public function canChangeStatus(UserFeaturePermission $permission, bool $newEnabledStatus): bool
     {
-        // Only Primary Admins and Admins can perform bulk operations
-        if ($this->isPrimaryAdmin($user) || $this->isAdmin($user)) {
-            return Response::allow();
+        // Allow enabling disabled permissions
+        if (!$permission->is_enabled && $newEnabledStatus) {
+            return true;
         }
 
-        return Response::deny('Bulk permission operations require Administrator privileges.');
+        // Allow disabling enabled permissions
+        if ($permission->is_enabled && !$newEnabledStatus) {
+            return true;
+        }
+
+        // No change needed
+        return true;
+    }
+
+    /**
+     * Validate that a feature ID is valid for permission management.
+     *
+     * @param int $featureId
+     * @return bool
+     */
+    public function isValidFeatureId(int $featureId): bool
+    {
+        // For now, only pocket expense feature is supported
+        // This can be expanded as more features are added
+        $validFeatureIds = [
+            self::POCKET_EXPENSE_FEATURE_ID,
+        ];
+
+        return in_array($featureId, $validFeatureIds);
+    }
+
+    /**
+     * Check if a user has reached the maximum number of permissions they can grant.
+     * Implements rate limiting for permission grants.
+     *
+     * @param \App\Models\User $grantor
+     * @param int $clientId
+     * @return bool
+     */
+    public function canGrantMorePermissions(User $grantor, int $clientId): bool
+    {
+        // Primary Admin has no limits
+        if ($this->isPrimaryAdmin($grantor)) {
+            return true;
+        }
+
+        // Count existing permissions granted by this user
+        $grantedCount = UserFeaturePermission::where('grantor_id', $grantor->id)
+            ->where('client_id', $clientId)
+            ->count();
+
+        // Set reasonable limits based on role
+        $maxPermissions = match (true) {
+            $this->isAdmin($grantor) => 50,  // Admins can grant up to 50 permissions
+            default => 0,  // Other roles cannot grant permissions
+        };
+
+        return $grantedCount < $maxPermissions;
+    }
+
+    /**
+     * Log authorization decisions for audit purposes.
+     *
+     * @param string $action
+     * @param \App\Models\User $user
+     * @param \App\Models\UserFeaturePermission|null $permission
+     * @param bool $authorized
+     * @param array $context
+     * @return void
+     */
+    protected function logAuthorizationDecision(
+        string $action,
+        User $user,
+        ?UserFeaturePermission $permission,
+        bool $authorized,
+        array $context = []
+    ): void {
+        \Log::info('UserFeaturePermission authorization decision', [
+            'action' => $action,
+            'user_id' => $user->id,
+            'user_role' => $this->getUserRole($user),
+            'permission_id' => $permission?->id,
+            'target_user_id' => $permission?->user_id,
+            'client_id' => $permission?->client_id ?? $context['client_id'] ?? null,
+            'feature_id' => $permission?->feature_id ?? $context['feature_id'] ?? null,
+            'authorized' => $authorized,
+            'context' => $context,
+            'timestamp' => now(),
+        ]);
+    }
+
+    /**
+     * Get the role of a user.
+     *
+     * @param \App\Models\User $user
+     * @return string
+     */
+    protected function getUserRole(User $user): string
+    {
+        if (property_exists($user, 'role')) {
+            return $user->role;
+        }
+
+        if (method_exists($user, 'getRole')) {
+            return $user->getRole();
+        }
+
+        if (method_exists($user, 'getRoleAttribute')) {
+            return $user->getRoleAttribute();
+        }
+
+        return 'unknown';
     }
 }

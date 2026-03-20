@@ -5,19 +5,20 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Eloquent\Builder;
 
 /**
  * OptPocketExpenseType Model
  * 
- * Manages expense type categories with their corresponding amount signs.
- * This is a lookup table that categorizes different types of out-of-pocket expenses
- * and determines whether they result in positive (refund) or negative (expense) amounts.
+ * Represents expense type options with amount sign configuration.
+ * Used as a lookup table for categorizing pocket expenses.
  * 
- * @property int $id Primary key for expense type
- * @property string $option The expense type name/option
- * @property string $amount_sign Whether this expense type results in positive (refund) or negative (expense) amounts
- * @property-read \Illuminate\Database\Eloquent\Collection<int, PocketExpense> $expenses
+ * @property int $id
+ * @property string $option
+ * @property string $amount_sign
+ * @property \Carbon\Carbon $created_at
+ * @property \Carbon\Carbon $updated_at
+ * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\PocketExpense> $expenses
+ * @property-read int|null $expenses_count
  */
 class OptPocketExpenseType extends Model
 {
@@ -29,35 +30,6 @@ class OptPocketExpenseType extends Model
      * @var string
      */
     protected $table = 'opt_pocket_expense_type';
-
-    /**
-     * Indicates if the model should be timestamped.
-     * This lookup table doesn't use Laravel timestamps.
-     *
-     * @var bool
-     */
-    public $timestamps = false;
-
-    /**
-     * The primary key associated with the table.
-     *
-     * @var string
-     */
-    protected $primaryKey = 'id';
-
-    /**
-     * The "type" of the primary key ID.
-     *
-     * @var string
-     */
-    protected $keyType = 'int';
-
-    /**
-     * Indicates if the IDs are auto-incrementing.
-     *
-     * @var bool
-     */
-    public $incrementing = true;
 
     /**
      * The attributes that are mass assignable.
@@ -78,15 +50,8 @@ class OptPocketExpenseType extends Model
         'id' => 'integer',
         'option' => 'string',
         'amount_sign' => 'string',
-    ];
-
-    /**
-     * The attributes that should have default values.
-     *
-     * @var array<string, mixed>
-     */
-    protected $attributes = [
-        'amount_sign' => 'negative',
+        'created_at' => 'datetime',
+        'updated_at' => 'datetime',
     ];
 
     /**
@@ -101,51 +66,14 @@ class OptPocketExpenseType extends Model
      *
      * @var array<string, mixed>
      */
-    protected static array $defaults = [
+    protected $attributes = [
         'amount_sign' => 'negative',
-    ];
-
-    /**
-     * Valid values for amount_sign enum.
-     *
-     * @var array<int, string>
-     */
-    public const AMOUNT_SIGN_POSITIVE = 'positive';
-    public const AMOUNT_SIGN_NEGATIVE = 'negative';
-
-    /**
-     * All valid amount sign values.
-     *
-     * @var array<int, string>
-     */
-    public const VALID_AMOUNT_SIGNS = [
-        self::AMOUNT_SIGN_POSITIVE,
-        self::AMOUNT_SIGN_NEGATIVE,
-    ];
-
-    /**
-     * Common expense type options.
-     *
-     * @var array<string, string>
-     */
-    public const EXPENSE_TYPES = [
-        'Travel' => self::AMOUNT_SIGN_NEGATIVE,
-        'Meals' => self::AMOUNT_SIGN_NEGATIVE,
-        'Entertainment' => self::AMOUNT_SIGN_NEGATIVE,
-        'Office Supplies' => self::AMOUNT_SIGN_NEGATIVE,
-        'Transportation' => self::AMOUNT_SIGN_NEGATIVE,
-        'Accommodation' => self::AMOUNT_SIGN_NEGATIVE,
-        'Communications' => self::AMOUNT_SIGN_NEGATIVE,
-        'Training' => self::AMOUNT_SIGN_NEGATIVE,
-        'Equipment' => self::AMOUNT_SIGN_NEGATIVE,
-        'Other' => self::AMOUNT_SIGN_NEGATIVE,
-        'Refund' => self::AMOUNT_SIGN_POSITIVE,
     ];
 
     /**
      * Get the expenses that belong to this expense type.
      *
-     * @return HasMany<PocketExpense>
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany<\App\Models\PocketExpense>
      */
     public function expenses(): HasMany
     {
@@ -153,262 +81,201 @@ class OptPocketExpenseType extends Model
     }
 
     /**
-     * Scope a query to only include expense types with positive amount sign.
+     * Scope a query to only include positive amount types (refunds).
      *
-     * @param Builder<OptPocketExpenseType> $query
-     * @return Builder<OptPocketExpenseType>
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopePositive(Builder $query): Builder
+    public function scopePositiveAmount($query)
     {
-        return $query->where('amount_sign', self::AMOUNT_SIGN_POSITIVE);
+        return $query->where('amount_sign', 'positive');
     }
 
     /**
-     * Scope a query to only include expense types with negative amount sign.
+     * Scope a query to only include negative amount types (expenses).
      *
-     * @param Builder<OptPocketExpenseType> $query
-     * @return Builder<OptPocketExpenseType>
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeNegative(Builder $query): Builder
+    public function scopeNegativeAmount($query)
     {
-        return $query->where('amount_sign', self::AMOUNT_SIGN_NEGATIVE);
+        return $query->where('amount_sign', 'negative');
     }
 
     /**
-     * Scope a query to filter by specific option name.
+     * Scope a query to find expense type by option name.
      *
-     * @param Builder<OptPocketExpenseType> $query
+     * @param \Illuminate\Database\Eloquent\Builder $query
      * @param string $option
-     * @return Builder<OptPocketExpenseType>
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeByOption(Builder $query, string $option): Builder
+    public function scopeByOption($query, string $option)
     {
         return $query->where('option', $option);
     }
 
     /**
-     * Scope a query to filter by amount sign type.
-     *
-     * @param Builder<OptPocketExpenseType> $query
-     * @param string $amountSign
-     * @return Builder<OptPocketExpenseType>
-     */
-    public function scopeByAmountSign(Builder $query, string $amountSign): Builder
-    {
-        return $query->where('amount_sign', $amountSign);
-    }
-
-    /**
-     * Check if this expense type has a positive amount sign.
-     *
-     * @return bool
-     */
-    public function isPositive(): bool
-    {
-        return $this->amount_sign === self::AMOUNT_SIGN_POSITIVE;
-    }
-
-    /**
-     * Check if this expense type has a negative amount sign.
-     *
-     * @return bool
-     */
-    public function isNegative(): bool
-    {
-        return $this->amount_sign === self::AMOUNT_SIGN_NEGATIVE;
-    }
-
-    /**
-     * Check if this is a refund type expense.
+     * Check if this expense type represents a refund (positive amount).
      *
      * @return bool
      */
     public function isRefund(): bool
     {
-        return $this->option === 'Refund' && $this->isPositive();
+        return $this->amount_sign === 'positive';
     }
 
     /**
-     * Check if this is a regular expense type.
+     * Check if this expense type represents an expense (negative amount).
      *
      * @return bool
      */
-    public function isRegularExpense(): bool
+    public function isExpense(): bool
     {
-        return !$this->isRefund();
+        return $this->amount_sign === 'negative';
     }
 
     /**
-     * Get a human-readable description of this expense type.
-     *
-     * @return string
-     */
-    public function getDescription(): string
-    {
-        $sign = $this->isPositive() ? 'Credit' : 'Debit';
-        return "{$this->option} ({$sign})";
-    }
-
-    /**
-     * Get the multiplier for calculating amounts based on amount sign.
-     * Returns 1 for positive amounts, -1 for negative amounts.
+     * Get the multiplier for amount calculations based on amount sign.
+     * Returns 1 for positive (refund), -1 for negative (expense).
      *
      * @return int
      */
     public function getAmountMultiplier(): int
     {
-        return $this->isPositive() ? 1 : -1;
+        return $this->amount_sign === 'positive' ? 1 : -1;
     }
 
     /**
-     * Apply the amount sign to a given amount.
+     * Apply the amount sign to a given amount value.
      *
      * @param float $amount
      * @return float
      */
     public function applyAmountSign(float $amount): float
     {
-        $absoluteAmount = abs($amount);
-        return $this->isPositive() ? $absoluteAmount : -$absoluteAmount;
+        return abs($amount) * $this->getAmountMultiplier();
     }
 
     /**
-     * Find an expense type by option name.
+     * Get a display-friendly name for the amount sign.
      *
-     * @param string $option
-     * @return OptPocketExpenseType|null
+     * @return string
      */
-    public static function findByOption(string $option): ?OptPocketExpenseType
+    public function getAmountSignDisplayAttribute(): string
     {
-        return static::where('option', $option)->first();
+        return $this->amount_sign === 'positive' ? 'Refund' : 'Expense';
     }
 
     /**
-     * Get all expense types with positive amount signs (refunds).
-     *
-     * @return \Illuminate\Database\Eloquent\Collection<int, OptPocketExpenseType>
-     */
-    public static function getRefundTypes(): \Illuminate\Database\Eloquent\Collection
-    {
-        return static::positive()->get();
-    }
-
-    /**
-     * Get all expense types with negative amount signs (regular expenses).
-     *
-     * @return \Illuminate\Database\Eloquent\Collection<int, OptPocketExpenseType>
-     */
-    public static function getExpenseTypes(): \Illuminate\Database\Eloquent\Collection
-    {
-        return static::negative()->get();
-    }
-
-    /**
-     * Get all expense type options as a key-value array.
-     *
-     * @return array<int, string>
-     */
-    public static function getOptionsArray(): array
-    {
-        return static::orderBy('option')->pluck('option', 'id')->toArray();
-    }
-
-    /**
-     * Get expense types grouped by amount sign.
-     *
-     * @return array<string, \Illuminate\Database\Eloquent\Collection<int, OptPocketExpenseType>>
-     */
-    public static function getGroupedByAmountSign(): array
-    {
-        $types = static::orderBy('option')->get();
-
-        return [
-            'positive' => $types->filter(fn($type) => $type->isPositive()),
-            'negative' => $types->filter(fn($type) => $type->isNegative()),
-        ];
-    }
-
-    /**
-     * Validate if an amount sign is valid.
-     *
-     * @param string $amountSign
-     * @return bool
-     */
-    public static function isValidAmountSign(string $amountSign): bool
-    {
-        return in_array($amountSign, self::VALID_AMOUNT_SIGNS, true);
-    }
-
-    /**
-     * Boot the model.
-     *
-     * @return void
-     */
-    protected static function boot(): void
-    {
-        parent::boot();
-
-        // Ensure amount_sign is valid before saving
-        static::saving(function (OptPocketExpenseType $model) {
-            if (!self::isValidAmountSign($model->amount_sign)) {
-                throw new \InvalidArgumentException(
-                    "Invalid amount_sign value: {$model->amount_sign}. Must be one of: " . 
-                    implode(', ', self::VALID_AMOUNT_SIGNS)
-                );
-            }
-        });
-    }
-
-    /**
-     * Get the count of associated expenses for this type.
+     * Get the count of associated expenses.
      *
      * @return int
      */
-    public function getExpenseCount(): int
+    public function getExpensesCountAttribute(): int
     {
         return $this->expenses()->count();
     }
 
     /**
-     * Check if this expense type is being used by any expenses.
+     * Check if this expense type can be safely deleted.
+     * Cannot delete if there are associated expenses.
      *
      * @return bool
      */
-    public function hasExpenses(): bool
+    public function canDelete(): bool
     {
-        return $this->getExpenseCount() > 0;
+        return $this->expenses()->count() === 0;
     }
 
     /**
-     * Get the most commonly used expense types.
+     * Get all expense types formatted for dropdown/select options.
      *
-     * @param int $limit
-     * @return \Illuminate\Database\Eloquent\Collection<int, OptPocketExpenseType>
+     * @return \Illuminate\Database\Eloquent\Collection
      */
-    public static function getMostUsed(int $limit = 10): \Illuminate\Database\Eloquent\Collection
+    public static function getSelectOptions(): \Illuminate\Database\Eloquent\Collection
     {
-        return static::withCount('expenses')
-                    ->orderBy('expenses_count', 'desc')
-                    ->limit($limit)
-                    ->get();
+        return static::orderBy('option', 'asc')->get();
     }
 
     /**
-     * Convert the model instance to an array.
+     * Get all refund types formatted for dropdown/select options.
      *
-     * @return array<string, mixed>
+     * @return \Illuminate\Database\Eloquent\Collection
      */
-    public function toArray(): array
+    public static function getRefundOptions(): \Illuminate\Database\Eloquent\Collection
     {
-        $array = parent::toArray();
-        
-        // Add computed attributes
-        $array['is_positive'] = $this->isPositive();
-        $array['is_negative'] = $this->isNegative();
-        $array['is_refund'] = $this->isRefund();
-        $array['description'] = $this->getDescription();
-        $array['amount_multiplier'] = $this->getAmountMultiplier();
-        
-        return $array;
+        return static::positiveAmount()->orderBy('option', 'asc')->get();
+    }
+
+    /**
+     * Get all expense types (non-refund) formatted for dropdown/select options.
+     *
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public static function getExpenseOptions(): \Illuminate\Database\Eloquent\Collection
+    {
+        return static::negativeAmount()->orderBy('option', 'asc')->get();
+    }
+
+    /**
+     * Find expense type by option name with caching.
+     *
+     * @param string $option
+     * @return \App\Models\OptPocketExpenseType|null
+     */
+    public static function findByOption(string $option): ?OptPocketExpenseType
+    {
+        return static::byOption($option)->first();
+    }
+
+    /**
+     * Boot method for model events.
+     *
+     * @return void
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        // Ensure amount_sign has a valid value on creation
+        static::creating(function (OptPocketExpenseType $expenseType) {
+            if (empty($expenseType->amount_sign)) {
+                $expenseType->amount_sign = 'negative';
+            }
+            
+            // Validate amount_sign enum values
+            if (!in_array($expenseType->amount_sign, ['positive', 'negative'])) {
+                throw new \InvalidArgumentException('Invalid amount_sign value. Must be "positive" or "negative".');
+            }
+        });
+
+        // Validate amount_sign on updates
+        static::updating(function (OptPocketExpenseType $expenseType) {
+            if ($expenseType->isDirty('amount_sign')) {
+                if (!in_array($expenseType->amount_sign, ['positive', 'negative'])) {
+                    throw new \InvalidArgumentException('Invalid amount_sign value. Must be "positive" or "negative".');
+                }
+            }
+        });
+
+        // Prevent deletion if there are associated expenses
+        static::deleting(function (OptPocketExpenseType $expenseType) {
+            if (!$expenseType->canDelete()) {
+                throw new \RuntimeException('Cannot delete expense type that has associated expenses.');
+            }
+        });
+
+        // Log expense type changes for audit purposes
+        static::updated(function (OptPocketExpenseType $expenseType) {
+            if ($expenseType->isDirty(['option', 'amount_sign'])) {
+                \Log::info('Expense type updated', [
+                    'expense_type_id' => $expenseType->id,
+                    'option' => $expenseType->option,
+                    'amount_sign' => $expenseType->amount_sign,
+                    'changed_fields' => array_keys($expenseType->getDirty()),
+                    'updated_at' => now(),
+                ]);
+            }
+        });
     }
 }
