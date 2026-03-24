@@ -5,31 +5,26 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Carbon\Carbon;
 
 /**
  * PocketExpenseUploadsData Model
  * 
- * Represents individual CSV row data for batch expense upload processing.
- * Each record stores one parsed CSV row with its processing status and
- * any errors that occurred during validation or expense creation.
+ * Represents individual CSV row data from pocket expense file uploads.
+ * This model stores the staging data for each CSV row before it gets processed
+ * into actual PocketExpense records.
+ *
+ * @property int $id
+ * @property int $upload_id Foreign key to pocket_expense_file_uploads table
+ * @property int $line_number Line number in the original CSV file (including header row)
+ * @property string $status Processing status of this individual CSV row
+ * @property array $expense_data JSON representation of the parsed CSV row data
+ * @property string|null $error_message Error message if processing failed
+ * @property \Illuminate\Support\Carbon|null $created_at
+ * @property \Illuminate\Support\Carbon|null $updated_at
  * 
- * This model uses Laravel standard timestamps (created_at, updated_at)
- * instead of Volopa legacy timestamp pattern since it's used for
- * temporary upload processing data rather than permanent business records.
+ * @property-read \App\Models\PocketExpenseFileUpload $upload
  * 
- * @property int $id Primary key
- * @property int $upload_id Foreign key to pocket_expense_file_uploads
- * @property int $line_number Line number in original CSV file (starting from 2, after header)
- * @property string $status Processing status: pending, processing, completed, failed
- * @property array $expense_data JSON object containing parsed CSV row data with field mappings
- * @property array|null $processing_errors JSON array of processing errors if status=failed
- * @property int|null $created_expense_id Reference to pocket_expense.id if successfully processed
- * @property Carbon $created_at Laravel timestamp for record creation
- * @property Carbon $updated_at Laravel timestamp for last update
- * 
- * @property-read PocketExpenseFileUpload $upload Parent upload batch record
- * @property-read PocketExpense|null $createdExpense Created expense record if processing succeeded
+ * @method static \Database\Factories\PocketExpenseUploadsDataFactory factory($count = null, $state = [])
  */
 class PocketExpenseUploadsData extends Model
 {
@@ -43,116 +38,71 @@ class PocketExpenseUploadsData extends Model
     protected $table = 'pocket_expense_uploads_data';
 
     /**
-     * The primary key associated with the table.
-     *
-     * @var string
-     */
-    protected $primaryKey = 'id';
-
-    /**
-     * Indicates if the model should be timestamped.
-     * Uses Laravel standard timestamps (created_at, updated_at).
-     *
-     * @var bool
-     */
-    public $timestamps = true;
-
-    /**
      * The attributes that are mass assignable.
      *
-     * @var array<string>
+     * @var array<int, string>
      */
     protected $fillable = [
         'upload_id',
         'line_number',
         'status',
         'expense_data',
-        'processing_errors',
-        'created_expense_id',
+        'error_message',
     ];
 
     /**
-     * The attributes that should be cast to native types.
+     * The attributes that should be cast.
      *
      * @var array<string, string>
      */
     protected $casts = [
         'upload_id' => 'integer',
         'line_number' => 'integer',
-        'status' => 'string',
-        'expense_data' => 'array', // JSON field cast to array
-        'processing_errors' => 'array', // JSON field cast to array, nullable
-        'created_expense_id' => 'integer',
+        'expense_data' => 'array',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
 
     /**
-     * The attributes that should be hidden for arrays.
+     * The attributes that should be hidden for serialization.
      *
-     * @var array<string>
+     * @var array<int, string>
      */
     protected $hidden = [
-        // No sensitive fields to hide for upload data processing
+        'error_message', // Hide sensitive error details from API responses
     ];
 
     /**
-     * Default values for attributes.
-     *
-     * @var array<string, mixed>
-     */
-    protected $attributes = [
-        'status' => 'pending',
-        'processing_errors' => null,
-        'created_expense_id' => null,
-    ];
-
-    /**
-     * Validation rules for status enum values.
+     * Valid status values for the staging data status enum.
      *
      * @var array<string>
      */
-    public static array $statusOptions = [
+    public const VALID_STATUSES = [
         'pending',
-        'processing', 
-        'completed',
-        'failed',
+        'processing',
+        'synced',
+        'failed'
     ];
 
     /**
-     * Get the parent upload batch that this data row belongs to.
+     * Default status for new upload data records.
      *
-     * @return BelongsTo<PocketExpenseFileUpload, PocketExpenseUploadsData>
+     * @var string
+     */
+    public const DEFAULT_STATUS = 'pending';
+
+    /**
+     * Get the upload that this data row belongs to.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function upload(): BelongsTo
     {
-        return $this->belongsTo(PocketExpenseFileUpload::class, 'upload_id', 'id');
+        return $this->belongsTo(PocketExpenseFileUpload::class, 'upload_id');
     }
 
     /**
-     * Get the created expense record if this data row was successfully processed.
-     *
-     * @return BelongsTo<PocketExpense, PocketExpenseUploadsData>
-     */
-    public function createdExpense(): BelongsTo
-    {
-        return $this->belongsTo(PocketExpense::class, 'created_expense_id', 'id');
-    }
-
-    /**
-     * Scope to filter by upload batch ID.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $uploadId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeForUpload($query, int $uploadId)
-    {
-        return $query->where('upload_id', $uploadId);
-    }
-
-    /**
-     * Scope to filter by processing status.
+     * Scope a query to only include records with a specific status.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param string $status
@@ -164,7 +114,7 @@ class PocketExpenseUploadsData extends Model
     }
 
     /**
-     * Scope to get pending records ready for processing.
+     * Scope a query to only include pending records.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
@@ -175,92 +125,75 @@ class PocketExpenseUploadsData extends Model
     }
 
     /**
-     * Scope to get completed records that successfully created expenses.
+     * Scope a query to only include processing records.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeCompleted($query)
+    public function scopeProcessing($query)
     {
-        return $query->where('status', 'completed')
-                    ->whereNotNull('created_expense_id');
+        return $query->where('status', 'processing');
     }
 
     /**
-     * Scope to get failed records with processing errors.
+     * Scope a query to only include synced records.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeSynced($query)
+    {
+        return $query->where('status', 'synced');
+    }
+
+    /**
+     * Scope a query to only include failed records.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeFailed($query)
     {
-        return $query->where('status', 'failed')
-                    ->whereNotNull('processing_errors');
+        return $query->where('status', 'failed');
     }
 
     /**
-     * Scope to order by line number for processing in CSV order.
+     * Scope a query to only include records for a specific upload.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $uploadId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeOrderByLine($query)
+    public function scopeForUpload($query, int $uploadId)
     {
-        return $query->orderBy('line_number', 'asc');
+        return $query->where('upload_id', $uploadId);
     }
 
     /**
-     * Check if this data row is pending processing.
+     * Scope a query to order by line number.
      *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param string $direction
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeOrderByLineNumber($query, string $direction = 'asc')
+    {
+        return $query->orderBy('line_number', $direction);
+    }
+
+    /**
+     * Check if the status is valid.
+     *
+     * @param string $status
      * @return bool
      */
-    public function isPending(): bool
+    public static function isValidStatus(string $status): bool
     {
-        return $this->status === 'pending';
+        return in_array($status, self::VALID_STATUSES);
     }
 
     /**
-     * Check if this data row is currently being processed.
-     *
-     * @return bool
-     */
-    public function isProcessing(): bool
-    {
-        return $this->status === 'processing';
-    }
-
-    /**
-     * Check if this data row completed successfully.
-     *
-     * @return bool
-     */
-    public function isCompleted(): bool
-    {
-        return $this->status === 'completed' && $this->created_expense_id !== null;
-    }
-
-    /**
-     * Check if this data row failed processing.
-     *
-     * @return bool
-     */
-    public function isFailed(): bool
-    {
-        return $this->status === 'failed';
-    }
-
-    /**
-     * Check if this data row has processing errors.
-     *
-     * @return bool
-     */
-    public function hasErrors(): bool
-    {
-        return !empty($this->processing_errors);
-    }
-
-    /**
-     * Mark this data row as processing.
+     * Mark this upload data record as processing.
      *
      * @return bool
      */
@@ -271,230 +204,244 @@ class PocketExpenseUploadsData extends Model
     }
 
     /**
-     * Mark this data row as completed with the created expense ID.
+     * Mark this upload data record as synced.
      *
-     * @param int $createdExpenseId
      * @return bool
      */
-    public function markAsCompleted(int $createdExpenseId): bool
+    public function markAsSynced(): bool
     {
-        $this->status = 'completed';
-        $this->created_expense_id = $createdExpenseId;
-        $this->processing_errors = null; // Clear any previous errors
+        $this->status = 'synced';
+        $this->error_message = null; // Clear any previous error
         return $this->save();
     }
 
     /**
-     * Mark this data row as failed with processing errors.
+     * Mark this upload data record as failed with an error message.
      *
-     * @param array $errors Array of error messages
+     * @param string $errorMessage
      * @return bool
      */
-    public function markAsFailed(array $errors): bool
+    public function markAsFailed(string $errorMessage): bool
     {
         $this->status = 'failed';
-        $this->processing_errors = $errors;
-        $this->created_expense_id = null; // Clear any previous expense reference
+        $this->error_message = $errorMessage;
         return $this->save();
     }
 
     /**
-     * Get the expense data for a specific field from the CSV row.
+     * Get a specific field value from the expense data JSON.
      *
-     * @param string $field Field name (e.g., 'date', 'merchant_name', 'amount')
-     * @param mixed $default Default value if field not found
+     * @param string $fieldName
+     * @param mixed $default
      * @return mixed
      */
-    public function getExpenseDataField(string $field, $default = null)
+    public function getExpenseField(string $fieldName, $default = null)
     {
-        return $this->expense_data[$field] ?? $default;
+        return $this->expense_data[$fieldName] ?? $default;
     }
 
     /**
-     * Set expense data for a specific field.
+     * Set a specific field value in the expense data JSON.
      *
-     * @param string $field Field name
-     * @param mixed $value Field value
+     * @param string $fieldName
+     * @param mixed $value
      * @return void
      */
-    public function setExpenseDataField(string $field, $value): void
+    public function setExpenseField(string $fieldName, $value): void
     {
         $expenseData = $this->expense_data ?? [];
-        $expenseData[$field] = $value;
+        $expenseData[$fieldName] = $value;
         $this->expense_data = $expenseData;
     }
 
     /**
-     * Add a processing error to the errors array.
+     * Check if this upload data record has failed processing.
      *
-     * @param string $field Field name where error occurred
-     * @param string $message Error message
-     * @param mixed $value The invalid value that caused the error
-     * @return void
+     * @return bool
      */
-    public function addProcessingError(string $field, string $message, $value = null): void
+    public function hasFailed(): bool
     {
-        $errors = $this->processing_errors ?? [];
-        $errors[] = [
-            'field' => $field,
-            'message' => $message,
-            'value' => $value,
-            'line_number' => $this->line_number,
-        ];
-        $this->processing_errors = $errors;
+        return $this->status === 'failed';
     }
 
     /**
-     * Clear all processing errors.
+     * Check if this upload data record is pending processing.
      *
-     * @return void
+     * @return bool
      */
-    public function clearProcessingErrors(): void
+    public function isPending(): bool
     {
-        $this->processing_errors = null;
+        return $this->status === 'pending';
     }
 
     /**
-     * Get formatted error summary for display.
+     * Check if this upload data record is currently being processed.
+     *
+     * @return bool
+     */
+    public function isProcessing(): bool
+    {
+        return $this->status === 'processing';
+    }
+
+    /**
+     * Check if this upload data record has been successfully synced.
+     *
+     * @return bool
+     */
+    public function isSynced(): bool
+    {
+        return $this->status === 'synced';
+    }
+
+    /**
+     * Get the CSV column names from the expense data.
+     *
+     * @return array
+     */
+    public function getCsvColumnNames(): array
+    {
+        return array_keys($this->expense_data ?? []);
+    }
+
+    /**
+     * Get formatted expense data for logging or display.
      *
      * @return string
      */
-    public function getErrorSummary(): string
+    public function getFormattedExpenseData(): string
     {
-        if (!$this->hasErrors()) {
-            return '';
+        if (empty($this->expense_data)) {
+            return 'No data available';
         }
 
-        $errorCount = count($this->processing_errors);
-        $firstError = $this->processing_errors[0]['message'] ?? 'Unknown error';
-        
-        if ($errorCount === 1) {
-            return $firstError;
+        $formatted = [];
+        foreach ($this->expense_data as $field => $value) {
+            $formatted[] = "{$field}: {$value}";
         }
-        
-        return $firstError . " (and " . ($errorCount - 1) . " more error" . ($errorCount > 2 ? "s" : "") . ")";
+
+        return implode(', ', $formatted);
     }
 
     /**
-     * Get the original CSV line number for display purposes.
-     * Adds 1 to account for header row in CSV file.
-     *
-     * @return int
-     */
-    public function getCsvLineNumber(): int
-    {
-        return $this->line_number + 1; // Add 1 for header row
-    }
-
-    /**
-     * Convert expense data to format suitable for PocketExpense creation.
-     * Maps CSV field names to database field names and applies any necessary transformations.
-     *
-     * @return array
-     */
-    public function getExpenseDataForCreation(): array
-    {
-        $expenseData = $this->expense_data ?? [];
-        
-        // Map CSV fields to database fields and apply transformations
-        return [
-            'date' => $expenseData['date'] ?? null,
-            'merchant_name' => $expenseData['merchant_name'] ?? '',
-            'merchant_description' => $expenseData['merchant_description'] ?? null,
-            'expense_type' => $expenseData['expense_type_id'] ?? null,
-            'currency' => $expenseData['currency'] ?? 'GBP',
-            'amount' => $expenseData['amount'] ?? 0,
-            'merchant_address' => $expenseData['merchant_address'] ?? null,
-            'vat_amount' => $expenseData['vat_amount'] ?? null,
-            'notes' => $expenseData['notes'] ?? null,
-            'status' => 'draft', // All batch uploaded expenses start as draft
-        ];
-    }
-
-    /**
-     * Get metadata information extracted from expense data.
-     * Returns array of metadata records to be created with the expense.
-     *
-     * @return array
-     */
-    public function getMetadataForCreation(): array
-    {
-        $expenseData = $this->expense_data ?? [];
-        $metadata = [];
-        
-        // Category metadata
-        if (!empty($expenseData['category_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'category',
-                'transaction_category_id' => $expenseData['category_id'],
-                'details_json' => json_encode([
-                    'category_name' => $expenseData['category_name'] ?? null,
-                ]),
-            ];
-        }
-        
-        // Expense source metadata
-        if (!empty($expenseData['expense_source_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'expense_source',
-                'expense_source_id' => $expenseData['expense_source_id'],
-                'details_json' => json_encode([
-                    'source_name' => $expenseData['expense_source_name'] ?? null,
-                    'source_note' => $expenseData['expense_source_note'] ?? null,
-                ]),
-            ];
-        }
-        
-        // Tracking code metadata
-        if (!empty($expenseData['tracking_code_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'tracking_code_type_1',
-                'tracking_code_id' => $expenseData['tracking_code_id'],
-                'details_json' => json_encode([
-                    'tracking_code' => $expenseData['tracking_code_name'] ?? null,
-                ]),
-            ];
-        }
-        
-        // Project metadata
-        if (!empty($expenseData['project_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'project',
-                'project_id' => $expenseData['project_id'],
-                'details_json' => json_encode([
-                    'project_name' => $expenseData['project_name'] ?? null,
-                ]),
-            ];
-        }
-        
-        return $metadata;
-    }
-
-    /**
-     * Check if the status value is valid.
-     *
-     * @param string $status
-     * @return bool
-     */
-    public static function isValidStatus(string $status): bool
-    {
-        return in_array($status, self::$statusOptions);
-    }
-
-    /**
-     * Boot method to set up model event listeners.
+     * Boot the model.
      *
      * @return void
      */
-    protected static function boot(): void
+    protected static function boot()
     {
         parent::boot();
 
-        // Validate status on saving
-        static::saving(function (PocketExpenseUploadsData $model) {
+        // Set default status when creating new records
+        static::creating(function ($model) {
+            if (empty($model->status)) {
+                $model->status = self::DEFAULT_STATUS;
+            }
+        });
+
+        // Validate status before saving
+        static::saving(function ($model) {
             if (!self::isValidStatus($model->status)) {
-                throw new \InvalidArgumentException("Invalid status: {$model->status}. Valid options are: " . implode(', ', self::$statusOptions));
+                throw new \InvalidArgumentException(
+                    "Invalid status: {$model->status}. Valid statuses are: " . 
+                    implode(', ', self::VALID_STATUSES)
+                );
             }
         });
     }
+
+    /**
+     * Get the route key for the model.
+     *
+     * @return string
+     */
+    public function getRouteKeyName(): string
+    {
+        return 'id';
+    }
+
+    /**
+     * Get a string representation of the model for logging.
+     *
+     * @return string
+     */
+    public function __toString(): string
+    {
+        return "PocketExpenseUploadsData #{$this->id} (Upload: {$this->upload_id}, Line: {$this->line_number}, Status: {$this->status})";
+    }
+
+    /**
+     * Convert the model instance to an array for API responses.
+     *
+     * @return array
+     */
+    public function toArray(): array
+    {
+        $array = parent::toArray();
+        
+        // Add computed fields for API responses
+        $array['has_error'] = $this->hasFailed();
+        $array['is_processed'] = $this->isSynced();
+        $array['csv_column_count'] = count($this->getCsvColumnNames());
+        
+        return $array;
+    }
+
+    /**
+     * Get the attributes that should be cast to native types.
+     * This method ensures expense_data is always treated as an array.
+     *
+     * @return array
+     */
+    protected function getCastType($key)
+    {
+        if ($key === 'expense_data') {
+            return 'array';
+        }
+
+        return parent::getCastType($key);
+    }
+
+    /**
+     * Determine if the model should use timestamps.
+     *
+     * @var bool
+     */
+    public $timestamps = true;
+
+    /**
+     * The storage format of the model's date columns.
+     *
+     * @var string
+     */
+    protected $dateFormat = 'Y-m-d H:i:s';
+
+    /**
+     * The connection name for the model.
+     * Uses default connection as per platform standards.
+     *
+     * @var string|null
+     */
+    protected $connection = null;
+
+    /**
+     * Indicates if the model should be timestamped.
+     *
+     * @var bool
+     */
+    public $incrementing = true;
+
+    /**
+     * The data type of the auto-incrementing ID.
+     *
+     * @var string
+     */
+    protected $keyType = 'int';
+
+    /**
+     * The primary key for the model.
+     *
+     * @var string
+     */
+    protected $primaryKey = 'id';
 }

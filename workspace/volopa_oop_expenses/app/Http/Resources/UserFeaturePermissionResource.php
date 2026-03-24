@@ -2,18 +2,16 @@
 
 namespace App\Http\Resources;
 
-use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
- * API Resource for UserFeaturePermission model
+ * Class UserFeaturePermissionResource
  * 
- * Transforms UserFeaturePermission model data into a consistent JSON response format
- * for API consumers. Includes related user and client information while hiding
- * sensitive internal fields and properly formatting timestamps.
+ * API Resource for transforming UserFeaturePermission model data into JSON responses.
+ * Hides internal fields and provides consistent response format for permission management endpoints.
  * 
- * This resource follows the Volopa API response patterns with camelCase field names
- * and proper data type formatting for frontend consumption.
+ * @package App\Http\Resources
  */
 class UserFeaturePermissionResource extends JsonResource
 {
@@ -26,21 +24,25 @@ class UserFeaturePermissionResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            // Primary identifier
             'id' => $this->id,
+            'user_id' => $this->user_id,
+            'client_id' => $this->client_id,
+            'feature_id' => $this->feature_id,
+            'grantor_id' => $this->grantor_id,
+            'manager_user_id' => $this->manager_user_id,
+            'is_enabled' => (bool) $this->is_enabled,
+            'created_at' => $this->created_at?->toISOString(),
+            'updated_at' => $this->updated_at?->toISOString(),
             
-            // User information - target user receiving the permission
-            'userId' => $this->user_id,
+            // Conditional relationship data - only include when loaded to avoid N+1 queries
             'user' => $this->whenLoaded('user', function () {
                 return [
                     'id' => $this->user->id,
                     'name' => $this->user->name,
-                    'username' => $this->user->username,
+                    'username' => $this->user->username ?? null,
                 ];
             }),
             
-            // Client context information
-            'clientId' => $this->client_id,
             'client' => $this->whenLoaded('client', function () {
                 return [
                     'id' => $this->client->id,
@@ -48,63 +50,44 @@ class UserFeaturePermissionResource extends JsonResource
                 ];
             }),
             
-            // Feature information
-            'featureId' => $this->feature_id,
-            'feature' => $this->whenLoaded('feature', function () {
-                return [
-                    'id' => $this->feature->id,
-                    'name' => $this->feature->name ?? 'OOP Expense', // Default name for feature ID 16
-                ];
-            }),
-            
-            // Permission grantor information
-            'grantorId' => $this->grantor_id,
             'grantor' => $this->whenLoaded('grantor', function () {
                 return [
                     'id' => $this->grantor->id,
                     'name' => $this->grantor->name,
-                    'username' => $this->grantor->username,
+                    'username' => $this->grantor->username ?? null,
                 ];
             }),
             
-            // Optional manager information
-            'managerUserId' => $this->manager_user_id,
-            'managerUser' => $this->whenLoaded('managerUser', function () {
-                return $this->manager_user_id ? [
-                    'id' => $this->managerUser->id,
-                    'name' => $this->managerUser->name,
-                    'username' => $this->managerUser->username,
-                ] : null;
+            'manager' => $this->whenLoaded('manager', function () {
+                return [
+                    'id' => $this->manager->id,
+                    'name' => $this->manager->name,
+                    'username' => $this->manager->username ?? null,
+                ];
             }),
             
-            // Permission state
-            'isEnabled' => (bool) $this->is_enabled,
-            'enabled' => (bool) $this->is_enabled, // Alternative field name for consistency
+            // Feature information - static for now as feature table is not defined in constraints
+            'feature' => [
+                'id' => $this->feature_id,
+                'name' => $this->getFeatureName($this->feature_id),
+                'description' => $this->getFeatureDescription($this->feature_id),
+            ],
             
-            // Timestamps formatted for API consumption
-            'createdAt' => $this->create_time ? $this->create_time->toISOString() : null,
-            'updatedAt' => $this->update_time ? $this->update_time->toISOString() : null,
+            // Permission status indicators
+            'status' => [
+                'is_active' => (bool) $this->is_enabled,
+                'granted_date' => $this->created_at?->toISOString(),
+                'last_updated' => $this->updated_at?->toISOString(),
+                'can_be_revoked' => $this->canBeRevoked($request),
+            ],
             
-            // Additional metadata for frontend use
-            'permissionType' => 'user_feature_permission',
-            'scope' => 'client', // Indicates this is a client-scoped permission
-            
-            // Conditional fields based on loaded relationships
-            'canManage' => $this->when(
-                $this->relationLoaded('managerUser'),
-                fn() => !is_null($this->manager_user_id)
-            ),
-            
-            // Permission summary for quick reference
-            'summary' => $this->when(
-                $this->relationLoaded('user') && $this->relationLoaded('feature'),
-                fn() => sprintf(
-                    '%s has %s access to %s',
-                    $this->user->name ?? 'User',
-                    $this->is_enabled ? 'enabled' : 'disabled',
-                    $this->feature->name ?? 'OOP Expense'
-                )
-            ),
+            // Metadata for frontend usage
+            'meta' => [
+                'permission_type' => 'feature_permission',
+                'permission_scope' => 'client_specific',
+                'requires_manager' => true,
+                'hierarchical' => true,
+            ],
         ];
     }
 
@@ -117,11 +100,8 @@ class UserFeaturePermissionResource extends JsonResource
     public function with(Request $request): array
     {
         return [
-            'meta' => [
-                'resource_type' => 'user_feature_permission',
-                'api_version' => 'v1',
-                'timestamp' => now()->toISOString(),
-            ],
+            'version' => '1.0',
+            'type' => 'user_feature_permission',
         ];
     }
 
@@ -132,33 +112,200 @@ class UserFeaturePermissionResource extends JsonResource
      * @param \Illuminate\Http\JsonResponse $response
      * @return void
      */
-    public function withResponse(Request $request, $response): void
+    public function withResponse(Request $request, \Illuminate\Http\JsonResponse $response): void
     {
-        // Set consistent API headers
+        // Set consistent headers for permission resources
         $response->header('X-Resource-Type', 'UserFeaturePermission');
         $response->header('X-API-Version', 'v1');
     }
 
     /**
-     * Static method to create a collection response with pagination.
+     * Get human-readable feature name based on feature ID.
      * 
-     * @param \Illuminate\Contracts\Pagination\Paginator|\Illuminate\Support\Collection $resource
+     * @param int $featureId
+     * @return string
+     */
+    private function getFeatureName(int $featureId): string
+    {
+        // Feature mapping as per system constraints
+        // Feature ID 16 = OOP Expenses as mentioned in the context
+        return match ($featureId) {
+            16 => 'Out-of-Pocket Expenses',
+            15 => 'Expense Management',
+            14 => 'Budget Management',
+            13 => 'Reporting & Analytics',
+            12 => 'User Management',
+            11 => 'Client Configuration',
+            10 => 'Transaction Processing',
+            default => "Feature #{$featureId}",
+        };
+    }
+
+    /**
+     * Get feature description based on feature ID.
+     * 
+     * @param int $featureId
+     * @return string
+     */
+    private function getFeatureDescription(int $featureId): string
+    {
+        return match ($featureId) {
+            16 => 'Manage and process out-of-pocket expense claims with CSV upload capabilities',
+            15 => 'Create, approve, and track expense reports across the organization',
+            14 => 'Set and monitor budgets with real-time spending tracking',
+            13 => 'Generate comprehensive reports and analytics dashboards',
+            12 => 'Manage user accounts, roles, and permissions within the client',
+            11 => 'Configure client-specific settings and preferences',
+            10 => 'Process financial transactions and manage payment flows',
+            default => 'Access to platform feature functionality',
+        };
+    }
+
+    /**
+     * Determine if the current permission can be revoked by the requesting user.
+     * 
+     * @param Request $request
+     * @return bool
+     */
+    private function canBeRevoked(Request $request): bool
+    {
+        // Get the authenticated user from the request
+        $currentUser = $request->user();
+        
+        if (!$currentUser) {
+            return false;
+        }
+
+        // Permission can be revoked if:
+        // 1. Current user is the grantor of this permission
+        // 2. Current user is a Primary Admin for this client
+        // 3. Current user has higher-level management rights
+        
+        // Basic check: user who granted can revoke
+        if ($currentUser->id === $this->grantor_id) {
+            return true;
+        }
+
+        // Note: Additional role-based checks would require role information
+        // which is not available in the current model structure
+        // This would typically integrate with existing RBAC system
+        
+        return false;
+    }
+
+    /**
+     * Create a resource collection with consistent pagination metadata.
+     * 
+     * @param mixed $resource
      * @return \Illuminate\Http\Resources\Json\AnonymousResourceCollection
      */
-    public static function collection($resource)
+    public static function collection($resource): \Illuminate\Http\Resources\Json\AnonymousResourceCollection
     {
         return parent::collection($resource)->additional([
             'meta' => [
                 'resource_type' => 'user_feature_permission_collection',
                 'api_version' => 'v1',
-                'timestamp' => now()->toISOString(),
-                'total_items' => method_exists($resource, 'total') ? $resource->total() : $resource->count(),
+                'generated_at' => now()->toISOString(),
             ],
         ]);
     }
 
     /**
-     * Create a minimal resource representation for nested responses.
+     * Get summary information for dashboard display.
+     * 
+     * @param Request $request
+     * @return array<string, mixed>
+     */
+    public function toSummary(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'feature_name' => $this->getFeatureName($this->feature_id),
+            'user_name' => $this->whenLoaded('user', fn() => $this->user->name),
+            'client_name' => $this->whenLoaded('client', fn() => $this->client->name),
+            'is_enabled' => (bool) $this->is_enabled,
+            'granted_date' => $this->created_at?->format('Y-m-d'),
+            'status' => $this->is_enabled ? 'active' : 'disabled',
+        ];
+    }
+
+    /**
+     * Get detailed information for permission management interface.
+     * 
+     * @param Request $request
+     * @return array<string, mixed>
+     */
+    public function toDetailed(Request $request): array
+    {
+        return array_merge($this->toArray($request), [
+            'audit_trail' => [
+                'created_by' => $this->whenLoaded('grantor', fn() => [
+                    'id' => $this->grantor->id,
+                    'name' => $this->grantor->name,
+                    'timestamp' => $this->created_at?->toISOString(),
+                ]),
+                'last_updated_by' => $this->whenLoaded('grantor', fn() => [
+                    'id' => $this->grantor->id,
+                    'name' => $this->grantor->name,
+                    'timestamp' => $this->updated_at?->toISOString(),
+                ]),
+            ],
+            'permission_hierarchy' => [
+                'can_grant_to_others' => $this->canGrantToOthers($request),
+                'management_scope' => $this->getManagementScope(),
+                'inherited_permissions' => $this->getInheritedPermissions(),
+            ],
+        ]);
+    }
+
+    /**
+     * Check if this permission allows granting similar permissions to other users.
+     * 
+     * @param Request $request
+     * @return bool
+     */
+    private function canGrantToOthers(Request $request): bool
+    {
+        // For OOP Expenses (feature_id = 16), only admin-level users can grant permissions
+        // This logic would typically integrate with existing role system
+        return $this->feature_id === 16 && $this->is_enabled;
+    }
+
+    /**
+     * Get the scope of users this permission allows managing.
+     * 
+     * @return string
+     */
+    private function getManagementScope(): string
+    {
+        // Based on permission constraints from the context
+        // Admin can only grant access to their own managed users
+        return match ($this->feature_id) {
+            16 => 'managed_users_only', // OOP Expenses
+            12 => 'client_users', // User Management
+            default => 'self_only',
+        };
+    }
+
+    /**
+     * Get list of permissions that are inherited with this permission.
+     * 
+     * @return array<string>
+     */
+    private function getInheritedPermissions(): array
+    {
+        // Some permissions may inherit other permissions
+        // For example, OOP Expenses might inherit basic expense viewing
+        return match ($this->feature_id) {
+            16 => ['view_expenses', 'create_expenses', 'upload_csv'], // OOP Expenses
+            15 => ['view_expenses'], // Basic Expense Management
+            default => [],
+        };
+    }
+
+    /**
+     * Transform for API responses when permission check fails.
+     * Returns minimal information for security.
      * 
      * @return array<string, mixed>
      */
@@ -166,97 +313,99 @@ class UserFeaturePermissionResource extends JsonResource
     {
         return [
             'id' => $this->id,
-            'userId' => $this->user_id,
-            'clientId' => $this->client_id,
-            'featureId' => $this->feature_id,
-            'isEnabled' => (bool) $this->is_enabled,
-            'hasManager' => !is_null($this->manager_user_id),
+            'feature_id' => $this->feature_id,
+            'is_enabled' => (bool) $this->is_enabled,
+            'message' => 'Limited permission information available',
         ];
     }
 
     /**
-     * Create a summary resource representation for list views.
+     * Format for export/reporting purposes.
      * 
      * @return array<string, mixed>
      */
-    public function toSummary(): array
+    public function toExport(): array
     {
         return [
-            'id' => $this->id,
-            'userId' => $this->user_id,
-            'userName' => $this->whenLoaded('user', fn() => $this->user->name, 'Unknown User'),
-            'clientId' => $this->client_id,
-            'clientName' => $this->whenLoaded('client', fn() => $this->client->name, 'Unknown Client'),
-            'featureId' => $this->feature_id,
-            'featureName' => $this->whenLoaded('feature', fn() => $this->feature->name, 'OOP Expense'),
-            'isEnabled' => (bool) $this->is_enabled,
-            'grantedBy' => $this->whenLoaded('grantor', fn() => $this->grantor->name, 'System'),
-            'managedBy' => $this->whenLoaded('managerUser', fn() => $this->managerUser->name ?? null, null),
-            'createdAt' => $this->create_time ? $this->create_time->toISOString() : null,
+            'Permission ID' => $this->id,
+            'User ID' => $this->user_id,
+            'User Name' => $this->whenLoaded('user', fn() => $this->user->name, 'N/A'),
+            'Client ID' => $this->client_id,
+            'Client Name' => $this->whenLoaded('client', fn() => $this->client->name, 'N/A'),
+            'Feature' => $this->getFeatureName($this->feature_id),
+            'Status' => $this->is_enabled ? 'Enabled' : 'Disabled',
+            'Granted By' => $this->whenLoaded('grantor', fn() => $this->grantor->name, 'N/A'),
+            'Manager' => $this->whenLoaded('manager', fn() => $this->manager->name, 'N/A'),
+            'Granted Date' => $this->created_at?->format('Y-m-d H:i:s'),
+            'Last Updated' => $this->updated_at?->format('Y-m-d H:i:s'),
         ];
     }
 
     /**
-     * Determine if the permission is currently active and effective.
+     * Check if the resource should be visible to the requesting user.
+     * Used for additional security filtering.
      * 
+     * @param Request $request
      * @return bool
      */
-    public function isActive(): bool
+    public function shouldBeVisible(Request $request): bool
     {
-        return (bool) $this->is_enabled;
+        $currentUser = $request->user();
+        
+        if (!$currentUser) {
+            return false;
+        }
+
+        // Permission is visible if:
+        // 1. User is the permission owner
+        // 2. User is the grantor
+        // 3. User is the manager
+        // 4. User has admin rights for the client
+        
+        return in_array($currentUser->id, [
+            $this->user_id,
+            $this->grantor_id,
+            $this->manager_user_id,
+        ]);
     }
 
     /**
-     * Get the permission status as a human-readable string.
+     * Get localized display text for the permission status.
      * 
-     * @return string
+     * @param string $locale
+     * @return array<string, string>
      */
-    public function getStatusText(): string
+    public function getLocalizedStatus(string $locale = 'en'): array
     {
-        return $this->is_enabled ? 'Active' : 'Inactive';
-    }
-
-    /**
-     * Check if this permission has management delegation.
-     * 
-     * @return bool
-     */
-    public function hasManagementDelegation(): bool
-    {
-        return !is_null($this->manager_user_id);
-    }
-
-    /**
-     * Get permission details for audit trail display.
-     * 
-     * @return array<string, mixed>
-     */
-    public function toAuditTrail(): array
-    {
-        return [
-            'permissionId' => $this->id,
-            'action' => $this->is_enabled ? 'granted' : 'revoked',
-            'targetUser' => $this->whenLoaded('user', fn() => [
-                'id' => $this->user->id,
-                'name' => $this->user->name,
-            ], ['id' => $this->user_id, 'name' => 'Unknown User']),
-            'feature' => [
-                'id' => $this->feature_id,
-                'name' => 'OOP Expense', // Default for feature ID 16
+        // Basic localization support - could be extended with proper translation service
+        $statusTexts = [
+            'en' => [
+                'active' => 'Active',
+                'inactive' => 'Inactive',
+                'pending' => 'Pending',
+                'revoked' => 'Revoked',
             ],
-            'client' => $this->whenLoaded('client', fn() => [
-                'id' => $this->client->id,
-                'name' => $this->client->name,
-            ], ['id' => $this->client_id, 'name' => 'Unknown Client']),
-            'grantedBy' => $this->whenLoaded('grantor', fn() => [
-                'id' => $this->grantor->id,
-                'name' => $this->grantor->name,
-            ], ['id' => $this->grantor_id, 'name' => 'System']),
-            'delegatedTo' => $this->manager_user_id ? $this->whenLoaded('managerUser', fn() => [
-                'id' => $this->managerUser->id,
-                'name' => $this->managerUser->name,
-            ], ['id' => $this->manager_user_id, 'name' => 'Manager']) : null,
-            'timestamp' => $this->create_time ? $this->create_time->toISOString() : null,
+            'es' => [
+                'active' => 'Activo',
+                'inactive' => 'Inactivo', 
+                'pending' => 'Pendiente',
+                'revoked' => 'Revocado',
+            ],
+            'fr' => [
+                'active' => 'Actif',
+                'inactive' => 'Inactif',
+                'pending' => 'En attente',
+                'revoked' => 'Révoqué',
+            ],
+        ];
+
+        $texts = $statusTexts[$locale] ?? $statusTexts['en'];
+        $status = $this->is_enabled ? 'active' : 'inactive';
+
+        return [
+            'status' => $status,
+            'display_text' => $texts[$status],
+            'locale' => $locale,
         ];
     }
 }

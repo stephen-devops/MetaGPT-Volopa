@@ -12,52 +12,40 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('pocket_expense_uploads_data', function (Blueprint $table) {
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
-            
-            // Primary key
             $table->bigIncrements('id');
-            
-            // Foreign key to parent upload batch
-            $table->unsignedBigInteger('upload_id')->comment('Reference to pocket_expense_file_uploads record');
-            
-            // CSV row tracking
-            $table->integer('line_number')->unsigned()->comment('Line number in the original CSV file (starting from 2, after header)');
-            
-            // Processing status for individual row
-            $table->enum('status', ['pending', 'processing', 'completed', 'failed'])->default('pending')->comment('Processing status of this individual CSV row');
-            
-            // Raw expense data from CSV row
-            $table->json('expense_data')->comment('JSON object containing parsed CSV row data with field mappings');
-            
-            // Processing error details for failed rows
-            $table->json('processing_errors')->nullable()->comment('JSON array of processing errors if status=failed');
-            
-            // Reference to created expense record (if successfully processed)
-            $table->unsignedBigInteger('created_expense_id')->nullable()->comment('Reference to pocket_expense.id if row was successfully processed');
-            
-            // Laravel standard timestamps
-            $table->timestamps();
+            $table->unsignedBigInteger('upload_id')->comment('Foreign key to pocket_expense_file_uploads table');
+            $table->integer('line_number')->comment('Line number in the original CSV file (including header row)');
+            $table->enum('status', [
+                'pending',
+                'processing', 
+                'synced',
+                'failed'
+            ])->default('pending')->comment('Processing status of this individual CSV row');
+            $table->json('expense_data')->comment('JSON representation of the parsed CSV row data');
+            $table->text('error_message')->nullable()->comment('Error message if processing failed');
+            $table->timestamps(); // Laravel standard timestamps (created_at, updated_at)
             
             // Foreign key constraints
             $table->foreign('upload_id')->references('id')->on('pocket_expense_file_uploads')->onDelete('cascade');
-            $table->foreign('created_expense_id')->references('id')->on('pocket_expense')->onDelete('set null');
             
-            // Indexes for common queries and performance
+            // Indexes for performance
             $table->index(['upload_id'], 'idx_upload');
-            $table->index(['upload_id', 'line_number'], 'idx_upload_line');
             $table->index(['upload_id', 'status'], 'idx_upload_status');
+            $table->index(['upload_id', 'line_number'], 'idx_upload_line');
             $table->index(['status'], 'idx_status');
-            $table->index(['created_expense_id'], 'idx_created_expense');
             $table->index(['line_number'], 'idx_line_number');
             
-            // Composite indexes for batch processing queries
+            // Composite indexes for common queries
             $table->index(['upload_id', 'status', 'line_number'], 'idx_upload_status_line');
-            $table->index(['status', 'created_at'], 'idx_status_created');
+            $table->index(['upload_id', 'created_at'], 'idx_upload_created');
             
-            // Unique constraint to prevent duplicate processing of same CSV row
+            // Unique constraint to prevent duplicate line entries per upload
             $table->unique(['upload_id', 'line_number'], 'unique_upload_line');
+            
+            // Table configuration
+            $table->engine = 'InnoDB';
+            $table->charset = 'utf8mb4';
+            $table->collation = 'utf8mb4_unicode_ci';
         });
     }
 

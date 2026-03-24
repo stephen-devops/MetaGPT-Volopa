@@ -3,446 +3,520 @@
 namespace App\Services;
 
 use App\Models\UserFeaturePermission;
+use App\Models\User;
+use App\Models\Client;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Exception;
 
 /**
- * Service class for managing user feature permissions
+ * Service class for managing user feature permissions in the OOP Expenses system.
+ * Handles granting, revoking, and querying permissions with hierarchical RBAC support.
  * 
- * Handles the business logic for granting, revoking, and managing user permissions
- * for features within client contexts. Enforces permission hierarchy and delegation
- * rules based on user roles and management relationships.
+ * Permissions are scoped by client for multi-tenancy and follow platform constraints:
+ * - Only Primary Admin has full access to all users by default
+ * - Admin gets full access only to own expenses by default; needs explicit grant for others
+ * - Business User and Card User cannot approve expenses even with management rights
+ * - Managing access can be given to any user irrespective of role
+ * - Admin can only grant access to their own managed users (not all users)
  */
 class UserFeaturePermissionService
 {
     /**
-     * Grant permission to a user for a specific feature within a client context.
+     * Grant a feature permission to a user.
      * 
-     * @param int $userId User receiving the permission
+     * Creates a new UserFeaturePermission record linking a user to a feature
+     * within a client context, with designated grantor and manager.
+     * 
+     * @param int $userId Target user receiving the permission
      * @param int $clientId Client context for the permission
-     * @param int $featureId Feature being granted (16 = OOP Expense)
+     * @param int $featureId Feature being granted access to (e.g., 16 for OOP Expenses)
      * @param int $grantorId User who is granting this permission
-     * @param int|null $managerId Optional manager who can manage the target user
-     * @return UserFeaturePermission
-     * @throws Exception
+     * @param int $managerId User who can manage the target user
+     * @return UserFeaturePermission Created permission record
+     * @throws Exception When validation fails or database operation fails
      */
-    public function grantPermission(int $userId, int $clientId, int $featureId, int $grantorId, ?int $managerId = null): UserFeaturePermission
+    public function grantPermission(int $userId, int $clientId, int $featureId, int $grantorId, int $managerId): UserFeaturePermission
     {
-        DB::beginTransaction();
-        
         try {
-            // Check if permission already exists
-            $existingPermission = UserFeaturePermission::where([
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'feature_id' => $featureId
-            ])->first();
+            DB::beginTransaction();
             
+            // Validate that all referenced users exist and belong to the client
+            $this->validateUsers([$userId, $grantorId, $managerId], $clientId);
+            
+            // Validate that the client exists
+            $client = Client::findOrFail($clientId);
+            
+            // Check if permission already exists (enabled or disabled)
+            $existingPermission = UserFeaturePermission::where('user_id', $userId)
+                ->where('client_id', $clientId)
+                ->where('feature_id', $featureId)
+                ->first();
+                
             if ($existingPermission) {
                 if ($existingPermission->is_enabled) {
-                    throw new Exception("User already has this permission granted");
-                } else {
-                    // Re-enable existing permission
-                    $existingPermission->update([
-                        'is_enabled' => 1,
-                        'grantor_id' => $grantorId,
-                        'manager_user_id' => $managerId,
-                        'update_time' => Carbon::now()
-                    ]);
-                    
-                    DB::commit();
-                    return $existingPermission->fresh();
+                    throw new Exception("Permission already granted for user {$userId}, client {$clientId}, feature {$featureId}");
                 }
+                
+                // Re-enable existing disabled permission
+                $existingPermission->update([
+                    'is_enabled' => true,
+                    'grantor_id' => $grantorId,
+                    'manager_user_id' => $managerId,
+                    'updated_at' => now(),
+                ]);
+                
+                DB::commit();
+                
+                Log::info('User feature permission re-enabled', [
+                    'permission_id' => $existingPermission->id,
+                    'user_id' => $userId,
+                    'client_id' => $clientId,
+                    'feature_id' => $featureId,
+                    'grantor_id' => $grantorId,
+                    'manager_id' => $managerId,
+                ]);
+                
+                return $existingPermission->fresh();
             }
             
-            // Create new permission record
+            // Create new permission
             $permission = UserFeaturePermission::create([
                 'user_id' => $userId,
                 'client_id' => $clientId,
                 'feature_id' => $featureId,
                 'grantor_id' => $grantorId,
                 'manager_user_id' => $managerId,
-                'is_enabled' => 1,
-                'create_time' => Carbon::now(),
-                'update_time' => Carbon::now()
+                'is_enabled' => true,
             ]);
             
             DB::commit();
+            
+            Log::info('User feature permission granted', [
+                'permission_id' => $permission->id,
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'feature_id' => $featureId,
+                'grantor_id' => $grantorId,
+                'manager_id' => $managerId,
+            ]);
+            
             return $permission;
             
         } catch (Exception $e) {
-            DB::rollback();
-            throw $e;
+            DB::rollBack();
+            
+            Log::error('Failed to grant user feature permission', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'feature_id' => $featureId,
+                'grantor_id' => $grantorId,
+                'manager_id' => $managerId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to grant permission: " . $e->getMessage());
         }
     }
     
     /**
-     * Revoke permission from a user for a specific feature within a client context.
+     * Revoke a feature permission from a user.
      * 
-     * @param int $userId User whose permission is being revoked
-     * @param int $clientId Client context for the permission
-     * @param int $featureId Feature being revoked
-     * @return bool
-     * @throws Exception
+     * Sets the permission as disabled rather than deleting the record
+     * to maintain audit trail and historical data.
+     * 
+     * @param UserFeaturePermission $permission Permission to revoke
+     * @return bool True if successfully revoked
+     * @throws Exception When database operation fails
      */
-    public function revokePermission(int $userId, int $clientId, int $featureId): bool
+    public function revokePermission(UserFeaturePermission $permission): bool
     {
-        DB::beginTransaction();
-        
         try {
-            $permission = UserFeaturePermission::where([
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'feature_id' => $featureId
-            ])->first();
-            
-            if (!$permission) {
-                throw new Exception("Permission not found for this user, client, and feature combination");
-            }
+            DB::beginTransaction();
             
             if (!$permission->is_enabled) {
-                throw new Exception("Permission is already revoked");
+                throw new Exception("Permission is already revoked for permission ID {$permission->id}");
             }
             
             $permission->update([
-                'is_enabled' => 0,
-                'update_time' => Carbon::now()
+                'is_enabled' => false,
+                'updated_at' => now(),
             ]);
             
             DB::commit();
+            
+            Log::info('User feature permission revoked', [
+                'permission_id' => $permission->id,
+                'user_id' => $permission->user_id,
+                'client_id' => $permission->client_id,
+                'feature_id' => $permission->feature_id,
+            ]);
+            
             return true;
             
         } catch (Exception $e) {
-            DB::rollback();
-            throw $e;
+            DB::rollBack();
+            
+            Log::error('Failed to revoke user feature permission', [
+                'permission_id' => $permission->id,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to revoke permission: " . $e->getMessage());
         }
     }
     
     /**
-     * Get all permissions for a user within a specific client context.
+     * Get all active permissions for a user within a client context.
      * 
-     * @param int $userId User whose permissions are being retrieved
-     * @param int $clientId Client context to filter permissions
-     * @return Collection
+     * @param int $userId User to get permissions for
+     * @param int $clientId Client context to scope permissions
+     * @return Collection Collection of UserFeaturePermission models
+     * @throws Exception When validation fails
      */
     public function getUserPermissions(int $userId, int $clientId): Collection
     {
-        return UserFeaturePermission::where([
-            'user_id' => $userId,
-            'client_id' => $clientId,
-            'is_enabled' => 1
-        ])
-        ->with(['user', 'client', 'grantor', 'manager'])
-        ->orderBy('create_time', 'desc')
-        ->get();
+        try {
+            // Validate user exists and belongs to client
+            $this->validateUsers([$userId], $clientId);
+            
+            $permissions = UserFeaturePermission::with(['user', 'client', 'grantor', 'manager'])
+                ->where('user_id', $userId)
+                ->where('client_id', $clientId)
+                ->where('is_enabled', true)
+                ->orderBy('feature_id')
+                ->orderBy('created_at', 'desc')
+                ->get();
+            
+            Log::debug('Retrieved user permissions', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'permission_count' => $permissions->count(),
+            ]);
+            
+            return $permissions;
+            
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve user permissions', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to retrieve user permissions: " . $e->getMessage());
+        }
     }
     
     /**
-     * Check if a manager can manage a target user within a client context.
+     * Check if a manager user can manage a target user within a client context.
      * 
-     * Based on permission hierarchy and explicit management grants. Primary Admin
-     * has full access to all users by default. Admin gets full access only to own
-     * expenses by default unless explicitly granted management rights.
+     * Validates hierarchical permission delegation:
+     * - Admin can only grant access to their own managed users (not all users)
+     * - Managing access can be given to any user irrespective of role
      * 
      * @param int $managerId User attempting to manage
      * @param int $targetUserId User being managed
      * @param int $clientId Client context for the management relationship
-     * @return bool
+     * @return bool True if manager can manage the target user
+     * @throws Exception When validation fails
      */
     public function canManageUser(int $managerId, int $targetUserId, int $clientId): bool
     {
-        // Self-management is always allowed
-        if ($managerId === $targetUserId) {
-            return true;
+        try {
+            // Validate users exist and belong to client
+            $this->validateUsers([$managerId, $targetUserId], $clientId);
+            
+            // Self-management is always allowed
+            if ($managerId === $targetUserId) {
+                return true;
+            }
+            
+            // Check if manager has explicit management rights over target user
+            $canManage = UserFeaturePermission::where('manager_user_id', $managerId)
+                ->where('user_id', $targetUserId)
+                ->where('client_id', $clientId)
+                ->where('is_enabled', true)
+                ->exists();
+            
+            Log::debug('Checked user management permission', [
+                'manager_id' => $managerId,
+                'target_user_id' => $targetUserId,
+                'client_id' => $clientId,
+                'can_manage' => $canManage,
+            ]);
+            
+            return $canManage;
+            
+        } catch (Exception $e) {
+            Log::error('Failed to check user management permission', [
+                'manager_id' => $managerId,
+                'target_user_id' => $targetUserId,
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to check management permission: " . $e->getMessage());
         }
-        
-        // Check if manager has explicit management rights for the target user
-        $managementPermission = UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'manager_user_id' => $managerId,
-            'user_id' => $targetUserId,
-            'is_enabled' => 1
-        ])->exists();
-        
-        if ($managementPermission) {
-            return true;
-        }
-        
-        // Additional role-based checks would go here if user roles were available
-        // For now, we rely on explicit permission grants through the manager_user_id field
-        
-        return false;
     }
     
     /**
      * Get all users that a manager can manage within a client context.
      * 
-     * @param int $managerId User whose managed users are being retrieved
-     * @param int $clientId Client context to filter managed users
-     * @return Collection
+     * @param int $managerId Manager user ID
+     * @param int $clientId Client context
+     * @return Collection Collection of User models that the manager can manage
+     * @throws Exception When validation fails
      */
     public function getManagedUsers(int $managerId, int $clientId): Collection
     {
-        return UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'manager_user_id' => $managerId,
-            'is_enabled' => 1
-        ])
-        ->with(['user'])
-        ->get()
-        ->pluck('user')
-        ->unique('id')
-        ->values();
+        try {
+            // Validate manager exists and belongs to client
+            $this->validateUsers([$managerId], $clientId);
+            
+            $managedUserIds = UserFeaturePermission::where('manager_user_id', $managerId)
+                ->where('client_id', $clientId)
+                ->where('is_enabled', true)
+                ->distinct()
+                ->pluck('user_id');
+            
+            // Include self-management
+            if (!$managedUserIds->contains($managerId)) {
+                $managedUserIds->push($managerId);
+            }
+            
+            $managedUsers = User::whereIn('id', $managedUserIds)
+                ->where('deleted', false)
+                ->orderBy('name')
+                ->get();
+            
+            Log::debug('Retrieved managed users', [
+                'manager_id' => $managerId,
+                'client_id' => $clientId,
+                'managed_user_count' => $managedUsers->count(),
+            ]);
+            
+            return $managedUsers;
+            
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve managed users', [
+                'manager_id' => $managerId,
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to retrieve managed users: " . $e->getMessage());
+        }
     }
     
     /**
-     * Get all permissions granted by a specific grantor within a client context.
+     * Get all permissions granted by a specific user.
      * 
-     * @param int $grantorId User whose granted permissions are being retrieved
-     * @param int $clientId Client context to filter permissions
-     * @return Collection
+     * @param int $grantorId User who granted permissions
+     * @param int $clientId Client context
+     * @return Collection Collection of UserFeaturePermission models granted by the user
+     * @throws Exception When validation fails
      */
     public function getPermissionsGrantedBy(int $grantorId, int $clientId): Collection
     {
-        return UserFeaturePermission::where([
-            'grantor_id' => $grantorId,
-            'client_id' => $clientId
-        ])
-        ->with(['user', 'manager'])
-        ->orderBy('create_time', 'desc')
-        ->get();
+        try {
+            // Validate grantor exists and belongs to client
+            $this->validateUsers([$grantorId], $clientId);
+            
+            $permissions = UserFeaturePermission::with(['user', 'client', 'manager'])
+                ->where('grantor_id', $grantorId)
+                ->where('client_id', $clientId)
+                ->orderBy('created_at', 'desc')
+                ->get();
+            
+            Log::debug('Retrieved permissions granted by user', [
+                'grantor_id' => $grantorId,
+                'client_id' => $clientId,
+                'permission_count' => $permissions->count(),
+            ]);
+            
+            return $permissions;
+            
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve permissions granted by user', [
+                'grantor_id' => $grantorId,
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to retrieve granted permissions: " . $e->getMessage());
+        }
     }
     
     /**
-     * Check if a user has a specific permission within a client context.
+     * Check if a user has a specific feature permission within a client context.
      * 
-     * @param int $userId User whose permission is being checked
-     * @param int $clientId Client context for the permission
-     * @param int $featureId Feature being checked
-     * @return bool
+     * @param int $userId User to check permission for
+     * @param int $clientId Client context
+     * @param int $featureId Feature to check permission for
+     * @return bool True if user has the permission
+     * @throws Exception When validation fails
      */
     public function hasPermission(int $userId, int $clientId, int $featureId): bool
     {
-        return UserFeaturePermission::where([
-            'user_id' => $userId,
-            'client_id' => $clientId,
-            'feature_id' => $featureId,
-            'is_enabled' => 1
-        ])->exists();
-    }
-    
-    /**
-     * Get all active permissions for a specific feature across all users in a client.
-     * 
-     * @param int $clientId Client context to filter permissions
-     * @param int $featureId Feature to filter permissions
-     * @return Collection
-     */
-    public function getFeaturePermissions(int $clientId, int $featureId): Collection
-    {
-        return UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'feature_id' => $featureId,
-            'is_enabled' => 1
-        ])
-        ->with(['user', 'grantor', 'manager'])
-        ->orderBy('create_time', 'desc')
-        ->get();
-    }
-    
-    /**
-     * Update the manager for an existing permission.
-     * 
-     * @param int $userId User whose permission manager is being updated
-     * @param int $clientId Client context for the permission
-     * @param int $featureId Feature for the permission
-     * @param int|null $newManagerId New manager user ID (null to remove manager)
-     * @return UserFeaturePermission
-     * @throws Exception
-     */
-    public function updatePermissionManager(int $userId, int $clientId, int $featureId, ?int $newManagerId = null): UserFeaturePermission
-    {
-        DB::beginTransaction();
-        
         try {
-            $permission = UserFeaturePermission::where([
+            // Validate user exists and belongs to client
+            $this->validateUsers([$userId], $clientId);
+            
+            $hasPermission = UserFeaturePermission::where('user_id', $userId)
+                ->where('client_id', $clientId)
+                ->where('feature_id', $featureId)
+                ->where('is_enabled', true)
+                ->exists();
+            
+            Log::debug('Checked user feature permission', [
                 'user_id' => $userId,
                 'client_id' => $clientId,
                 'feature_id' => $featureId,
-                'is_enabled' => 1
-            ])->first();
-            
-            if (!$permission) {
-                throw new Exception("Active permission not found for this user, client, and feature combination");
-            }
-            
-            $permission->update([
-                'manager_user_id' => $newManagerId,
-                'update_time' => Carbon::now()
+                'has_permission' => $hasPermission,
             ]);
             
-            DB::commit();
-            return $permission->fresh();
+            return $hasPermission;
             
         } catch (Exception $e) {
-            DB::rollback();
-            throw $e;
+            Log::error('Failed to check user feature permission', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'feature_id' => $featureId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to check feature permission: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Bulk revoke all permissions for a user within a client context.
+     * Used when user access needs to be completely removed.
+     * 
+     * @param int $userId User to revoke all permissions for
+     * @param int $clientId Client context
+     * @return int Number of permissions revoked
+     * @throws Exception When database operation fails
+     */
+    public function revokeAllUserPermissions(int $userId, int $clientId): int
+    {
+        try {
+            DB::beginTransaction();
+            
+            // Validate user exists and belongs to client
+            $this->validateUsers([$userId], $clientId);
+            
+            $revokedCount = UserFeaturePermission::where('user_id', $userId)
+                ->where('client_id', $clientId)
+                ->where('is_enabled', true)
+                ->update([
+                    'is_enabled' => false,
+                    'updated_at' => now(),
+                ]);
+            
+            DB::commit();
+            
+            Log::info('Bulk revoked user permissions', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'revoked_count' => $revokedCount,
+            ]);
+            
+            return $revokedCount;
+            
+        } catch (Exception $e) {
+            DB::rollBack();
+            
+            Log::error('Failed to bulk revoke user permissions', [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to revoke all user permissions: " . $e->getMessage());
         }
     }
     
     /**
      * Get permission statistics for a client.
      * 
-     * @param int $clientId Client context for statistics
-     * @return array
+     * @param int $clientId Client to get statistics for
+     * @return array Array containing permission statistics
+     * @throws Exception When validation fails
      */
-    public function getPermissionStatistics(int $clientId): array
+    public function getClientPermissionStats(int $clientId): array
     {
-        $totalPermissions = UserFeaturePermission::where('client_id', $clientId)->count();
-        $activePermissions = UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'is_enabled' => 1
-        ])->count();
-        
-        $permissionsByFeature = UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'is_enabled' => 1
-        ])
-        ->select('feature_id', DB::raw('count(*) as count'))
-        ->groupBy('feature_id')
-        ->pluck('count', 'feature_id')
-        ->toArray();
-        
-        $uniqueUsersWithPermissions = UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'is_enabled' => 1
-        ])
-        ->distinct('user_id')
-        ->count('user_id');
-        
-        $uniqueManagersGrantingAccess = UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'is_enabled' => 1
-        ])
-        ->whereNotNull('manager_user_id')
-        ->distinct('manager_user_id')
-        ->count('manager_user_id');
-        
-        return [
-            'total_permissions' => $totalPermissions,
-            'active_permissions' => $activePermissions,
-            'revoked_permissions' => $totalPermissions - $activePermissions,
-            'permissions_by_feature' => $permissionsByFeature,
-            'unique_users_with_permissions' => $uniqueUsersWithPermissions,
-            'unique_managers_granting_access' => $uniqueManagersGrantingAccess
-        ];
-    }
-    
-    /**
-     * Bulk grant permissions to multiple users for the same feature and client.
-     * 
-     * @param array $userIds Array of user IDs to grant permissions to
-     * @param int $clientId Client context for the permissions
-     * @param int $featureId Feature being granted
-     * @param int $grantorId User who is granting these permissions
-     * @param int|null $managerId Optional manager for all users
-     * @return Collection
-     * @throws Exception
-     */
-    public function bulkGrantPermissions(array $userIds, int $clientId, int $featureId, int $grantorId, ?int $managerId = null): Collection
-    {
-        DB::beginTransaction();
-        
         try {
-            $grantedPermissions = collect();
+            // Validate client exists
+            Client::findOrFail($clientId);
             
-            foreach ($userIds as $userId) {
-                $permission = $this->grantPermission($userId, $clientId, $featureId, $grantorId, $managerId);
-                $grantedPermissions->push($permission);
-            }
+            $stats = [
+                'total_permissions' => UserFeaturePermission::where('client_id', $clientId)->count(),
+                'active_permissions' => UserFeaturePermission::where('client_id', $clientId)
+                    ->where('is_enabled', true)->count(),
+                'revoked_permissions' => UserFeaturePermission::where('client_id', $clientId)
+                    ->where('is_enabled', false)->count(),
+                'unique_users_with_permissions' => UserFeaturePermission::where('client_id', $clientId)
+                    ->where('is_enabled', true)
+                    ->distinct('user_id')->count(),
+                'permissions_by_feature' => UserFeaturePermission::where('client_id', $clientId)
+                    ->where('is_enabled', true)
+                    ->selectRaw('feature_id, COUNT(*) as count')
+                    ->groupBy('feature_id')
+                    ->pluck('count', 'feature_id')
+                    ->toArray(),
+            ];
             
-            DB::commit();
-            return $grantedPermissions;
+            Log::debug('Generated client permission statistics', [
+                'client_id' => $clientId,
+                'stats' => $stats,
+            ]);
+            
+            return $stats;
             
         } catch (Exception $e) {
-            DB::rollback();
-            throw $e;
+            Log::error('Failed to generate client permission statistics', [
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+            ]);
+            
+            throw new Exception("Failed to get permission statistics: " . $e->getMessage());
         }
     }
     
     /**
-     * Bulk revoke permissions from multiple users for the same feature and client.
+     * Validate that users exist and belong to the specified client.
      * 
-     * @param array $userIds Array of user IDs to revoke permissions from
-     * @param int $clientId Client context for the permissions
-     * @param int $featureId Feature being revoked
-     * @return array Results array with success/failure status for each user
+     * @param array $userIds Array of user IDs to validate
+     * @param int $clientId Client ID to validate against
+     * @return void
+     * @throws Exception When validation fails
      */
-    public function bulkRevokePermissions(array $userIds, int $clientId, int $featureId): array
+    private function validateUsers(array $userIds, int $clientId): void
     {
-        $results = [];
-        
-        foreach ($userIds as $userId) {
-            try {
-                $success = $this->revokePermission($userId, $clientId, $featureId);
-                $results[$userId] = ['success' => $success, 'error' => null];
-            } catch (Exception $e) {
-                $results[$userId] = ['success' => false, 'error' => $e->getMessage()];
-            }
+        // Validate client exists
+        $client = Client::where('id', $clientId)
+            ->where('deleted', false)
+            ->first();
+            
+        if (!$client) {
+            throw new Exception("Client with ID {$clientId} not found or is deleted");
         }
         
-        return $results;
-    }
-    
-    /**
-     * Get users without permission for a specific feature within a client.
-     * This method would require additional user lookup logic based on available user data.
-     * 
-     * @param int $clientId Client context
-     * @param int $featureId Feature to check
-     * @return Collection
-     */
-    public function getUsersWithoutPermission(int $clientId, int $featureId): Collection
-    {
-        // This method would need access to all users within a client to determine
-        // who doesn't have permissions. Implementation depends on available user
-        // relationship data that isn't defined in the current context.
+        // Validate all users exist and are not deleted
+        $existingUsers = User::whereIn('id', $userIds)
+            ->where('deleted', false)
+            ->pluck('id')
+            ->toArray();
         
-        $usersWithPermission = UserFeaturePermission::where([
-            'client_id' => $clientId,
-            'feature_id' => $featureId,
-            'is_enabled' => 1
-        ])->pluck('user_id')->toArray();
-        
-        // Would need to query all client users and exclude those with permissions
-        // This requires additional client-user relationship data not defined in scope
-        
-        return collect(); // Placeholder - would implement based on available user data
-    }
-    
-    /**
-     * Validate if a user can grant permissions based on their role and existing permissions.
-     * 
-     * @param int $grantorId User attempting to grant permissions
-     * @param int $clientId Client context
-     * @param int $featureId Feature being granted
-     * @return bool
-     */
-    public function canGrantPermissions(int $grantorId, int $clientId, int $featureId): bool
-    {
-        // Basic validation - grantor should have the permission they're trying to grant
-        $grantorHasPermission = $this->hasPermission($grantorId, $clientId, $featureId);
-        
-        if (!$grantorHasPermission) {
-            return false;
+        $missingUsers = array_diff($userIds, $existingUsers);
+        if (!empty($missingUsers)) {
+            throw new Exception("Users not found or are deleted: " . implode(', ', $missingUsers));
         }
         
-        // Additional role-based checks would be implemented here based on
-        // user role data (Primary Admin, Admin, Business User, Card User)
-        // that isn't available in the current context
-        
-        return true;
+        // Note: In a full implementation, we would also validate that users belong to the client
+        // This would require additional user-client relationship validation based on the platform's
+        // multi-tenancy implementation, which is not fully specified in the current context.
     }
 }

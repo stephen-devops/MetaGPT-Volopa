@@ -1,0 +1,228 @@
+{
+  "Required packages": [
+    "laravel/framework:^10.0",
+    "laravel/sanctum:^3.0",
+    "spatie/laravel-permission:^5.0",
+    "maatwebsite/excel:^3.1"
+  ],
+  "Required Other language third-party packages": [
+    "No third-party dependencies required"
+  ],
+  "Logic Analysis": [
+    [
+      "database/migrations/2024_01_01_000001_create_user_feature_permission_table.php",
+      "P0 Migration - Creates user_feature_permission table with foreign keys to users, clients, features"
+    ],
+    [
+      "database/migrations/2024_01_01_000002_create_opt_pocket_expense_type_table.php",
+      "P0 Migration - Creates opt_pocket_expense_type lookup table with expense type options"
+    ],
+    [
+      "database/migrations/2024_01_01_000003_create_pocket_expense_source_client_config_table.php",
+      "P0 Migration - Creates pocket_expense_source_client_config with client foreign key"
+    ],
+    [
+      "database/migrations/2024_01_01_000004_create_pocket_expense_table.php",
+      "P0 Migration - Creates pocket_expense table with foreign keys to users, clients, expense_type"
+    ],
+    [
+      "database/migrations/2024_01_01_000005_create_pocket_expense_metadata_table.php",
+      "P0 Migration - Creates pocket_expense_metadata pivot table with foreign keys to pocket_expense and reference tables"
+    ],
+    [
+      "database/migrations/2024_01_01_000006_create_pocket_expense_file_uploads_table.php",
+      "P0 Migration - Creates pocket_expense_file_uploads for batch upload tracking"
+    ],
+    [
+      "database/migrations/2024_01_01_000007_create_pocket_expense_uploads_data_table.php",
+      "P0 Migration - Creates pocket_expense_uploads_data for staging CSV row data"
+    ],
+    [
+      "database/factories/UserFeaturePermissionFactory.php",
+      "P0.5 Factory - Test data generation for UserFeaturePermission model"
+    ],
+    [
+      "database/factories/OptPocketExpenseTypeFactory.php",
+      "P0.5 Factory - Test data generation for OptPocketExpenseType model"
+    ],
+    [
+      "database/factories/PocketExpenseSourceClientConfigFactory.php",
+      "P0.5 Factory - Test data generation for PocketExpenseSourceClientConfig model"
+    ],
+    [
+      "database/factories/PocketExpenseFactory.php",
+      "P0.5 Factory - Test data generation for PocketExpense model, depends on related factories"
+    ],
+    [
+      "database/factories/PocketExpenseMetadataFactory.php",
+      "P0.5 Factory - Test data generation for PocketExpenseMetadata model"
+    ],
+    [
+      "database/factories/PocketExpenseFileUploadFactory.php",
+      "P0.5 Factory - Test data generation for PocketExpenseFileUpload model"
+    ],
+    [
+      "database/factories/PocketExpenseUploadsDataFactory.php",
+      "P0.5 Factory - Test data generation for PocketExpenseUploadsData model"
+    ],
+    [
+      "app/Models/UserFeaturePermission.php",
+      "P1 Model - Eloquent model with belongsTo relationships to User, Client, Feature"
+    ],
+    [
+      "app/Models/OptPocketExpenseType.php",
+      "P1 Model - Lookup model for expense types with hasMany to PocketExpense"
+    ],
+    [
+      "app/Models/PocketExpenseSourceClientConfig.php",
+      "P1 Model - Client expense source configuration with belongsTo Client relationship"
+    ],
+    [
+      "app/Models/PocketExpense.php",
+      "P1 Model - Main expense model with belongsTo User, Client, ExpenseType and hasMany Metadata"
+    ],
+    [
+      "app/Models/PocketExpenseMetadata.php",
+      "P1 Model - Pivot model with belongsTo PocketExpense and various reference models"
+    ],
+    [
+      "app/Models/PocketExpenseFileUpload.php",
+      "P1 Model - Upload tracking model with belongsTo User, Client and hasMany UploadData"
+    ],
+    [
+      "app/Models/PocketExpenseUploadsData.php",
+      "P1 Model - CSV row staging model with belongsTo Upload relationship"
+    ],
+    [
+      "app/Policies/PocketExpensePolicy.php",
+      "P2 Policy - Authorization logic for expense CRUD operations, depends on PocketExpense model"
+    ],
+    [
+      "app/Policies/UserFeaturePermissionPolicy.php",
+      "P2 Policy - Authorization logic for permission management, depends on UserFeaturePermission model"
+    ],
+    [
+      "app/Http/Requests/UploadPocketExpenseCSVRequest.php",
+      "P3 FormRequest - Validation for CSV upload endpoint with file validation rules"
+    ],
+    [
+      "app/Http/Requests/StorePocketExpenseRequest.php",
+      "P3 FormRequest - Validation for expense creation with FX and metadata rules"
+    ],
+    [
+      "app/Http/Requests/UpdatePocketExpenseRequest.php",
+      "P3 FormRequest - Validation for expense updates with partial field validation"
+    ],
+    [
+      "app/Http/Requests/GrantUserFeaturePermissionRequest.php",
+      "P3 FormRequest - Validation for permission granting with user/client validation"
+    ],
+    [
+      "app/Services/PocketExpenseService.php",
+      "P5 Service - Business logic for expense CRUD operations, depends on models"
+    ],
+    [
+      "app/Services/PocketExpenseCSVValidator.php",
+      "P5 Service - CSV validation logic with reference data preloading, depends on models"
+    ],
+    [
+      "app/Services/UserFeaturePermissionService.php",
+      "P5 Service - Business logic for permission management, depends on models"
+    ],
+    [
+      "app/Services/FXConversionService.php",
+      "P5 Service - FX conversion logic with wallet currency integration, depends on models"
+    ],
+    [
+      "app/Jobs/ProcessExpenseUpload.php",
+      "P6 Queue Job - Background processing for CSV batch upload, depends on services"
+    ],
+    [
+      "app/Http/Resources/PocketExpenseResource.php",
+      "P9 Resource - API response transformer for PocketExpense model with nested metadata"
+    ],
+    [
+      "app/Http/Resources/UserFeaturePermissionResource.php",
+      "P9 Resource - API response transformer for UserFeaturePermission model"
+    ],
+    [
+      "app/Http/Resources/PocketExpenseSourceResource.php",
+      "P9 Resource - API response transformer for expense source configuration"
+    ],
+    [
+      "app/Http/Controllers/Api/V1/PocketExpenseController.php",
+      "P10 Controller - Thin controller for expense CRUD endpoints, depends on services and resources"
+    ],
+    [
+      "app/Http/Controllers/Api/V1/UserFeaturePermissionController.php",
+      "P10 Controller - Controller for permission management endpoints, depends on services"
+    ],
+    [
+      "app/Http/Controllers/PocketExpenseUploadController.php",
+      "P10 Controller - Controller for CSV upload endpoint, depends on validator and job"
+    ],
+    [
+      "routes/api.php",
+      "P11 Routes - API route definitions with middleware and controller bindings"
+    ],
+    [
+      "tests/Feature/PocketExpenseTest.php",
+      "P12 Tests - Feature tests for expense CRUD operations, depends on all application code"
+    ],
+    [
+      "tests/Feature/PocketExpenseUploadTest.php",
+      "P12 Tests - Feature tests for CSV upload functionality, depends on all application code"
+    ],
+    [
+      "tests/Feature/UserFeaturePermissionTest.php",
+      "P12 Tests - Feature tests for permission management, depends on all application code"
+    ]
+  ],
+  "Task list": [
+    "database/migrations/2024_01_01_000001_create_user_feature_permission_table.php",
+    "database/migrations/2024_01_01_000002_create_opt_pocket_expense_type_table.php",
+    "database/migrations/2024_01_01_000003_create_pocket_expense_source_client_config_table.php",
+    "database/migrations/2024_01_01_000004_create_pocket_expense_table.php",
+    "database/migrations/2024_01_01_000005_create_pocket_expense_metadata_table.php",
+    "database/migrations/2024_01_01_000006_create_pocket_expense_file_uploads_table.php",
+    "database/migrations/2024_01_01_000007_create_pocket_expense_uploads_data_table.php",
+    "database/factories/UserFeaturePermissionFactory.php",
+    "database/factories/OptPocketExpenseTypeFactory.php",
+    "database/factories/PocketExpenseSourceClientConfigFactory.php",
+    "database/factories/PocketExpenseFactory.php",
+    "database/factories/PocketExpenseMetadataFactory.php",
+    "database/factories/PocketExpenseFileUploadFactory.php",
+    "database/factories/PocketExpenseUploadsDataFactory.php",
+    "app/Models/UserFeaturePermission.php",
+    "app/Models/OptPocketExpenseType.php",
+    "app/Models/PocketExpenseSourceClientConfig.php",
+    "app/Models/PocketExpense.php",
+    "app/Models/PocketExpenseMetadata.php",
+    "app/Models/PocketExpenseFileUpload.php",
+    "app/Models/PocketExpenseUploadsData.php",
+    "app/Policies/PocketExpensePolicy.php",
+    "app/Policies/UserFeaturePermissionPolicy.php",
+    "app/Http/Requests/UploadPocketExpenseCSVRequest.php",
+    "app/Http/Requests/StorePocketExpenseRequest.php",
+    "app/Http/Requests/UpdatePocketExpenseRequest.php",
+    "app/Http/Requests/GrantUserFeaturePermissionRequest.php",
+    "app/Services/PocketExpenseService.php",
+    "app/Services/PocketExpenseCSVValidator.php",
+    "app/Services/UserFeaturePermissionService.php",
+    "app/Services/FXConversionService.php",
+    "app/Jobs/ProcessExpenseUpload.php",
+    "app/Http/Resources/PocketExpenseResource.php",
+    "app/Http/Resources/UserFeaturePermissionResource.php",
+    "app/Http/Resources/PocketExpenseSourceResource.php",
+    "app/Http/Controllers/Api/V1/PocketExpenseController.php",
+    "app/Http/Controllers/Api/V1/UserFeaturePermissionController.php",
+    "app/Http/Controllers/PocketExpenseUploadController.php",
+    "routes/api.php",
+    "tests/Feature/PocketExpenseTest.php",
+    "tests/Feature/PocketExpenseUploadTest.php",
+    "tests/Feature/UserFeaturePermissionTest.php"
+  ],
+  "Full API spec": "openapi: 3.0.0\ninfo:\n  title: Volopa OOP Expenses API\n  version: 1.0.0\n  description: API for managing Out-of-Pocket expenses with user permission management and CSV batch upload\nservers:\n  - url: https://api.volopa.com/api/v1\n    description: Production server\ncomponents:\n  securitySchemes:\n    OAuth2:\n      type: oauth2\n      flows:\n        clientCredentials:\n          tokenUrl: /oauth/token\n          scopes: {}\n  schemas:\n    PocketExpense:\n      type: object\n      properties:\n        id:\n          type: integer\n        uuid:\n          type: string\n        date:\n          type: string\n          format: date\n        merchant_name:\n          type: string\n        amount:\n          type: number\n        currency:\n          type: string\n        status:\n          type: string\n          enum: [draft, submitted, approved, rejected]\n    UserFeaturePermission:\n      type: object\n      properties:\n        id:\n          type: integer\n        user_id:\n          type: integer\n        feature_id:\n          type: integer\n        is_enabled:\n          type: boolean\n    UploadResult:\n      type: object\n      properties:\n        upload_id:\n          type: string\n        total_records:\n          type: integer\n        valid_records:\n          type: integer\n        validation_errors:\n          type: array\n          items:\n            type: object\nsecurity:\n  - OAuth2: []\npaths:\n  /pocket-expenses:\n    get:\n      summary: List user expenses\n      responses:\n        200:\n          description: Paginated expense list\n    post:\n      summary: Create new expense\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: '#/components/schemas/PocketExpense'\n      responses:\n        201:\n          description: Expense created\n  /pocket-expenses/{id}:\n    get:\n      summary: Get expense details\n      parameters:\n        - name: id\n          in: path\n          required: true\n          schema:\n            type: integer\n      responses:\n        200:\n          description: Expense details\n    put:\n      summary: Update expense\n      parameters:\n        - name: id\n          in: path\n          required: true\n          schema:\n            type: integer\n      responses:\n        200:\n          description: Expense updated\n    delete:\n      summary: Delete expense\n      parameters:\n        - name: id\n          in: path\n          required: true\n          schema:\n            type: integer\n      responses:\n        204:\n          description: Expense deleted\n  /user-feature-permissions:\n    get:\n      summary: List user permissions\n      responses:\n        200:\n          description: Permission list\n    post:\n      summary: Grant permission\n      requestBody:\n        required: true\n        content:\n          application/json:\n            schema:\n              $ref: '#/components/schemas/UserFeaturePermission'\n      responses:\n        201:\n          description: Permission granted\n  /user-feature-permissions/{id}:\n    delete:\n      summary: Revoke permission\n      parameters:\n        - name: id\n          in: path\n          required: true\n          schema:\n            type: integer\n      responses:\n        204:\n          description: Permission revoked\n  /uploads/pocket-expense/csv:\n    post:\n      summary: Upload expense CSV\n      requestBody:\n        required: true\n        content:\n          multipart/form-data:\n            schema:\n              type: object\n              properties:\n                file:\n                  type: string\n                  format: binary\n                target_user_id:\n                  type: integer\n      responses:\n        200:\n          description: Upload processed\n          content:\n            application/json:\n              schema:\n                $ref: '#/components/schemas/UploadResult'\n        422:\n          description: Validation failed",
+  "Shared Knowledge": "All controllers use thin design pattern delegating to services. FXConversionService provides wallet currency integration with 30-day lookback. PocketExpenseCSVValidator performs atomic validation with preloaded reference data. All models use explicit Eloquent relationships with proper foreign key constraints. API Resources hide internal model fields and provide consistent response format. Queue jobs handle background processing for CSV imports. Policies enforce hierarchical RBAC based on user roles and delegation rights.",
+  "Anything UNCLEAR": "Several implementation details require clarification: (1) The specific notification channel for batch upload completion affects ProcessExpenseUpload job implementation. (2) Whether FX conversion reuses existing platform service infrastructure or requires new integration. (3) The exact audit logging mechanism for permission operations. (4) ClientFeatures model query pattern to check OOP feature enablement (feature_id = 16). (5) Table naming conventions showing both singular and plural forms. (6) Soft delete pattern preference between flag-based and Laravel SoftDeletes. These decisions may require platform architecture team input for consistency with existing Volopa infrastructure."
+}

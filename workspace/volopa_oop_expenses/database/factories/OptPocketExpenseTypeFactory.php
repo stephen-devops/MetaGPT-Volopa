@@ -4,13 +4,9 @@ namespace Database\Factories;
 
 use App\Models\OptPocketExpenseType;
 use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Carbon;
 
 /**
- * Factory for OptPocketExpenseType model
- * 
- * Generates test data for pocket expense types with proper amount sign conventions.
- * Provides predefined expense type options that match platform seeded data.
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\OptPocketExpenseType>
  */
 class OptPocketExpenseTypeFactory extends Factory
 {
@@ -28,181 +24,241 @@ class OptPocketExpenseTypeFactory extends Factory
      */
     public function definition(): array
     {
-        $now = Carbon::now();
+        $expenseTypes = [
+            'ATM Withdrawal',
+            'Point of Sale',
+            'Fee & Charges',
+            'Refund from Merchant',
+            'Online Purchase',
+            'Cash Advance',
+            'Service Charge',
+            'Monthly Fee',
+            'Transaction Fee',
+            'Currency Exchange'
+        ];
+
+        $option = $this->faker->randomElement($expenseTypes);
         
-        // Default to Point of Sale type with negative amount sign
+        // Determine amount sign based on expense type logic
+        // Refunds are positive, all others are negative as per system constraints
+        $amountSign = (str_contains(strtolower($option), 'refund')) ? 'positive' : 'negative';
+
         return [
-            'option' => 'Point of Sale',
-            'amount_sign' => 'negative',
-            
-            // Volopa legacy timestamp pattern
-            'create_time' => $now,
-            'update_time' => $now,
+            'option' => $option,
+            'amount_sign' => $amountSign,
+            'is_active' => true,
+            'sort_order' => $this->faker->numberBetween(1, 100),
+            'created_at' => now(),
+            'updated_at' => now(),
         ];
     }
 
     /**
-     * Configure the factory for ATM Withdrawal expense type.
-     *
-     * @return static
-     */
-    public function atmWithdrawal(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'option' => 'ATM Withdrawal',
-                'amount_sign' => 'negative',
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for Point of Sale expense type.
-     *
-     * @return static
-     */
-    public function pointOfSale(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'option' => 'Point of Sale',
-                'amount_sign' => 'negative',
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for Fee & Charges expense type.
-     *
-     * @return static
-     */
-    public function feeAndCharges(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'option' => 'Fee & Charges',
-                'amount_sign' => 'negative',
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for Refund from Merchant expense type.
-     *
-     * @return static
-     */
-    public function refundFromMerchant(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'option' => 'Refund from Merchant',
-                'amount_sign' => 'positive',
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for negative amount sign expense types.
-     *
-     * @return static
-     */
-    public function negative(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'amount_sign' => 'negative',
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for positive amount sign expense types.
+     * Create an expense type with positive amount sign (for refunds).
      *
      * @return static
      */
     public function positive(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'amount_sign' => 'positive',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount_sign' => 'positive',
+            'option' => $this->faker->randomElement([
+                'Refund from Merchant',
+                'Cash Refund',
+                'Credit Adjustment',
+                'Cashback',
+                'Reward Credit'
+            ]),
+        ]);
     }
 
     /**
-     * Configure the factory with a custom expense type option.
+     * Create an expense type with negative amount sign.
+     *
+     * @return static
+     */
+    public function negative(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'amount_sign' => 'negative',
+            'option' => $this->faker->randomElement([
+                'ATM Withdrawal',
+                'Point of Sale',
+                'Fee & Charges',
+                'Online Purchase',
+                'Service Charge'
+            ]),
+        ]);
+    }
+
+    /**
+     * Create an inactive expense type.
+     *
+     * @return static
+     */
+    public function inactive(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'is_active' => false,
+        ]);
+    }
+
+    /**
+     * Create an expense type with a specific option name.
      *
      * @param string $option
      * @return static
      */
     public function withOption(string $option): static
     {
-        return $this->state(function (array $attributes) use ($option) {
-            return [
-                'option' => $option,
-            ];
-        });
+        $amountSign = (str_contains(strtolower($option), 'refund')) ? 'positive' : 'negative';
+        
+        return $this->state(fn (array $attributes) => [
+            'option' => $option,
+            'amount_sign' => $amountSign,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific amount sign.
+     * Create an expense type with a specific sort order.
      *
-     * @param string $amountSign Either 'positive' or 'negative'
+     * @param int $sortOrder
      * @return static
      */
-    public function withAmountSign(string $amountSign): static
+    public function withSortOrder(int $sortOrder): static
     {
-        return $this->state(function (array $attributes) use ($amountSign) {
-            return [
-                'amount_sign' => $amountSign,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'sort_order' => $sortOrder,
+        ]);
     }
 
     /**
-     * Configure the factory to create a custom expense type.
+     * Create the default system expense types as per constraints.
+     * These match the seeded data in the migration.
      *
-     * @param string $option
-     * @param string $amountSign
      * @return static
      */
-    public function custom(string $option, string $amountSign): static
+    public function systemDefault(): static
     {
-        return $this->state(function (array $attributes) use ($option, $amountSign) {
-            return [
-                'option' => $option,
-                'amount_sign' => $amountSign,
-            ];
-        });
+        $systemTypes = [
+            ['option' => 'ATM Withdrawal', 'amount_sign' => 'negative', 'sort_order' => 1],
+            ['option' => 'Point of Sale', 'amount_sign' => 'negative', 'sort_order' => 2],
+            ['option' => 'Fee & Charges', 'amount_sign' => 'negative', 'sort_order' => 3],
+            ['option' => 'Refund from Merchant', 'amount_sign' => 'positive', 'sort_order' => 4],
+        ];
+
+        $randomType = $this->faker->randomElement($systemTypes);
+
+        return $this->state(fn (array $attributes) => [
+            'option' => $randomType['option'],
+            'amount_sign' => $randomType['amount_sign'],
+            'sort_order' => $randomType['sort_order'],
+            'is_active' => true,
+        ]);
     }
 
     /**
-     * Configure the factory to update timestamps for testing updates.
+     * Create an ATM Withdrawal expense type.
      *
      * @return static
      */
-    public function updated(): static
+    public function atmWithdrawal(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'update_time' => Carbon::now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'option' => 'ATM Withdrawal',
+            'amount_sign' => 'negative',
+            'sort_order' => 1,
+            'is_active' => true,
+        ]);
     }
 
     /**
-     * Configure the factory to create all default expense types as a sequence.
-     * Useful for testing scenarios that need all predefined types.
+     * Create a Point of Sale expense type.
      *
      * @return static
      */
-    public function sequence(): static
+    public function pointOfSale(): static
     {
-        return $this->sequence(
-            ['option' => 'ATM Withdrawal', 'amount_sign' => 'negative'],
-            ['option' => 'Point of Sale', 'amount_sign' => 'negative'],
-            ['option' => 'Fee & Charges', 'amount_sign' => 'negative'],
-            ['option' => 'Refund from Merchant', 'amount_sign' => 'positive']
-        );
+        return $this->state(fn (array $attributes) => [
+            'option' => 'Point of Sale',
+            'amount_sign' => 'negative',
+            'sort_order' => 2,
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * Create a Fee & Charges expense type.
+     *
+     * @return static
+     */
+    public function feeAndCharges(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'option' => 'Fee & Charges',
+            'amount_sign' => 'negative',
+            'sort_order' => 3,
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * Create a Refund from Merchant expense type.
+     *
+     * @return static
+     */
+    public function refundFromMerchant(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'option' => 'Refund from Merchant',
+            'amount_sign' => 'positive',
+            'sort_order' => 4,
+            'is_active' => true,
+        ]);
+    }
+
+    /**
+     * Create an expense type with specific timestamps.
+     *
+     * @param \Carbon\Carbon|string|null $createdAt
+     * @param \Carbon\Carbon|string|null $updatedAt
+     * @return static
+     */
+    public function withTimestamps($createdAt = null, $updatedAt = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'created_at' => $createdAt ?? now()->subDays($this->faker->numberBetween(1, 30)),
+            'updated_at' => $updatedAt ?? now()->subDays($this->faker->numberBetween(0, 10)),
+        ]);
+    }
+
+    /**
+     * Create expense types that cover all amount sign combinations for testing.
+     *
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public function createBothSigns(): \Illuminate\Database\Eloquent\Collection
+    {
+        return collect([
+            $this->positive()->create(),
+            $this->negative()->create(),
+        ]);
+    }
+
+    /**
+     * Create a sequence of expense types with incremental sort orders.
+     *
+     * @param int $count
+     * @param int $startingSortOrder
+     * @return static
+     */
+    public function sequence(int $count = 3, int $startingSortOrder = 1): static
+    {
+        return $this->state(function (array $attributes) use (&$startingSortOrder) {
+            return [
+                'sort_order' => $startingSortOrder++,
+                'is_active' => true,
+            ];
+        });
     }
 }

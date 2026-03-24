@@ -13,56 +13,45 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('pocket_expense_source_client_config', function (Blueprint $table) {
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
-            
-            // Primary key
-            $table->bigIncrements('id');
-            
-            // UUID for external references
-            $table->string('uuid', 36)->nullable()->comment('External UUID reference');
-            
-            // Client relationship (nullable for global 'Other' record)
-            $table->unsignedBigInteger('client_id')->nullable()->comment('Client owner of this expense source (NULL for global Other record)');
-            
-            // Source configuration
-            $table->string('name', 180)->comment('Expense source name (e.g., Cash, Corporate Card, Personal Card, Other)');
-            $table->tinyInteger('is_default')->unsigned()->default(0)->comment('Whether this is a default source for the client');
-            
-            // Soft delete using Volopa legacy pattern
-            $table->tinyInteger('deleted')->unsigned()->default(0)->comment('Soft delete flag');
-            $table->dateTime('delete_time')->nullable()->comment('Soft delete timestamp');
-            
-            // Volopa legacy timestamp pattern
-            $table->dateTime('create_time')->nullable()->comment('Record creation timestamp');
-            $table->dateTime('update_time')->nullable()->comment('Record update timestamp');
+            $table->increments('id');
+            $table->string('uuid', 36)->unique()->comment('Unique identifier for the expense source');
+            $table->unsignedBigInteger('client_id')->nullable()->comment('Client owning this source (NULL for global sources like Other)');
+            $table->string('name', 100)->comment('Name of the expense source (e.g., Cash, Corporate Card, Personal Card)');
+            $table->boolean('is_default')->default(false)->comment('Whether this is a default source for the client');
+            $table->boolean('deleted')->default(false)->comment('Flag-based soft delete indicator');
+            $table->datetime('delete_time')->nullable()->comment('Timestamp when source was soft deleted');
+            $table->datetime('create_time')->nullable()->comment('Volopa legacy timestamp for creation');
+            $table->datetime('update_time')->nullable()->comment('Volopa legacy timestamp for updates');
             
             // Foreign key constraints
             $table->foreign('client_id')->references('id')->on('clients')->onDelete('cascade');
             
-            // Unique constraint: source names must be unique per client (excluding soft-deleted)
-            $table->unique(['client_id', 'name', 'deleted'], 'unique_client_source_name');
+            // Unique constraint for client-specific source names (excluding global sources)
+            $table->unique(['client_id', 'name'], 'unique_client_source_name');
             
-            // Indexes for common queries
-            $table->index(['client_id'], 'idx_client');
+            // Indexes for performance
             $table->index(['client_id', 'deleted'], 'idx_client_active');
-            $table->index(['name'], 'idx_name');
-            $table->index(['is_default'], 'idx_default');
             $table->index(['deleted'], 'idx_deleted');
+            $table->index(['is_default'], 'idx_default');
             $table->index(['uuid'], 'idx_uuid');
+            
+            // Table configuration
+            $table->engine = 'InnoDB';
+            $table->charset = 'utf8mb4';
+            $table->collation = 'utf8mb4_unicode_ci';
         });
         
-        // Seed with global 'Other' record (client_id = NULL) - not deletable
+        // Seed global 'Other' source as per system constraints
+        // Global 'Other' record (client_id = NULL) is not deletable or editable
         DB::table('pocket_expense_source_client_config')->insert([
-            'uuid' => null,
+            'uuid' => \Illuminate\Support\Str::uuid()->toString(),
             'client_id' => null,
             'name' => 'Other',
-            'is_default' => 0,
-            'deleted' => 0,
+            'is_default' => false,
+            'deleted' => false,
             'delete_time' => null,
             'create_time' => now(),
-            'update_time' => now(),
+            'update_time' => now()
         ]);
     }
 

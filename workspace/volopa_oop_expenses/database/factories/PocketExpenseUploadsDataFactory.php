@@ -3,15 +3,11 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseUploadsData;
+use App\Models\PocketExpenseFileUpload;
 use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Carbon;
 
 /**
- * Factory for PocketExpenseUploadsData model
- * 
- * Generates test data for pocket expense CSV upload row data with proper relationships
- * to upload batches and created expense records. Handles all processing statuses
- * and realistic CSV row data scenarios including validation errors.
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\PocketExpenseUploadsData>
  */
 class PocketExpenseUploadsDataFactory extends Factory
 {
@@ -29,741 +25,630 @@ class PocketExpenseUploadsDataFactory extends Factory
      */
     public function definition(): array
     {
-        $now = Carbon::now();
-        $lineNumber = $this->faker->numberBetween(2, 200); // CSV lines start from 2 (after header)
-        
-        // Generate realistic expense data that would come from CSV
-        $expenseData = [
-            'date' => $this->faker->dateTimeBetween('-2 years', 'now')->format('d/m/Y'), // DD/MM/YYYY format from CSV
-            'merchant_name' => $this->faker->company(),
-            'merchant_description' => $this->faker->optional(0.7)->sentence(8),
-            'expense_type' => $this->faker->randomElement(['ATM Withdrawal', 'Point of Sale', 'Fee & Charges', 'Refund from Merchant']),
-            'currency' => $this->faker->randomElement(['GBP', 'EUR', 'USD']),
-            'amount' => $this->faker->randomFloat(2, 5.00, 500.00),
-            'merchant_address' => $this->faker->optional(0.6)->address(),
-            'vat_percentage' => $this->faker->optional(0.4)->numberBetween(0, 20) . '%', // With % sign as from CSV
-            'notes' => $this->faker->optional(0.5)->sentence(12),
-            'source' => $this->faker->randomElement(['Cash', 'Corporate Card', 'Personal Card', 'Other']),
-            'source_note' => null, // Will be set if source is 'Other'
-            'category' => $this->faker->optional(0.8)->randomElement(['Business Travel', 'Office Supplies', 'Client Entertainment', 'Training']),
-            'tracking_code_1' => $this->faker->optional(0.6)->randomElement(['DEPT-001', 'DEPT-002', 'DEPT-003']),
-            'tracking_code_2' => $this->faker->optional(0.4)->randomElement(['CC-001', 'CC-002', 'CC-003']),
-            'project' => $this->faker->optional(0.3)->randomElement(['Project Alpha', 'Project Beta', 'Project Gamma']),
-        ];
-        
-        // Add source note if source is 'Other'
-        if ($expenseData['source'] === 'Other') {
-            $expenseData['source_note'] = $this->faker->sentence(6);
-        }
-        
+        // Generate realistic CSV row data structure
+        $expenseData = $this->generateExpenseData();
+
         return [
-            // Foreign key to parent upload batch - default to ID 1, override in tests
-            'upload_id' => 1,
-            
-            // CSV row tracking
-            'line_number' => $lineNumber,
-            
-            // Processing status - default to pending
-            'status' => 'pending',
-            
-            // Raw expense data from CSV row as JSON
-            'expense_data' => json_encode($expenseData),
-            
-            // Processing error details - null for successful rows
-            'processing_errors' => null,
-            
-            // Reference to created expense - null until processed
-            'created_expense_id' => null,
-            
-            // Laravel standard timestamps
-            'created_at' => $now,
-            'updated_at' => $now,
+            'upload_id' => PocketExpenseFileUpload::factory(),
+            'line_number' => $this->faker->numberBetween(2, 201), // Line 1 is header, max 200 data rows per constraint
+            'status' => $this->faker->randomElement(['pending', 'processing', 'synced', 'failed']),
+            'expense_data' => $expenseData,
+            'error_message' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
         ];
     }
 
     /**
-     * Configure the factory for pending status rows.
+     * Generate realistic expense data JSON structure that matches CSV column schema.
      *
-     * @return static
+     * @return array
      */
-    public function pending(): static
+    private function generateExpenseData(): array
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'pending',
-                'processing_errors' => null,
-                'created_expense_id' => null,
-            ];
-        });
+        // Generate date within 3-year constraint (DD/MM/YYYY format as per CSV schema)
+        $expenseDate = $this->faker->dateTimeBetween('-3 years', 'now');
+        
+        $expenseTypes = ['ATM Withdrawal', 'Point of Sale', 'Fee & Charges', 'Refund from Merchant'];
+        $expenseType = $this->faker->randomElement($expenseTypes);
+        
+        // Determine amount sign based on expense type as per system constraints
+        $isRefund = str_contains(strtolower($expenseType), 'refund');
+        $amount = $isRefund 
+            ? $this->faker->randomFloat(2, 10.00, 500.00)  // Positive for refunds
+            : $this->faker->randomFloat(2, -500.00, -10.00); // Negative for others
+        
+        $currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'CHF', 'JPY', 'SGD'];
+        $currency = $this->faker->randomElement($currencies);
+        
+        $merchantNames = [
+            'Starbucks Coffee',
+            'Amazon.com',
+            'Shell Gas Station', 
+            'Walmart Supercenter',
+            'McDonald\'s Restaurant',
+            'Home Depot',
+            'Target Corporation',
+            'Best Buy Electronics',
+            'CVS Pharmacy',
+            'Uber Technologies'
+        ];
+        
+        $expenseSources = ['Cash', 'Corporate Card', 'Personal Card', 'Other'];
+        $expenseSource = $this->faker->randomElement($expenseSources);
+        
+        // Source Note required when Source = Other as per validation constraints
+        $sourceNote = ($expenseSource === 'Other') 
+            ? $this->faker->sentence(8)
+            : $this->faker->optional(0.3)->sentence(6);
+
+        return [
+            'Date' => $expenseDate->format('d/m/Y'), // DD/MM/YYYY format as per CSV schema
+            'Expense Type' => $expenseType,
+            'Currency Code' => $currency,
+            'Amount' => number_format($amount, 2, '.', ''),
+            $currency . ' Equivalent Amount' => $this->faker->optional(0.4)->randomFloat(2, abs($amount) * 0.8, abs($amount) * 1.2),
+            'VAT %' => $this->faker->optional(0.4)->numberBetween(0, 25) . '%', // With % sign as per CSV format
+            'Merchant Name' => $this->faker->randomElement($merchantNames),
+            'Description' => $this->faker->optional(0.7)->sentence(6, 12),
+            'Merchant Address' => $this->faker->optional(0.5)->address,
+            'Merchant Country' => $this->faker->optional(0.5)->country,
+            'Source' => $expenseSource,
+            'Source Note' => $sourceNote,
+            'Notes' => $this->faker->optional(0.5)->paragraph(2),
+        ];
     }
 
     /**
-     * Configure the factory for processing status rows.
-     *
-     * @return static
-     */
-    public function processing(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'processing',
-                'processing_errors' => null,
-                'created_expense_id' => null,
-                'updated_at' => Carbon::now(),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for completed status rows.
-     *
-     * @return static
-     */
-    public function completed(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'completed',
-                'processing_errors' => null,
-                'created_expense_id' => 1, // Default expense ID, override in tests
-                'updated_at' => Carbon::now(),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for failed status rows.
-     *
-     * @return static
-     */
-    public function failed(): static
-    {
-        return $this->state(function (array $attributes) {
-            $processingErrors = [
-                [
-                    'field' => 'currency',
-                    'error' => 'Invalid currency code',
-                    'provided_value' => 'INVALID',
-                    'description' => 'Currency code must be 3-letter ISO format'
-                ],
-                [
-                    'field' => 'amount',
-                    'error' => 'Invalid amount format',
-                    'provided_value' => 'abc.def',
-                    'description' => 'Amount must be a valid decimal number'
-                ]
-            ];
-            
-            return [
-                'status' => 'failed',
-                'processing_errors' => json_encode($processingErrors),
-                'created_expense_id' => null,
-                'updated_at' => Carbon::now(),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with a specific upload ID.
+     * Create upload data for an existing upload.
      *
      * @param int $uploadId
      * @return static
      */
     public function forUpload(int $uploadId): static
     {
-        return $this->state(function (array $attributes) use ($uploadId) {
-            return [
-                'upload_id' => $uploadId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'upload_id' => $uploadId,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific line number.
+     * Create upload data with a specific line number.
      *
      * @param int $lineNumber
      * @return static
      */
-    public function withLineNumber(int $lineNumber): static
+    public function atLine(int $lineNumber): static
     {
-        return $this->state(function (array $attributes) use ($lineNumber) {
-            return [
-                'line_number' => $lineNumber,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'line_number' => $lineNumber,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific status.
+     * Create upload data with pending status.
      *
-     * @param string $status
      * @return static
      */
-    public function withStatus(string $status): static
+    public function pending(): static
     {
-        return $this->state(function (array $attributes) use ($status) {
-            return [
-                'status' => $status,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'pending',
+            'error_message' => null,
+        ]);
     }
 
     /**
-     * Configure the factory with specific expense data.
+     * Create upload data with processing status.
+     *
+     * @return static
+     */
+    public function processing(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'processing',
+            'error_message' => null,
+        ]);
+    }
+
+    /**
+     * Create upload data with synced status.
+     *
+     * @return static
+     */
+    public function synced(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'synced',
+            'error_message' => null,
+        ]);
+    }
+
+    /**
+     * Create upload data with failed status and error message.
+     *
+     * @param string|null $errorMessage
+     * @return static
+     */
+    public function failed(string $errorMessage = null): static
+    {
+        $defaultErrors = [
+            'Invalid date format: expected DD/MM/YYYY',
+            'Currency code not supported',
+            'Amount must be numeric',
+            'VAT percentage must be between 0-100',
+            'Merchant name exceeds maximum length of 180 characters',
+            'Expense type not found in system',
+            'Source Note required when Source = Other',
+            'Date is older than 3 years',
+            'Invalid expense source for client',
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'status' => 'failed',
+            'error_message' => $errorMessage ?? $this->faker->randomElement($defaultErrors),
+        ]);
+    }
+
+    /**
+     * Create upload data with specific expense data.
      *
      * @param array $expenseData
      * @return static
      */
     public function withExpenseData(array $expenseData): static
     {
-        return $this->state(function (array $attributes) use ($expenseData) {
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
     }
 
     /**
-     * Configure the factory with specific processing errors.
-     *
-     * @param array $errors
-     * @return static
-     */
-    public function withErrors(array $errors): static
-    {
-        return $this->state(function (array $attributes) use ($errors) {
-            return [
-                'status' => 'failed',
-                'processing_errors' => json_encode($errors),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with a created expense ID.
-     *
-     * @param int $expenseId
-     * @return static
-     */
-    public function withCreatedExpense(int $expenseId): static
-    {
-        return $this->state(function (array $attributes) use ($expenseId) {
-            return [
-                'status' => 'completed',
-                'processing_errors' => null,
-                'created_expense_id' => $expenseId,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for ATM Withdrawal expense type.
+     * Create upload data with ATM withdrawal expense type.
      *
      * @return static
      */
     public function atmWithdrawal(): static
     {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['expense_type'] = 'ATM Withdrawal';
-            $expenseData['merchant_name'] = $this->faker->randomElement([
-                'ATM - Barclays Bank',
-                'ATM - HSBC',
-                'ATM - Santander',
-                'ATM - Nationwide'
-            ]);
-            $expenseData['merchant_description'] = 'Cash withdrawal';
-            $expenseData['vat_percentage'] = null; // ATM withdrawals don't have VAT
-            
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
+        
+        $expenseData = [
+            'Date' => $expenseDate->format('d/m/Y'),
+            'Expense Type' => 'ATM Withdrawal',
+            'Currency Code' => $this->faker->randomElement(['USD', 'EUR', 'GBP']),
+            'Amount' => number_format($this->faker->randomFloat(2, -500.00, -20.00), 2, '.', ''),
+            'VAT %' => '', // ATM withdrawals typically don't have VAT
+            'Merchant Name' => $this->faker->randomElement([
+                'Bank of America ATM',
+                'Chase Bank ATM', 
+                'Wells Fargo ATM',
+                'Citibank ATM'
+            ]),
+            'Description' => 'ATM Cash Withdrawal',
+            'Merchant Address' => $this->faker->address,
+            'Merchant Country' => $this->faker->country,
+            'Source' => $this->faker->randomElement(['Cash', 'Corporate Card']),
+            'Source Note' => '',
+            'Notes' => $this->faker->optional(0.3)->sentence(4),
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data with refund expense type (positive amount).
+     *
+     * @return static
+     */
+    public function refund(): static
+    {
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
+        
+        $expenseData = [
+            'Date' => $expenseDate->format('d/m/Y'),
+            'Expense Type' => 'Refund from Merchant',
+            'Currency Code' => $this->faker->randomElement(['USD', 'EUR', 'GBP']),
+            'Amount' => number_format($this->faker->randomFloat(2, 10.00, 300.00), 2, '.', ''), // Positive amount
+            'VAT %' => $this->faker->numberBetween(0, 20) . '%',
+            'Merchant Name' => $this->faker->randomElement([
+                'Amazon.com',
+                'Best Buy Electronics',
+                'Target Corporation',
+                'Walmart Supercenter'
+            ]),
+            'Description' => 'Product return refund',
+            'Merchant Address' => $this->faker->address,
+            'Merchant Country' => $this->faker->country,
+            'Source' => $this->faker->randomElement(['Personal Card', 'Corporate Card']),
+            'Source Note' => $this->faker->optional(0.4)->sentence(6),
+            'Notes' => 'Refund processed for returned merchandise',
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data with 'Other' source requiring source note.
+     *
+     * @return static
+     */
+    public function otherSource(): static
+    {
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
+        
+        $expenseData = [
+            'Date' => $expenseDate->format('d/m/Y'),
+            'Expense Type' => $this->faker->randomElement(['Point of Sale', 'Fee & Charges']),
+            'Currency Code' => $this->faker->randomElement(['USD', 'EUR', 'GBP']),
+            'Amount' => number_format($this->faker->randomFloat(2, -200.00, -5.00), 2, '.', ''),
+            'VAT %' => $this->faker->optional(0.5)->numberBetween(0, 25) . '%',
+            'Merchant Name' => $this->faker->company,
+            'Description' => $this->faker->sentence(8),
+            'Merchant Address' => $this->faker->address,
+            'Merchant Country' => $this->faker->country,
+            'Source' => 'Other',
+            'Source Note' => $this->faker->sentence(10), // Required when Source = Other
+            'Notes' => $this->faker->optional(0.6)->paragraph(2),
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data with validation errors (invalid data).
+     *
+     * @return static
+     */
+    public function withValidationErrors(): static
+    {
+        // Generate intentionally invalid data for testing validation
+        $invalidData = [
+            'Date' => $this->faker->randomElement(['32/13/2023', '2023-12-31', 'invalid-date']), // Invalid date formats
+            'Expense Type' => 'Invalid Expense Type',
+            'Currency Code' => $this->faker->randomElement(['INVALID', 'US', 'EURO']), // Invalid currency codes
+            'Amount' => $this->faker->randomElement(['invalid', 'abc', '']), // Non-numeric amounts
+            'VAT %' => $this->faker->randomElement(['invalid%', '150%', '-5%']), // Invalid VAT percentages
+            'Merchant Name' => str_repeat('Very long merchant name ', 20), // Exceeds 180 char limit
+            'Description' => $this->faker->paragraph(10),
+            'Merchant Address' => $this->faker->address,
+            'Merchant Country' => 'Invalid Country Name',
+            'Source' => 'Invalid Source',
+            'Source Note' => '', // Missing when Source = Other
+            'Notes' => str_repeat('Very long notes ', 50), // Test DB limits
+        ];
+
+        $errorMessages = [
+            'Date: Invalid date format, expected DD/MM/YYYY',
+            'Expense Type: Unknown expense type',
+            'Currency Code: Invalid currency code format',
+            'Amount: Must be a valid number',
+            'VAT %: Must be between 0-100',
+            'Merchant Name: Exceeds maximum length of 180 characters',
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $invalidData,
+            'status' => 'failed',
+            'error_message' => $this->faker->randomElement($errorMessages),
+        ]);
+    }
+
+    /**
+     * Create upload data with minimal required fields only.
+     *
+     * @return static
+     */
+    public function minimal(): static
+    {
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
+        
+        $expenseData = [
+            'Date' => $expenseDate->format('d/m/Y'),
+            'Expense Type' => 'Point of Sale',
+            'Currency Code' => 'USD',
+            'Amount' => '-25.50',
+            'Merchant Name' => 'Test Merchant',
+            // Optional fields left empty
+            'USD Equivalent Amount' => '',
+            'VAT %' => '',
+            'Description' => '',
+            'Merchant Address' => '',
+            'Merchant Country' => '',
+            'Source' => '',
+            'Source Note' => '',
+            'Notes' => '',
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data with maximal field utilization.
+     *
+     * @return static
+     */
+    public function maximal(): static
+    {
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
+        $currency = $this->faker->randomElement(['USD', 'EUR', 'GBP']);
+        $amount = $this->faker->randomFloat(2, -300.00, -15.00);
+        
+        $expenseData = [
+            'Date' => $expenseDate->format('d/m/Y'),
+            'Expense Type' => 'Point of Sale',
+            'Currency Code' => $currency,
+            'Amount' => number_format($amount, 2, '.', ''),
+            $currency . ' Equivalent Amount' => number_format(abs($amount) * 1.1, 2, '.', ''),
+            'VAT %' => $this->faker->numberBetween(5, 25) . '%',
+            'Merchant Name' => $this->faker->company,
+            'Description' => $this->faker->sentence(12),
+            'Merchant Address' => $this->faker->address,
+            'Merchant Country' => $this->faker->country,
+            'Source' => 'Other',
+            'Source Note' => $this->faker->sentence(15),
+            'Notes' => $this->faker->paragraph(3),
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data with old dates (near 3-year constraint limit).
+     *
+     * @return static
+     */
+    public function nearDateLimit(): static
+    {
+        // Generate date close to 3-year limit
+        $expenseDate = $this->faker->dateTimeBetween('-3 years', '-2 years 11 months');
+        
+        $expenseData = $this->generateExpenseData();
+        $expenseData['Date'] = $expenseDate->format('d/m/Y');
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data that would exceed date constraint (for testing validation).
+     *
+     * @return static
+     */
+    public function exceedDateLimit(): static
+    {
+        // Generate date older than 3 years (should fail validation)
+        $expenseDate = $this->faker->dateTimeBetween('-5 years', '-3 years 1 day');
+        
+        $expenseData = $this->generateExpenseData();
+        $expenseData['Date'] = $expenseDate->format('d/m/Y');
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+            'status' => 'failed',
+            'error_message' => 'Date is older than 3 years from current date',
+        ]);
+    }
+
+    /**
+     * Create upload data with specific timestamps.
+     *
+     * @param \Carbon\Carbon|string|null $createdAt
+     * @param \Carbon\Carbon|string|null $updatedAt
+     * @return static
+     */
+    public function withTimestamps($createdAt = null, $updatedAt = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'created_at' => $createdAt ?? now()->subDays($this->faker->numberBetween(0, 30)),
+            'updated_at' => $updatedAt ?? now()->subDays($this->faker->numberBetween(0, 10)),
+        ]);
+    }
+
+    /**
+     * Create multiple upload data records for the same upload with sequential line numbers.
+     *
+     * @param int $uploadId
+     * @param int $startLineNumber
+     * @param int $count
+     * @return static
+     */
+    public function sequentialForUpload(int $uploadId, int $startLineNumber = 2, int $count = 5): static
+    {
+        return $this->state(function (array $attributes) use ($uploadId, &$startLineNumber) {
             return [
-                'expense_data' => json_encode($expenseData),
+                'upload_id' => $uploadId,
+                'line_number' => $startLineNumber++,
             ];
         });
     }
 
     /**
-     * Configure the factory for Point of Sale expense type.
+     * Create upload data for testing CSV row limits (max 200 rows per file).
      *
-     * @return static
-     */
-    public function pointOfSale(): static
-    {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['expense_type'] = 'Point of Sale';
-            $expenseData['merchant_name'] = $this->faker->company();
-            $expenseData['merchant_description'] = $this->faker->randomElement([
-                'Business meeting lunch',
-                'Office supplies purchase',
-                'Client entertainment',
-                'Travel expenses'
-            ]);
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for Fee & Charges expense type.
-     *
-     * @return static
-     */
-    public function feeAndCharges(): static
-    {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['expense_type'] = 'Fee & Charges';
-            $expenseData['merchant_name'] = $this->faker->randomElement([
-                'Foreign Exchange Fee',
-                'Card Processing Fee',
-                'Transaction Charge',
-                'Service Fee'
-            ]);
-            $expenseData['merchant_description'] = 'Bank or card processing fee';
-            $expenseData['vat_percentage'] = null; // Fees typically don't have VAT
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for Refund from Merchant expense type.
-     *
-     * @return static
-     */
-    public function refundFromMerchant(): static
-    {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['expense_type'] = 'Refund from Merchant';
-            $expenseData['merchant_name'] = $this->faker->company();
-            $expenseData['merchant_description'] = $this->faker->randomElement([
-                'Cancelled order refund',
-                'Product return refund',
-                'Overcharge adjustment',
-                'Service cancellation refund'
-            ]);
-            $expenseData['amount'] = $this->faker->randomFloat(2, 5.00, 200.00); // Smaller refund amounts
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with 'Other' expense source and required note.
-     *
-     * @param string $sourceNote
-     * @return static
-     */
-    public function withOtherSource(string $sourceNote): static
-    {
-        return $this->state(function (array $attributes) use ($sourceNote) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['source'] = 'Other';
-            $expenseData['source_note'] = $sourceNote;
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific currency.
-     *
-     * @param string $currency
-     * @return static
-     */
-    public function withCurrency(string $currency): static
-    {
-        return $this->state(function (array $attributes) use ($currency) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['currency'] = strtoupper($currency);
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific amount.
-     *
-     * @param float $amount
-     * @return static
-     */
-    public function withAmount(float $amount): static
-    {
-        return $this->state(function (array $attributes) use ($amount) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['amount'] = $amount;
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific date.
-     *
-     * @param string|\DateTimeInterface $date
-     * @return static
-     */
-    public function withDate($date): static
-    {
-        return $this->state(function (array $attributes) use ($date) {
-            $dateObj = $date instanceof \DateTimeInterface ? $date : Carbon::parse($date);
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['date'] = $dateObj->format('d/m/Y'); // CSV format DD/MM/YYYY
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific merchant name.
-     *
-     * @param string $merchantName
-     * @return static
-     */
-    public function withMerchant(string $merchantName): static
-    {
-        return $this->state(function (array $attributes) use ($merchantName) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['merchant_name'] = $merchantName;
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with VAT percentage.
-     *
-     * @param int $vatPercentage
-     * @return static
-     */
-    public function withVat(int $vatPercentage): static
-    {
-        return $this->state(function (array $attributes) use ($vatPercentage) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['vat_percentage'] = $vatPercentage . '%'; // CSV format with % sign
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory without VAT.
-     *
-     * @return static
-     */
-    public function withoutVat(): static
-    {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['vat_percentage'] = null;
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with validation error scenario.
-     *
-     * @param string $field
-     * @param string $error
-     * @param mixed $providedValue
-     * @return static
-     */
-    public function withValidationError(string $field, string $error, $providedValue): static
-    {
-        return $this->state(function (array $attributes) use ($field, $error, $providedValue) {
-            $validationError = [
-                'line_number' => $attributes['line_number'],
-                'field' => $field,
-                'error' => $error,
-                'provided_value' => $providedValue,
-                'description' => "Validation failed for field '{$field}'"
-            ];
-            
-            return [
-                'status' => 'failed',
-                'processing_errors' => json_encode([$validationError]),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for old expense dates (older than 3 years - should fail validation).
-     *
-     * @return static
-     */
-    public function withOldDate(): static
-    {
-        return $this->state(function (array $attributes) {
-            $oldDate = Carbon::now()->subYears(4)->format('d/m/Y');
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['date'] = $oldDate;
-            
-            $validationError = [
-                'line_number' => $attributes['line_number'],
-                'field' => 'date',
-                'error' => 'Date is older than 3 years',
-                'provided_value' => $oldDate,
-                'description' => 'Date must not be older than 3 years from today'
-            ];
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-                'status' => 'failed',
-                'processing_errors' => json_encode([$validationError]),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for invalid currency code scenario.
-     *
-     * @return static
-     */
-    public function withInvalidCurrency(): static
-    {
-        return $this->state(function (array $attributes) {
-            $invalidCurrency = 'INVALID';
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['currency'] = $invalidCurrency;
-            
-            $validationError = [
-                'line_number' => $attributes['line_number'],
-                'field' => 'currency',
-                'error' => 'Invalid currency code format',
-                'provided_value' => $invalidCurrency,
-                'description' => 'Currency code must be 3-letter ISO format (e.g., GBP, EUR, USD)'
-            ];
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-                'status' => 'failed',
-                'processing_errors' => json_encode([$validationError]),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for invalid amount format scenario.
-     *
-     * @return static
-     */
-    public function withInvalidAmount(): static
-    {
-        return $this->state(function (array $attributes) {
-            $invalidAmount = 'abc.def';
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['amount'] = $invalidAmount;
-            
-            $validationError = [
-                'line_number' => $attributes['line_number'],
-                'field' => 'amount',
-                'error' => 'Invalid amount format',
-                'provided_value' => $invalidAmount,
-                'description' => 'Amount must be a valid decimal number'
-            ];
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-                'status' => 'failed',
-                'processing_errors' => json_encode([$validationError]),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for merchant name too long scenario.
-     *
-     * @return static
-     */
-    public function withLongMerchantName(): static
-    {
-        return $this->state(function (array $attributes) {
-            $longMerchantName = str_repeat('A', 200); // Exceeds VARCHAR(180) limit
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['merchant_name'] = $longMerchantName;
-            
-            $validationError = [
-                'line_number' => $attributes['line_number'],
-                'field' => 'merchant_name',
-                'error' => 'Merchant name exceeds maximum length',
-                'provided_value' => substr($longMerchantName, 0, 50) . '...',
-                'description' => 'Merchant name must not exceed 180 characters'
-            ];
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-                'status' => 'failed',
-                'processing_errors' => json_encode([$validationError]),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for missing source note when source is 'Other'.
-     *
-     * @return static
-     */
-    public function withMissingSourceNote(): static
-    {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['source'] = 'Other';
-            $expenseData['source_note'] = null;
-            
-            $validationError = [
-                'line_number' => $attributes['line_number'],
-                'field' => 'source_note',
-                'error' => 'Source Note required when Source is Other',
-                'provided_value' => null,
-                'description' => 'Source Note must be provided when Source = Other'
-            ];
-            
-            return [
-                'expense_data' => json_encode($expenseData),
-                'status' => 'failed',
-                'processing_errors' => json_encode([$validationError]),
-                'created_expense_id' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for sequential line numbers in a batch.
-     *
-     * @param int $startingLineNumber
-     * @return static
-     */
-    public function sequentialLines(int $startingLineNumber = 2): static
-    {
-        return $this->sequence(
-            ['line_number' => $startingLineNumber],
-            ['line_number' => $startingLineNumber + 1],
-            ['line_number' => $startingLineNumber + 2],
-            ['line_number' => $startingLineNumber + 3],
-            ['line_number' => $startingLineNumber + 4]
-        );
-    }
-
-    /**
-     * Configure the factory for different processing statuses as a sequence.
-     *
-     * @return static
-     */
-    public function statusSequence(): static
-    {
-        return $this->sequence(
-            ['status' => 'pending', 'processing_errors' => null, 'created_expense_id' => null],
-            ['status' => 'processing', 'processing_errors' => null, 'created_expense_id' => null],
-            ['status' => 'completed', 'processing_errors' => null, 'created_expense_id' => 1],
-            ['status' => 'failed', 'processing_errors' => json_encode([['field' => 'amount', 'error' => 'Invalid format']]), 'created_expense_id' => null]
-        );
-    }
-
-    /**
-     * Configure the factory for different expense types as a sequence.
-     *
-     * @return static
-     */
-    public function expenseTypeSequence(): static
-    {
-        return $this->sequence(
-            ['expense_data' => json_encode(array_merge(json_decode($this->make()->expense_data, true), ['expense_type' => 'ATM Withdrawal']))],
-            ['expense_data' => json_encode(array_merge(json_decode($this->make()->expense_data, true), ['expense_type' => 'Point of Sale']))],
-            ['expense_data' => json_encode(array_merge(json_decode($this->make()->expense_data, true), ['expense_type' => 'Fee & Charges']))],
-            ['expense_data' => json_encode(array_merge(json_decode($this->make()->expense_data, true), ['expense_type' => 'Refund from Merchant']))]
-        );
-    }
-
-    /**
-     * Configure the factory with a complete upload data scenario.
-     * 
      * @param int $uploadId
      * @param int $lineNumber
-     * @param string $status
-     * @param array $expenseData
      * @return static
      */
-    public function complete(int $uploadId, int $lineNumber, string $status = 'pending', array $expenseData = []): static
+    public function forRowLimitTesting(int $uploadId, int $lineNumber): static
     {
-        return $this->state(function (array $attributes) use ($uploadId, $lineNumber, $status, $expenseData) {
-            $defaultExpenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $finalExpenseData = array_merge($defaultExpenseData, $expenseData);
-            
-            return [
-                'upload_id' => $uploadId,
-                'line_number' => $lineNumber,
-                'status' => $status,
-                'expense_data' => json_encode($finalExpenseData),
-                'processing_errors' => $status === 'failed' ? json_encode([['field' => 'general', 'error' => 'Processing failed']]) : null,
-                'created_expense_id' => $status === 'completed' ? 1 : null,
-            ];
-        });
+        // Ensure line number is within constraint (header = 1, data rows = 2-201)
+        $constrainedLineNumber = max(2, min(201, $lineNumber));
+        
+        return $this->state(fn (array $attributes) => [
+            'upload_id' => $uploadId,
+            'line_number' => $constrainedLineNumber,
+        ]);
     }
 
     /**
-     * Configure the factory with realistic CSV batch data.
-     * Creates multiple rows with sequential line numbers for testing batch processing.
+     * Create upload data with various currencies for FX testing.
+     *
+     * @return static
+     */
+    public function forFxTesting(): static
+    {
+        $currencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'SGD'];
+        $currency = $this->faker->randomElement($currencies);
+        
+        // Adjust amount based on typical currency ranges
+        $amount = match ($currency) {
+            'JPY' => $this->faker->randomFloat(0, -50000, -1000),
+            default => $this->faker->randomFloat(2, -1000.00, -50.00),
+        };
+        
+        $expenseDate = $this->faker->dateTimeBetween('-30 days', 'now'); // Within FX lookup range
+        
+        $expenseData = $this->generateExpenseData();
+        $expenseData['Date'] = $expenseDate->format('d/m/Y');
+        $expenseData['Currency Code'] = $currency;
+        $expenseData['Amount'] = number_format($amount, 2, '.', '');
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data that represents a complete CSV batch.
+     * Generates multiple records with different statuses and line numbers.
      *
      * @param int $uploadId
-     * @param int $numberOfRows
-     * @param int $startLineNumber
-     * @return static
+     * @param int $totalRows
+     * @return \Illuminate\Database\Eloquent\Collection
      */
-    public function batchData(int $uploadId, int $numberOfRows = 5, int $startLineNumber = 2): static
+    public function createBatch(int $uploadId, int $totalRows = 10): \Illuminate\Database\Eloquent\Collection
     {
-        $states = [];
-        for ($i = 0; $i < $numberOfRows; $i++) {
-            $states[] = [
-                'upload_id' => $uploadId,
-                'line_number' => $startLineNumber + $i,
-                'status' => 'pending',
-                'processing_errors' => null,
-                'created_expense_id' => null,
-            ];
+        $records = collect();
+        
+        for ($i = 2; $i <= min($totalRows + 1, 201); $i++) { // Line 1 is header
+            $status = match (true) {
+                $i <= 5 => 'synced',
+                $i <= 8 => 'pending', 
+                $i <= 9 => 'processing',
+                default => 'failed',
+            };
+            
+            $record = $this->forUpload($uploadId)
+                ->atLine($i)
+                ->withStatus($status)
+                ->create();
+                
+            $records->push($record);
         }
         
-        return $this->sequence(...$states);
+        return $records;
     }
 
     /**
-     * Configure the factory to update timestamps for testing updates.
+     * Create upload data with a specific status.
+     *
+     * @param string $status
+     * @return static
+     */
+    public function withStatus(string $status): static
+    {
+        $errorMessage = null;
+        
+        if ($status === 'failed') {
+            $errorMessage = $this->faker->randomElement([
+                'Invalid date format',
+                'Currency not supported',
+                'Amount validation failed',
+                'Merchant name too long',
+                'Missing required field',
+            ]);
+        }
+
+        return $this->state(fn (array $attributes) => [
+            'status' => $status,
+            'error_message' => $errorMessage,
+        ]);
+    }
+
+    /**
+     * Create upload data for testing edge cases.
      *
      * @return static
      */
-    public function updated(): static
+    public function edgeCase(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'updated_at' => Carbon::now(),
-            ];
-        });
+        $edgeCases = [
+            // Boundary amounts
+            ['amount' => '-0.01', 'description' => 'Minimum amount'],
+            ['amount' => '-999999.99', 'description' => 'Maximum negative amount'],
+            ['amount' => '999999.99', 'description' => 'Maximum positive amount'],
+            
+            // Boundary VAT percentages  
+            ['vat' => '0%', 'description' => 'Zero VAT'],
+            ['vat' => '100%', 'description' => 'Maximum VAT'],
+            
+            // Long text fields
+            ['merchant' => str_repeat('A', 180), 'description' => 'Maximum merchant name length'],
+            
+            // Special characters
+            ['merchant' => 'Café & Restaurant', 'description' => 'Special characters in merchant name'],
+        ];
+        
+        $edgeCase = $this->faker->randomElement($edgeCases);
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
+        
+        $expenseData = $this->generateExpenseData();
+        $expenseData['Date'] = $expenseDate->format('d/m/Y');
+        
+        if (isset($edgeCase['amount'])) {
+            $expenseData['Amount'] = $edgeCase['amount'];
+        }
+        if (isset($edgeCase['vat'])) {
+            $expenseData['VAT %'] = $edgeCase['vat'];
+        }
+        if (isset($edgeCase['merchant'])) {
+            $expenseData['Merchant Name'] = $edgeCase['merchant'];
+        }
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
+    }
+
+    /**
+     * Create upload data for performance testing with large datasets.
+     *
+     * @return static
+     */
+    public function forPerformanceTesting(): static
+    {
+        // Generate simplified expense data for performance testing
+        $expenseDate = $this->faker->dateTimeBetween('-1 year', 'now');
+        
+        $expenseData = [
+            'Date' => $expenseDate->format('d/m/Y'),
+            'Expense Type' => 'Point of Sale',
+            'Currency Code' => 'USD',
+            'Amount' => number_format($this->faker->randomFloat(2, -100.00, -5.00), 2, '.', ''),
+            'VAT %' => '',
+            'Merchant Name' => 'Test Merchant ' . $this->faker->numberBetween(1, 1000),
+            'Description' => 'Performance test expense',
+            'Merchant Address' => '',
+            'Merchant Country' => '',
+            'Source' => 'Cash',
+            'Source Note' => '',
+            'Notes' => '',
+        ];
+
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+            'status' => 'pending',
+        ]);
     }
 }

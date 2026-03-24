@@ -4,467 +4,532 @@ namespace App\Jobs;
 
 use App\Models\PocketExpenseFileUpload;
 use App\Models\PocketExpenseUploadsData;
+use App\Models\PocketExpense;
+use App\Models\PocketExpenseMetadata;
+use App\Models\OptPocketExpenseType;
+use App\Models\PocketExpenseSourceClientConfig;
+use App\Models\User;
+use App\Models\Client;
+use App\Services\FXConversionService;
 use App\Services\PocketExpenseService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
+use Carbon\Carbon;
 use Exception;
 use Throwable;
 
 /**
- * Job for processing CSV expense upload data asynchronously
+ * Background job to process CSV expense upload data.
+ * Handles the asynchronous creation of PocketExpense records from validated CSV data.
  * 
- * Processes expense upload data in batches of 100 records, converting
- * validated CSV rows into actual PocketExpense records. Updates upload
- * status throughout the process and handles error scenarios gracefully.
- * Runs on the 'expense-processing' queue as per constraints.
+ * This job is dispatched after successful CSV validation and processes the staging data
+ * in pocket_expense_uploads_data table to create actual expense records with metadata.
  */
 class ProcessExpenseUpload implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
-     * The upload record being processed
-     *
-     * @var PocketExpenseFileUpload
-     */
-    protected PocketExpenseFileUpload $upload;
-
-    /**
-     * Batch size for processing upload data records
+     * The upload ID to process.
      *
      * @var int
      */
-    protected int $batchSize = 100;
+    public int $uploadId;
 
     /**
-     * Maximum number of retry attempts for failed processing
+     * The number of times the job may be attempted.
      *
      * @var int
      */
     public int $tries = 3;
 
     /**
-     * Maximum time in seconds the job may run before timing out
+     * The maximum number of seconds the job can run.
      *
      * @var int
      */
-    public int $timeout = 300;
+    public int $timeout = 300; // 5 minutes
 
     /**
-     * Create a new job instance
+     * Create a new job instance.
      *
-     * @param PocketExpenseFileUpload $upload The upload record to process
+     * @param int $uploadId
      */
-    public function __construct(PocketExpenseFileUpload $upload)
+    public function __construct(int $uploadId)
     {
-        $this->upload = $upload;
+        $this->uploadId = $uploadId;
         
-        // Set queue connection as per constraints
+        // Set queue name based on priority (expense processing should be high priority)
         $this->onQueue('expense-processing');
-        
-        // Set connection for multi-tenancy if needed
-        $this->onConnection('default');
     }
 
     /**
-     * Execute the job
-     * 
-     * Processes all pending upload data records in batches, creating
-     * PocketExpense records for each valid row. Updates upload status
-     * throughout the process and handles transaction rollback on failures.
+     * Execute the job.
      *
      * @return void
      * @throws Exception
      */
     public function handle(): void
     {
-        Log::info('Starting expense upload processing', [
-            'upload_id' => $this->upload->id,
-            'total_records' => $this->upload->total_records,
-            'valid_records' => $this->upload->valid_records,
+        Log::info("Starting ProcessExpenseUpload job", [
+            'upload_id' => $this->uploadId,
+            'attempt' => $this->attempts()
         ]);
 
         try {
-            // Update upload status to processing
+            // Load the upload record
+            $upload = PocketExpenseFileUpload::find($this->uploadId);
+            
+            if (!$upload) {
+                Log::error("Upload record not found", ['upload_id' => $this->uploadId]);
+                throw new Exception("Upload record not found: {$this->uploadId}");
+            }
+
+            // Verify upload is in correct status for processing
+            if (!in_array($upload->status, ['validation_passed', 'processing'])) {
+                Log::warning("Upload not ready for processing", [
+                    'upload_id' => $this->uploadId,
+                    'status' => $upload->status
+                ]);
+                return;
+            }
+
+            // Update status to processing
             $this->updateUploadStatus('processing');
 
-            // Get all pending upload data records for this upload
-            $pendingRecords = PocketExpenseUploadsData::where('upload_id', $this->upload->id)
+            // Get all pending upload data rows
+            $uploadDataRows = PocketExpenseUploadsData::where('upload_id', $this->uploadId)
                 ->where('status', 'pending')
                 ->orderBy('line_number')
                 ->get();
 
-            if ($pendingRecords->isEmpty()) {
-                Log::warning('No pending records found for processing', [
-                    'upload_id' => $this->upload->id,
-                ]);
-                
+            if ($uploadDataRows->isEmpty()) {
+                Log::warning("No pending data rows found for processing", ['upload_id' => $this->uploadId]);
                 $this->updateUploadStatus('completed');
                 return;
             }
 
-            // Process records in batches
-            $totalProcessed = 0;
-            $totalFailed = 0;
-            $batches = $pendingRecords->chunk($this->batchSize);
-
-            foreach ($batches as $batch) {
-                $batchResult = $this->processBatch($batch);
-                $totalProcessed += $batchResult['processed'];
-                $totalFailed += $batchResult['failed'];
-
-                Log::info('Batch processed', [
-                    'upload_id' => $this->upload->id,
-                    'batch_size' => $batch->count(),
-                    'batch_processed' => $batchResult['processed'],
-                    'batch_failed' => $batchResult['failed'],
-                    'total_processed' => $totalProcessed,
-                    'total_failed' => $totalFailed,
-                ]);
-            }
-
-            // Update upload status based on results
-            if ($totalFailed === 0) {
-                $this->updateUploadStatus('completed');
-                Log::info('Expense upload processing completed successfully', [
-                    'upload_id' => $this->upload->id,
-                    'total_processed' => $totalProcessed,
-                ]);
-            } else {
-                $this->updateUploadStatus('failed');
-                Log::error('Expense upload processing completed with failures', [
-                    'upload_id' => $this->upload->id,
-                    'total_processed' => $totalProcessed,
-                    'total_failed' => $totalFailed,
-                ]);
-            }
-
-            // TODO: Send notification to target user when batch upload completes
-            // This requires clarification of notification mechanism (email vs in-app)
-            
-        } catch (Exception $e) {
-            $this->handleJobFailure($e);
-            throw $e;
-        }
-    }
-
-    /**
-     * Process a batch of upload data records
-     * 
-     * @param Collection $batch Collection of PocketExpenseUploadsData records
-     * @return array Array with 'processed' and 'failed' counts
-     */
-    protected function processBatch(Collection $batch): array
-    {
-        $processed = 0;
-        $failed = 0;
-        $expenseService = app(PocketExpenseService::class);
-
-        foreach ($batch as $uploadData) {
-            try {
-                DB::beginTransaction();
-
-                // Mark record as processing
-                $uploadData->update([
-                    'status' => 'processing',
-                    'processing_errors' => null,
-                ]);
-
-                // Create expense record from CSV data
-                $expenseData = $this->parseExpenseData($uploadData->expense_data);
-                
-                $createdExpense = $expenseService->createExpense(
-                    $expenseData,
-                    $this->upload->user_id,
-                    $this->upload->client_id
-                );
-
-                // Update upload data record with success status
-                $uploadData->update([
-                    'status' => 'completed',
-                    'created_expense_id' => $createdExpense->id,
-                    'processing_errors' => null,
-                ]);
-
-                DB::commit();
-                $processed++;
-
-                Log::debug('Upload record processed successfully', [
-                    'upload_id' => $this->upload->id,
-                    'upload_data_id' => $uploadData->id,
-                    'line_number' => $uploadData->line_number,
-                    'created_expense_id' => $createdExpense->id,
-                ]);
-
-            } catch (Exception $e) {
-                DB::rollBack();
-                $failed++;
-
-                // Update upload data record with failure status
-                $uploadData->update([
-                    'status' => 'failed',
-                    'processing_errors' => json_encode([
-                        'error_message' => $e->getMessage(),
-                        'error_code' => $e->getCode(),
-                        'timestamp' => now()->toISOString(),
-                    ]),
-                ]);
-
-                Log::error('Failed to process upload record', [
-                    'upload_id' => $this->upload->id,
-                    'upload_data_id' => $uploadData->id,
-                    'line_number' => $uploadData->line_number,
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString(),
-                ]);
-            }
-        }
-
-        return [
-            'processed' => $processed,
-            'failed' => $failed,
-        ];
-    }
-
-    /**
-     * Parse CSV expense data into format expected by PocketExpenseService
-     * 
-     * @param array $csvData Raw CSV data from upload record
-     * @return array Formatted expense data for service
-     */
-    protected function parseExpenseData(array $csvData): array
-    {
-        // Convert DD/MM/YYYY date format to Y-m-d for database storage
-        $date = \DateTime::createFromFormat('d/m/Y', $csvData['date']);
-        
-        return [
-            'date' => $date ? $date->format('Y-m-d') : now()->format('Y-m-d'),
-            'merchant_name' => trim($csvData['merchant_name'] ?? ''),
-            'merchant_description' => trim($csvData['merchant_description'] ?? ''),
-            'expense_type' => (int) ($csvData['expense_type_id'] ?? 2), // Default to Point of Sale
-            'currency' => strtoupper($csvData['currency'] ?? 'GBP'),
-            'amount' => (float) ($csvData['amount'] ?? 0.00),
-            'merchant_address' => trim($csvData['merchant_address'] ?? ''),
-            'vat_amount' => isset($csvData['vat_amount']) ? (float) $csvData['vat_amount'] : null,
-            'notes' => trim($csvData['notes'] ?? ''),
-            'status' => 'submitted', // CSV uploads start in submitted status
-            
-            // Metadata from CSV if present
-            'metadata' => $this->parseMetadata($csvData),
-        ];
-    }
-
-    /**
-     * Parse metadata fields from CSV data
-     * 
-     * @param array $csvData Raw CSV data
-     * @return array Metadata array for expense creation
-     */
-    protected function parseMetadata(array $csvData): array
-    {
-        $metadata = [];
-
-        // Transaction Category metadata
-        if (!empty($csvData['category_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'category',
-                'transaction_category_id' => (int) $csvData['category_id'],
-                'details_json' => json_encode([
-                    'source' => 'csv_upload',
-                    'category_name' => $csvData['category_name'] ?? null,
-                ]),
-            ];
-        }
-
-        // Expense Source metadata
-        if (!empty($csvData['source_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'expense_source',
-                'expense_source_id' => (int) $csvData['source_id'],
-                'details_json' => json_encode([
-                    'source' => 'csv_upload',
-                    'source_name' => $csvData['source_name'] ?? null,
-                    'source_note' => $csvData['source_note'] ?? null,
-                ]),
-            ];
-        }
-
-        // Tracking Code Type 1 metadata
-        if (!empty($csvData['tracking_code_1_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'tracking_code_type_1',
-                'tracking_code_id' => (int) $csvData['tracking_code_1_id'],
-                'details_json' => json_encode([
-                    'source' => 'csv_upload',
-                    'tracking_code_name' => $csvData['tracking_code_1_name'] ?? null,
-                ]),
-            ];
-        }
-
-        // Tracking Code Type 2 metadata
-        if (!empty($csvData['tracking_code_2_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'tracking_code_type_2',
-                'tracking_code_id' => (int) $csvData['tracking_code_2_id'],
-                'details_json' => json_encode([
-                    'source' => 'csv_upload',
-                    'tracking_code_name' => $csvData['tracking_code_2_name'] ?? null,
-                ]),
-            ];
-        }
-
-        // Project metadata
-        if (!empty($csvData['project_id'])) {
-            $metadata[] = [
-                'metadata_type' => 'project',
-                'project_id' => (int) $csvData['project_id'],
-                'details_json' => json_encode([
-                    'source' => 'csv_upload',
-                    'project_name' => $csvData['project_name'] ?? null,
-                ]),
-            ];
-        }
-
-        return $metadata;
-    }
-
-    /**
-     * Update upload status with processed timestamp
-     * 
-     * @param string $status New status value
-     * @return void
-     */
-    protected function updateUploadStatus(string $status): void
-    {
-        $updates = ['status' => $status];
-
-        // Set processed timestamp when completed or failed
-        if (in_array($status, ['completed', 'failed'])) {
-            $updates['processed_at'] = now();
-        }
-
-        $this->upload->update($updates);
-
-        Log::info('Upload status updated', [
-            'upload_id' => $this->upload->id,
-            'status' => $status,
-        ]);
-    }
-
-    /**
-     * Handle job failure scenarios
-     * 
-     * @param Exception $exception The exception that caused the failure
-     * @return void
-     */
-    protected function handleJobFailure(Exception $exception): void
-    {
-        Log::error('Expense upload processing job failed', [
-            'upload_id' => $this->upload->id,
-            'error' => $exception->getMessage(),
-            'trace' => $exception->getTraceAsString(),
-            'attempts' => $this->attempts(),
-            'max_tries' => $this->tries,
-        ]);
-
-        try {
-            // Update upload status to failed
-            $this->updateUploadStatus('failed');
-
-            // Mark any processing records as failed
-            PocketExpenseUploadsData::where('upload_id', $this->upload->id)
-                ->where('status', 'processing')
-                ->update([
-                    'status' => 'failed',
-                    'processing_errors' => json_encode([
-                        'error_message' => 'Job failed: ' . $exception->getMessage(),
-                        'error_code' => $exception->getCode(),
-                        'timestamp' => now()->toISOString(),
-                        'job_failure' => true,
-                    ]),
-                ]);
-
-        } catch (Exception $updateException) {
-            Log::critical('Failed to update upload status after job failure', [
-                'upload_id' => $this->upload->id,
-                'original_error' => $exception->getMessage(),
-                'update_error' => $updateException->getMessage(),
+            Log::info("Processing upload data rows", [
+                'upload_id' => $this->uploadId,
+                'row_count' => $uploadDataRows->count()
             ]);
+
+            // Process all rows in a single transaction for atomicity
+            DB::transaction(function () use ($uploadDataRows, $upload) {
+                $this->syncExpenseBatch($uploadDataRows, $upload);
+            });
+
+            // Update upload status to completed
+            $this->updateUploadStatus('completed', now());
+
+            Log::info("ProcessExpenseUpload job completed successfully", [
+                'upload_id' => $this->uploadId,
+                'processed_rows' => $uploadDataRows->count()
+            ]);
+
+        } catch (Throwable $exception) {
+            Log::error("ProcessExpenseUpload job failed", [
+                'upload_id' => $this->uploadId,
+                'error' => $exception->getMessage(),
+                'trace' => $exception->getTraceAsString()
+            ]);
+
+            // Update upload status to failed
+            $this->updateUploadStatus('sync_failed');
+
+            // Re-throw to trigger job retry mechanism
+            throw $exception;
         }
     }
 
     /**
-     * Handle job failure after max attempts
-     * 
+     * Process a batch of expense data rows and create PocketExpense records.
+     *
+     * @param \Illuminate\Database\Eloquent\Collection $uploadDataRows
+     * @param PocketExpenseFileUpload $upload
+     * @return void
+     * @throws Exception
+     */
+    private function syncExpenseBatch($uploadDataRows, PocketExpenseFileUpload $upload): void
+    {
+        $processedCount = 0;
+        $failedCount = 0;
+
+        // Preload reference data for performance
+        $expenseTypes = OptPocketExpenseType::where('is_active', true)
+            ->pluck('id', 'option')
+            ->toArray();
+
+        $expenseSources = PocketExpenseSourceClientConfig::where(function ($query) use ($upload) {
+                $query->where('client_id', $upload->client_id)
+                      ->orWhereNull('client_id'); // Include global sources like 'Other'
+            })
+            ->where('deleted', false)
+            ->pluck('id', 'name')
+            ->toArray();
+
+        foreach ($uploadDataRows as $uploadDataRow) {
+            try {
+                // Update row status to processing
+                $uploadDataRow->update(['status' => 'processing']);
+
+                // Parse the expense data
+                $expenseData = $uploadDataRow->expense_data;
+                
+                // Create the main expense record
+                $expense = $this->createExpenseFromData($expenseData, $upload, $expenseTypes);
+
+                // Create metadata if expense source is specified
+                if (!empty($expenseData['Source']) && isset($expenseSources[$expenseData['Source']])) {
+                    $this->createExpenseMetadata($expense, $expenseData, $expenseSources, $upload);
+                }
+
+                // Update row status to synced
+                $uploadDataRow->update([
+                    'status' => 'synced',
+                    'error_message' => null
+                ]);
+
+                $processedCount++;
+
+            } catch (Throwable $exception) {
+                Log::error("Failed to process upload data row", [
+                    'upload_id' => $this->uploadId,
+                    'line_number' => $uploadDataRow->line_number,
+                    'error' => $exception->getMessage()
+                ]);
+
+                // Update row status to failed with error message
+                $uploadDataRow->update([
+                    'status' => 'failed',
+                    'error_message' => $exception->getMessage()
+                ]);
+
+                $failedCount++;
+            }
+        }
+
+        Log::info("Batch processing completed", [
+            'upload_id' => $this->uploadId,
+            'processed' => $processedCount,
+            'failed' => $failedCount,
+            'total' => $uploadDataRows->count()
+        ]);
+
+        // If any rows failed, throw exception to mark the entire job as failed
+        if ($failedCount > 0) {
+            throw new Exception("Failed to process {$failedCount} out of {$uploadDataRows->count()} rows");
+        }
+    }
+
+    /**
+     * Create a PocketExpense record from CSV data.
+     *
+     * @param array $expenseData
+     * @param PocketExpenseFileUpload $upload
+     * @param array $expenseTypes
+     * @return PocketExpense
+     * @throws Exception
+     */
+    private function createExpenseFromData(array $expenseData, PocketExpenseFileUpload $upload, array $expenseTypes): PocketExpense
+    {
+        // Parse and validate date (expecting DD/MM/YYYY format from CSV)
+        $expenseDate = $this->parseDate($expenseData['Date']);
+        
+        // Get expense type ID
+        $expenseTypeOption = $expenseData['Expense Type'];
+        if (!isset($expenseTypes[$expenseTypeOption])) {
+            throw new Exception("Invalid expense type: {$expenseTypeOption}");
+        }
+        $expenseTypeId = $expenseTypes[$expenseTypeOption];
+
+        // Get the expense type to determine amount sign
+        $expenseType = OptPocketExpenseType::find($expenseTypeId);
+        if (!$expenseType) {
+            throw new Exception("Expense type not found: {$expenseTypeId}");
+        }
+
+        // Parse amount and apply correct sign based on expense type
+        $amount = (float) $expenseData['Amount'];
+        if ($expenseType->amount_sign === 'negative' && $amount > 0) {
+            $amount = -$amount;
+        } elseif ($expenseType->amount_sign === 'positive' && $amount < 0) {
+            $amount = abs($amount);
+        }
+
+        // Parse VAT amount if provided
+        $vatAmount = null;
+        if (!empty($expenseData['VAT %'])) {
+            $vatPercentage = str_replace('%', '', $expenseData['VAT %']);
+            $vatAmount = (float) $vatPercentage;
+        }
+
+        // Apply FX conversion if needed
+        $fxConversionService = app(FXConversionService::class);
+        $fxData = $fxConversionService->convertAmount(
+            $expenseData['Currency Code'],
+            abs($amount), // Pass absolute value for FX calculation
+            $expenseDate,
+            $upload->client_id
+        );
+
+        // Create the expense record
+        $expense = PocketExpense::create([
+            'uuid' => Str::uuid()->toString(),
+            'user_id' => $upload->user_id,
+            'client_id' => $upload->client_id,
+            'date' => $expenseDate,
+            'merchant_name' => substr($expenseData['Merchant Name'], 0, 180), // Enforce VARCHAR(180) limit
+            'merchant_description' => $expenseData['Description'] ?? null,
+            'expense_type' => $expenseTypeId,
+            'currency' => strtoupper($expenseData['Currency Code']),
+            'amount' => $amount,
+            'merchant_address' => $expenseData['Merchant Address'] ?? null,
+            'vat_amount' => $vatAmount,
+            'notes' => $this->sanitizeNotes($expenseData['Notes'] ?? null),
+            'status' => 'submitted', // CSV uploads go directly to submitted status
+            'created_by_user_id' => $upload->created_by_user_id,
+            'updated_by_user_id' => $upload->created_by_user_id,
+            'approved_by_user_id' => null,
+            'create_time' => now(),
+            'update_time' => now(),
+            'deleted' => false,
+            'delete_time' => null,
+        ]);
+
+        Log::debug("Created expense record", [
+            'expense_id' => $expense->id,
+            'expense_uuid' => $expense->uuid,
+            'upload_id' => $this->uploadId,
+            'amount' => $amount,
+            'currency' => $expense->currency
+        ]);
+
+        return $expense;
+    }
+
+    /**
+     * Create expense metadata for the expense source.
+     *
+     * @param PocketExpense $expense
+     * @param array $expenseData
+     * @param array $expenseSources
+     * @param PocketExpenseFileUpload $upload
+     * @return void
+     */
+    private function createExpenseMetadata(PocketExpense $expense, array $expenseData, array $expenseSources, PocketExpenseFileUpload $upload): void
+    {
+        $sourceName = $expenseData['Source'];
+        $expenseSourceId = $expenseSources[$sourceName];
+
+        // Prepare details JSON for the metadata
+        $detailsJson = [
+            'import_source' => 'csv_upload',
+            'import_date' => now()->toISOString(),
+            'original_line_number' => $expenseData['_line_number'] ?? null,
+        ];
+
+        // Add source note if provided (required for 'Other' source)
+        if (!empty($expenseData['Source Note'])) {
+            $detailsJson['source_note'] = trim($expenseData['Source Note']);
+        }
+
+        // Create the metadata record
+        PocketExpenseMetadata::create([
+            'pocket_expense_id' => $expense->id,
+            'metadata_type' => 'expense_source',
+            'transaction_category_id' => null,
+            'tracking_code_id' => null,
+            'project_id' => null,
+            'file_store_id' => null,
+            'expense_source_id' => $expenseSourceId,
+            'additional_field_id' => null,
+            'user_id' => $upload->user_id,
+            'details_json' => $detailsJson,
+            'create_time' => now(),
+            'update_time' => now(),
+            'deleted' => false,
+            'delete_time' => null,
+        ]);
+
+        Log::debug("Created expense metadata", [
+            'expense_id' => $expense->id,
+            'source_name' => $sourceName,
+            'expense_source_id' => $expenseSourceId,
+            'upload_id' => $this->uploadId
+        ]);
+    }
+
+    /**
+     * Parse date from DD/MM/YYYY format to Y-m-d format.
+     *
+     * @param string $dateString
+     * @return string
+     * @throws Exception
+     */
+    private function parseDate(string $dateString): string
+    {
+        // Handle both DD/MM/YYYY and DD-MM-YYYY formats
+        $dateString = str_replace('-', '/', trim($dateString));
+        
+        try {
+            $date = Carbon::createFromFormat('d/m/Y', $dateString);
+            
+            // Validate date is not older than 3 years
+            $threeYearsAgo = Carbon::now()->subYears(3);
+            if ($date->lt($threeYearsAgo)) {
+                throw new Exception("Date is older than 3 years: {$dateString}");
+            }
+            
+            return $date->format('Y-m-d');
+            
+        } catch (Throwable $exception) {
+            throw new Exception("Invalid date format: {$dateString}. Expected DD/MM/YYYY");
+        }
+    }
+
+    /**
+     * Sanitize notes field to prevent SQL injection and enforce length limits.
+     *
+     * @param string|null $notes
+     * @return string|null
+     */
+    private function sanitizeNotes(?string $notes): ?string
+    {
+        if (empty($notes)) {
+            return null;
+        }
+
+        // Trim whitespace
+        $notes = trim($notes);
+        
+        // Basic HTML/SQL injection prevention (strip tags)
+        $notes = strip_tags($notes);
+        
+        // Enforce database TEXT field practical limit (adjust based on actual DB config)
+        // Most MySQL TEXT fields can handle 65,535 characters, but we'll be conservative
+        if (strlen($notes) > 5000) {
+            $notes = substr($notes, 0, 5000);
+        }
+        
+        return $notes;
+    }
+
+    /**
+     * Update the upload record status.
+     *
+     * @param string $status
+     * @param \Carbon\Carbon|null $processedAt
+     * @return void
+     */
+    private function updateUploadStatus(string $status, ?Carbon $processedAt = null): void
+    {
+        $updateData = [
+            'status' => $status,
+            'updated_at' => now(),
+        ];
+
+        if ($processedAt) {
+            $updateData['processed_at'] = $processedAt;
+        }
+
+        PocketExpenseFileUpload::where('id', $this->uploadId)->update($updateData);
+
+        Log::debug("Updated upload status", [
+            'upload_id' => $this->uploadId,
+            'status' => $status,
+            'processed_at' => $processedAt?->toISOString()
+        ]);
+    }
+
+    /**
+     * Handle job failure.
+     *
      * @param Throwable $exception
      * @return void
      */
     public function failed(Throwable $exception): void
     {
-        Log::critical('Expense upload processing job failed permanently', [
-            'upload_id' => $this->upload->id,
-            'error' => $exception->getMessage(),
+        Log::error("ProcessExpenseUpload job failed permanently", [
+            'upload_id' => $this->uploadId,
             'attempts' => $this->attempts(),
-            'max_tries' => $this->tries,
+            'error' => $exception->getMessage(),
+            'trace' => $exception->getTraceAsString()
         ]);
 
-        $this->handleJobFailure(new Exception($exception->getMessage(), $exception->getCode(), $exception));
-        
-        // TODO: Send notification to admin users about permanent job failure
-        // This requires clarification of notification mechanism and admin user identification
+        // Update upload status to failed
+        $this->updateUploadStatus('sync_failed');
+
+        // Update all pending upload data rows to failed status
+        PocketExpenseUploadsData::where('upload_id', $this->uploadId)
+            ->where('status', 'pending')
+            ->update([
+                'status' => 'failed',
+                'error_message' => 'Job failed after maximum retry attempts: ' . $exception->getMessage()
+            ]);
     }
 
     /**
-     * Get the tags that should be assigned to the job
+     * Determine if the job should be retried based on the exception.
+     *
+     * @param Throwable $exception
+     * @return bool
+     */
+    public function retryUntil(): Carbon
+    {
+        // Retry for up to 1 hour from first attempt
+        return now()->addHour();
+    }
+
+    /**
+     * Calculate the number of seconds to wait before retrying the job.
+     *
+     * @return int
+     */
+    public function backoff(): int
+    {
+        // Exponential backoff: 30 seconds, 60 seconds, 120 seconds
+        return 30 * pow(2, $this->attempts() - 1);
+    }
+
+    /**
+     * Get the tags that should be assigned to the job.
      *
      * @return array
      */
     public function tags(): array
     {
         return [
-            'upload:' . $this->upload->id,
-            'client:' . $this->upload->client_id,
-            'user:' . $this->upload->user_id,
-            'expense-processing',
+            'expense-upload',
+            'upload:' . $this->uploadId,
+            'processing'
         ];
     }
 
     /**
-     * Calculate the number of seconds to wait before retrying the job
-     *
-     * @return int
-     */
-    public function backoff(): int
-    {
-        // Exponential backoff: 10 seconds, then 30 seconds, then 90 seconds
-        return [10, 30, 90][$this->attempts() - 1] ?? 90;
-    }
-
-    /**
-     * Determine if the job should be retried based on the exception
-     *
-     * @param Exception $exception
-     * @return bool
-     */
-    public function retryUntil(): \DateTime
-    {
-        // Retry for up to 1 hour after the job was initially queued
-        return now()->addHour();
-    }
-
-    /**
-     * Get the unique ID for the job (prevents duplicate processing)
+     * Get the unique ID for the job (prevent duplicate processing).
      *
      * @return string
      */
     public function uniqueId(): string
     {
-        return 'process-expense-upload-' . $this->upload->id;
+        return 'process-expense-upload-' . $this->uploadId;
+    }
+
+    /**
+     * The unique lock will be released automatically when the job completes.
+     * This prevents multiple instances of the same upload from being processed simultaneously.
+     *
+     * @return int
+     */
+    public function uniqueFor(): int
+    {
+        return 3600; // Lock for 1 hour
     }
 }

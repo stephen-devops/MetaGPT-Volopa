@@ -35,8 +35,9 @@ SYSTEM_CONSTRAINTS = ActionNode(
                 "  - Permissions, identity checks, tenancy and hierarchy\n"
                 "  - Timestamp patterns, conventions and variants\n"
                 "  - Exact default data records existing on feature activation\n"
-                "  - Coding standards, constants and code quality\n"
-                "  - Numeric standards or file-based constraints, limits and thresholds\n\n"
+                "  - Coding standards, quality, sequence flows, dependencies, data types and data enumerations\n"
+                "  - Numeric standards, limits and thresholds or file-based constraints\n"
+                "  - Database engine, charset, collation, soft-delete variants per table, and schema-level conventions\n\n"
                 "Include both required practises and prohibited patterns derived from the input YAML context. "
                 "Each constraint must be a single, actionable statement.",
     example=[
@@ -49,6 +50,8 @@ SYSTEM_CONSTRAINTS = ActionNode(
         "All API routes must use Oauth2 client middleware",
         "Create ONE Migration and ONE Factory per new data table schema",
         "Numeric columns use the exact DECIMAL precision specified per column in the schema",
+        "All new tables must use InnoDB engine, utf8mb4 charset and collation",
+        "Table X uses flag-based soft delete (deleted + delete_time); Table Y uses Laravel SoftDeletes (deleted_at)",
     ],
 )
 

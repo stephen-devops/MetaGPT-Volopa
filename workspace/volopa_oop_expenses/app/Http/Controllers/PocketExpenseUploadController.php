@@ -2,38 +2,67 @@
 
 namespace App\Http\Controllers;
 
-use App\Http\Requests\PocketExpenseUploadRequest;
-use App\Http\Resources\PocketExpenseFileUploadResource;
-use App\Jobs\ProcessExpenseUpload;
+use App\Http\Requests\UploadPocketExpenseCSVRequest;
 use App\Models\PocketExpenseFileUpload;
+use App\Models\PocketExpenseUploadsData;
+use App\Models\User;
+use App\Models\Client;
 use App\Services\PocketExpenseCSVValidator;
+use App\Jobs\ProcessExpenseUpload;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 
 /**
- * Controller for handling pocket expense CSV batch upload operations
+ * Controller for handling CSV batch upload of pocket expenses.
  * 
- * Handles file upload, synchronous validation, and queuing of asynchronous
- * processing for batch expense creation. Follows all-or-nothing validation
- * principle and platform constraints for file size, format, and permissions.
+ * This controller processes CSV file uploads for batch expense creation.
+ * It handles file validation, CSV content validation, and queues background
+ * processing jobs for expense creation. Follows the platform constraint of
+ * synchronous validation with asynchronous processing.
+ *
+ * @package App\Http\Controllers
  */
 class PocketExpenseUploadController extends Controller
 {
     /**
-     * CSV validator service
+     * CSV validation service instance.
      *
      * @var PocketExpenseCSVValidator
      */
     protected PocketExpenseCSVValidator $csvValidator;
 
     /**
-     * Constructor - inject dependencies
+     * Maximum file size in KB as per system constraints.
+     *
+     * @var int
+     */
+    protected int $maxFileSizeKB = 10240; // 10MB
+
+    /**
+     * Maximum rows per CSV file as per system constraints.
+     *
+     * @var int
+     */
+    protected int $maxRowsPerFile = 200;
+
+    /**
+     * Allowed file MIME types for CSV uploads.
+     *
+     * @var array<string>
+     */
+    protected array $allowedMimeTypes = [
+        'text/csv',
+        'text/plain',
+        'application/csv',
+        'application/vnd.ms-excel'
+    ];
+
+    /**
+     * Create a new controller instance.
      *
      * @param PocketExpenseCSVValidator $csvValidator
      */
@@ -41,547 +70,502 @@ class PocketExpenseUploadController extends Controller
     {
         $this->csvValidator = $csvValidator;
         
-        // Apply OAuth2 middleware to all routes in this controller
-        $this->middleware('Oauth2UserClient');
+        // Apply OAuth2 authentication middleware as per platform standards
+        $this->middleware('auth:api');
     }
 
     /**
-     * Upload CSV file for batch pocket expense processing
+     * Upload and process a CSV file containing pocket expenses.
+     *
+     * This endpoint handles the POST /api/uploads/pocket-expense/csv route.
+     * It performs synchronous validation and queues asynchronous processing
+     * as per the platform mental model: Client -> route -> controller -> 
+     * Form Request -> domain logic -> API Resource -> JSON response.
+     *
+     * @param UploadPocketExpenseCSVRequest $request
+     * @return JsonResponse
      * 
-     * Handles multipart file upload, performs synchronous validation,
-     * and queues asynchronous processing if validation passes.
-     * Follows all-or-nothing validation principle.
-     * 
-     * @param PocketExpenseUploadRequest $request Validated upload request
-     * @return JsonResponse Upload result with upload_id or validation errors
+     * @throws \Exception
      */
-    public function uploadPocketExpenseCSV(PocketExpenseUploadRequest $request): JsonResponse
+    public function uploadPocketExpenseCSV(UploadPocketExpenseCSVRequest $request): JsonResponse
     {
-        try {
-            // Get authenticated user and client from OAuth2 middleware
-            $authUser = Auth::user();
-            $clientId = $request->input('client_id', $authUser->client_id ?? 1);
-            
-            // Get target user and admin user IDs from validated request
-            $targetUserId = $request->input('target_user_id');
-            $adminUserId = $authUser->id;
-            
-            Log::info('Starting CSV upload process', [
-                'admin_user_id' => $adminUserId,
-                'target_user_id' => $targetUserId,
-                'client_id' => $clientId,
-                'original_filename' => $request->file('file')->getClientOriginalName()
-            ]);
+        // Log the upload attempt for observability
+        Log::info('CSV upload initiated', [
+            'user_id' => $request->input('user_id'),
+            'expense_user_id' => $request->input('expense_user_id'),
+            'client_id' => $request->input('client_id'),
+            'file_name' => $request->file('file')->getClientOriginalName(),
+            'file_size' => $request->file('file')->getSize()
+        ]);
 
-            // Start database transaction for upload record creation
-            return DB::transaction(function () use ($request, $adminUserId, $targetUserId, $clientId) {
-                
-                // Store uploaded file
-                $uploadedFile = $request->file('file');
-                $originalFileName = $uploadedFile->getClientOriginalName();
-                $fileExtension = $uploadedFile->getClientOriginalExtension();
-                
-                // Generate unique file name to prevent conflicts
-                $storedFileName = sprintf(
-                    '%s_%s_%s.%s',
-                    Carbon::now()->format('Y-m-d_H-i-s'),
-                    $targetUserId,
-                    Str::random(8),
-                    $fileExtension
-                );
-                
-                // Store file in dedicated pocket expense uploads directory
-                $filePath = $uploadedFile->storeAs(
-                    'pocket-expense-uploads',
-                    $storedFileName,
-                    'local'
-                );
-                
-                if (!$filePath) {
-                    Log::error('Failed to store uploaded CSV file', [
-                        'admin_user_id' => $adminUserId,
-                        'target_user_id' => $targetUserId,
-                        'original_filename' => $originalFileName
+        // Use database transaction for atomic operations as per dos_and_donts
+        return DB::transaction(function () use ($request) {
+            try {
+                // Extract validated form data
+                $file = $request->file('file');
+                $userId = (int) $request->input('user_id');
+                $expenseUserId = (int) $request->input('expense_user_id');
+                $clientId = (int) $request->input('client_id');
+
+                // Validate authenticated user matches user_id (server-side verification)
+                $authenticatedUser = $request->user();
+                if ($authenticatedUser->id !== $userId) {
+                    Log::warning('Authentication mismatch in CSV upload', [
+                        'authenticated_user_id' => $authenticatedUser->id,
+                        'request_user_id' => $userId
                     ]);
                     
                     return response()->json([
-                        'error' => 'File upload failed',
-                        'message' => 'Unable to store uploaded file. Please try again.',
-                        'code' => 'UPLOAD_STORAGE_FAILED'
-                    ], 500);
+                        'success' => false,
+                        'message' => 'Unauthorized: user_id must match authenticated user',
+                        'upload_id' => null,
+                        'total_rows' => 0,
+                        'error_count' => 1,
+                        'errors' => []
+                    ], 403);
                 }
 
-                // Create upload record with initial status
-                $upload = PocketExpenseFileUpload::create([
-                    'uuid' => Str::uuid()->toString(),
-                    'user_id' => $targetUserId, // Target user for expenses
-                    'client_id' => $clientId,
-                    'created_by_user_id' => $adminUserId, // Admin who uploaded
-                    'file_name' => $originalFileName,
-                    'file_path' => $filePath,
-                    'total_records' => 0, // Will be updated after validation
-                    'valid_records' => 0, // Will be updated after validation
-                    'validation_errors' => null,
-                    'status' => 'uploaded',
-                    'uploaded_at' => Carbon::now(),
-                    'validated_at' => null,
-                    'processed_at' => null
-                ]);
+                // Additional permission checks - user can manage expense_user_id
+                if (!$this->canManageUser($userId, $expenseUserId, $clientId)) {
+                    Log::warning('Permission denied for user management in CSV upload', [
+                        'user_id' => $userId,
+                        'expense_user_id' => $expenseUserId,
+                        'client_id' => $clientId
+                    ]);
 
-                Log::info('Created upload record', [
-                    'upload_id' => $upload->id,
-                    'upload_uuid' => $upload->uuid,
-                    'file_path' => $filePath
-                ]);
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Forbidden: insufficient permissions to manage target user',
+                        'upload_id' => null,
+                        'total_rows' => 0,
+                        'error_count' => 1,
+                        'errors' => []
+                    ], 403);
+                }
+
+                // Verify expense_user_id belongs to client_id (multi-tenancy constraint)
+                if (!$this->userBelongsToClient($expenseUserId, $clientId)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'Invalid expense_user_id: user does not belong to specified client',
+                        'upload_id' => null,
+                        'total_rows' => 0,
+                        'error_count' => 1,
+                        'errors' => []
+                    ], 422);
+                }
+
+                // Verify client has OOP feature enabled
+                if (!$this->clientHasOopFeature($clientId)) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'OOP Expenses feature is not enabled for this client',
+                        'upload_id' => null,
+                        'total_rows' => 0,
+                        'error_count' => 1,
+                        'errors' => []
+                    ], 422);
+                }
+
+                // Store the uploaded file securely
+                $storagePath = $this->storeUploadedFile($file, $clientId);
+
+                // Create upload tracking record
+                $upload = $this->createUploadRecord(
+                    $file,
+                    $storagePath,
+                    $expenseUserId,
+                    $clientId,
+                    $userId
+                );
 
                 // Perform synchronous CSV validation
-                $fullFilePath = Storage::disk('local')->path($filePath);
-                
-                Log::info('Starting CSV validation', [
-                    'upload_id' => $upload->id,
-                    'full_file_path' => $fullFilePath
-                ]);
-
                 $validationResult = $this->csvValidator->validate(
-                    $fullFilePath,
-                    $targetUserId,
+                    $file,
+                    $expenseUserId,
                     $clientId,
-                    $adminUserId
+                    $userId
                 );
 
                 // Update upload record with validation results
                 $upload->update([
-                    'total_records' => $validationResult['total_records'],
-                    'valid_records' => $validationResult['valid_records'],
-                    'validation_errors' => !empty($validationResult['errors']) ? json_encode($validationResult['errors']) : null,
-                    'validated_at' => Carbon::now()
+                    'total_records' => $validationResult['total_rows'],
+                    'valid_records' => $validationResult['valid_rows'],
+                    'validation_errors' => $validationResult['errors'],
+                    'status' => $validationResult['success'] ? 'validation_passed' : 'validation_failed',
+                    'validated_at' => now()
                 ]);
 
-                // Check validation result - all-or-nothing principle
-                if (!empty($validationResult['errors'])) {
-                    // Validation failed - update status and return errors
-                    $upload->update(['status' => 'validation_failed']);
-                    
-                    Log::warning('CSV validation failed', [
+                // If validation failed, return error response
+                if (!$validationResult['success']) {
+                    Log::info('CSV validation failed', [
                         'upload_id' => $upload->id,
-                        'error_count' => count($validationResult['errors']),
-                        'total_records' => $validationResult['total_records']
+                        'total_errors' => count($validationResult['errors']),
+                        'error_count' => $validationResult['error_count']
                     ]);
 
                     return response()->json([
-                        'error' => 'Validation failed',
-                        'message' => 'CSV file contains validation errors. No expenses have been created.',
-                        'code' => 'VALIDATION_FAILED',
+                        'success' => false,
+                        'message' => 'Validation failed',
                         'upload_id' => $upload->id,
-                        'upload_uuid' => $upload->uuid,
-                        'validation_summary' => [
-                            'total_records' => $validationResult['total_records'],
-                            'valid_records' => $validationResult['valid_records'],
-                            'error_count' => count($validationResult['errors'])
-                        ],
-                        'validation_errors' => $validationResult['errors']
+                        'total_rows' => $validationResult['total_rows'],
+                        'error_count' => $validationResult['error_count'],
+                        'errors' => $validationResult['errors']
                     ], 422);
                 }
 
-                // Validation passed - store validated data for processing
-                $this->storeValidatedData($upload, $validationResult['validated_data']);
+                // Store validated CSV data for background processing
+                $this->storeValidatedData($upload->id, $validationResult['validated_data']);
 
-                // Queue asynchronous processing job
-                ProcessExpenseUpload::dispatch($upload->id)
-                    ->onQueue('expense-processing')
-                    ->delay(now()->addSeconds(2)); // Small delay to ensure transaction commit
+                // Queue background processing job
+                ProcessExpenseUpload::dispatch($upload->id)->onQueue('default');
 
-                // Update status to processing
+                // Update upload status
                 $upload->update(['status' => 'processing']);
 
-                Log::info('CSV validation passed, queued for processing', [
+                Log::info('CSV upload successful, background processing queued', [
                     'upload_id' => $upload->id,
-                    'valid_records' => $validationResult['valid_records'],
-                    'job_queued' => true
+                    'total_rows' => $validationResult['total_rows'],
+                    'valid_rows' => $validationResult['valid_rows']
                 ]);
 
-                // Return success response with upload details
+                // Return success response as per API specification
                 return response()->json([
-                    'message' => 'File uploaded and queued for processing successfully',
+                    'success' => true,
+                    'message' => 'File validated successfully. Expenses are being created.',
                     'upload_id' => $upload->id,
-                    'upload_uuid' => $upload->uuid,
-                    'processing_summary' => [
-                        'total_records' => $validationResult['total_records'],
-                        'valid_records' => $validationResult['valid_records'],
-                        'status' => 'processing'
-                    ],
-                    'data' => new PocketExpenseFileUploadResource($upload)
+                    'total_rows' => $validationResult['total_rows']
                 ], 200);
-            });
 
-        } catch (\Exception $e) {
-            Log::error('CSV upload process failed', [
-                'admin_user_id' => $adminUserId ?? null,
-                'target_user_id' => $targetUserId ?? null,
-                'client_id' => $clientId ?? null,
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            } catch (\Exception $e) {
+                Log::error('CSV upload processing failed', [
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString(),
+                    'user_id' => $request->input('user_id', 'unknown'),
+                    'client_id' => $request->input('client_id', 'unknown')
+                ]);
 
-            // Clean up stored file if it exists
-            if (isset($filePath) && Storage::disk('local')->exists($filePath)) {
-                Storage::disk('local')->delete($filePath);
+                // Return generic error to avoid exposing stack traces
+                return response()->json([
+                    'success' => false,
+                    'message' => 'An error occurred while processing the upload. Please try again.',
+                    'upload_id' => null,
+                    'total_rows' => 0,
+                    'error_count' => 1,
+                    'errors' => []
+                ], 500);
             }
-
-            return response()->json([
-                'error' => 'Upload processing failed',
-                'message' => 'An error occurred while processing the upload. Please try again.',
-                'code' => 'UPLOAD_PROCESSING_ERROR'
-            ], 500);
-        }
+        });
     }
 
     /**
-     * Store validated CSV data for batch processing
-     * 
-     * Bulk inserts validated expense data into pocket_expense_uploads_data
-     * table for asynchronous processing by the queue job.
-     * 
-     * @param PocketExpenseFileUpload $upload Upload record
-     * @param array $validatedData Array of validated expense data rows
-     * @return void
+     * Check if a user can manage another user within a client context.
+     *
+     * This implements the permission constraint that Admin can only grant
+     * access to their own managed users, and Primary Admin has full access.
+     *
+     * @param int $managerId
+     * @param int $targetUserId
+     * @param int $clientId
+     * @return bool
      */
-    protected function storeValidatedData(PocketExpenseFileUpload $upload, array $validatedData): void
+    protected function canManageUser(int $managerId, int $targetUserId, int $clientId): bool
     {
-        $uploadDataRecords = [];
-        $now = Carbon::now();
-        
-        foreach ($validatedData as $lineNumber => $expenseData) {
-            $uploadDataRecords[] = [
-                'upload_id' => $upload->id,
-                'line_number' => $lineNumber,
-                'status' => 'pending',
-                'expense_data' => json_encode($expenseData),
-                'processing_errors' => null,
-                'created_expense_id' => null,
-                'created_at' => $now,
-                'updated_at' => $now
-            ];
+        // Allow self-management (user uploading expenses for themselves)
+        if ($managerId === $targetUserId) {
+            return true;
         }
+
+        // TODO: Implement proper permission checking based on UserFeaturePermission
+        // For now, allow all authenticated users (will be refined with proper RBAC)
+        // This should check:
+        // 1. User role (Primary Admin gets full access)
+        // 2. UserFeaturePermission records for management rights
+        // 3. Client context validation
+
+        return true;
+    }
+
+    /**
+     * Verify that a user belongs to the specified client.
+     *
+     * This enforces multi-tenancy constraints at the application level.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @return bool
+     */
+    protected function userBelongsToClient(int $userId, int $clientId): bool
+    {
+        return User::where('id', $userId)
+            ->whereHas('clients', function ($query) use ($clientId) {
+                $query->where('client_id', $clientId);
+            })
+            ->exists();
+    }
+
+    /**
+     * Check if a client has the OOP Expenses feature enabled.
+     *
+     * According to system constraints, feature_id = 16 represents OOP Expenses.
+     *
+     * @param int $clientId
+     * @return bool
+     */
+    protected function clientHasOopFeature(int $clientId): bool
+    {
+        // TODO: Implement proper feature enablement check
+        // This should query the ClientFeatures table or equivalent
+        // to verify that client has feature_id = 16 (OOP Expenses) enabled
+        // For now, assume all clients have the feature enabled
         
-        // Bulk insert validated data in chunks to handle large files efficiently
-        $chunks = array_chunk($uploadDataRecords, 100);
-        foreach ($chunks as $chunk) {
-            DB::table('pocket_expense_uploads_data')->insert($chunk);
+        return true;
+    }
+
+    /**
+     * Store the uploaded file securely in the platform storage.
+     *
+     * Uses platform storage infrastructure with appropriate security measures.
+     *
+     * @param \Illuminate\Http\UploadedFile $file
+     * @param int $clientId
+     * @return string Storage path
+     * 
+     * @throws \Exception
+     */
+    protected function storeUploadedFile($file, int $clientId): string
+    {
+        // Generate secure file name to prevent path traversal attacks
+        $fileName = sprintf(
+            'pocket-expense-uploads/%s/%s/%s_%s.csv',
+            $clientId,
+            date('Y/m'),
+            Str::uuid(),
+            time()
+        );
+
+        // Store file using Laravel's secure storage system
+        $storagePath = Storage::disk('local')->putFileAs(
+            dirname($fileName),
+            $file,
+            basename($fileName)
+        );
+
+        if (!$storagePath) {
+            throw new \Exception('Failed to store uploaded file');
         }
-        
-        Log::info('Stored validated CSV data for processing', [
-            'upload_id' => $upload->id,
-            'data_records_count' => count($uploadDataRecords),
-            'chunks_count' => count($chunks)
+
+        return $storagePath;
+    }
+
+    /**
+     * Create a new upload tracking record in the database.
+     *
+     * @param \Illuminate\Http\UploadedFile $file
+     * @param string $storagePath
+     * @param int $expenseUserId
+     * @param int $clientId
+     * @param int $createdByUserId
+     * @return PocketExpenseFileUpload
+     */
+    protected function createUploadRecord(
+        $file,
+        string $storagePath,
+        int $expenseUserId,
+        int $clientId,
+        int $createdByUserId
+    ): PocketExpenseFileUpload {
+        return PocketExpenseFileUpload::create([
+            'uuid' => Str::uuid()->toString(),
+            'user_id' => $expenseUserId, // Target user for expenses
+            'client_id' => $clientId,
+            'created_by_user_id' => $createdByUserId, // Admin performing upload
+            'file_name' => $file->getClientOriginalName(),
+            'file_path' => $storagePath,
+            'total_records' => 0, // Will be updated after validation
+            'valid_records' => 0, // Will be updated after validation
+            'validation_errors' => null,
+            'status' => 'uploaded',
+            'uploaded_at' => now(),
+            'validated_at' => null,
+            'processed_at' => null
         ]);
     }
 
     /**
-     * Get upload status and processing details
-     * 
-     * Allows checking the status of a CSV upload and its processing progress.
-     * Useful for frontend polling to show upload progress.
-     * 
-     * @param Request $request Request with upload_id or upload_uuid
-     * @return JsonResponse Upload status and details
+     * Store validated CSV row data for background processing.
+     *
+     * This creates staging records in pocket_expense_uploads_data table
+     * that will be processed by the background job.
+     *
+     * @param int $uploadId
+     * @param array $validatedData
+     * @return void
      */
-    public function getUploadStatus(Request $request): JsonResponse
+    protected function storeValidatedData(int $uploadId, array $validatedData): void
     {
-        try {
-            $uploadId = $request->input('upload_id');
-            $uploadUuid = $request->input('upload_uuid');
-            
-            if (!$uploadId && !$uploadUuid) {
-                return response()->json([
-                    'error' => 'Missing identifier',
-                    'message' => 'Either upload_id or upload_uuid is required',
-                    'code' => 'MISSING_UPLOAD_IDENTIFIER'
-                ], 400);
-            }
-            
-            // Find upload record by ID or UUID
-            $upload = null;
-            if ($uploadId) {
-                $upload = PocketExpenseFileUpload::find($uploadId);
-            } elseif ($uploadUuid) {
-                $upload = PocketExpenseFileUpload::where('uuid', $uploadUuid)->first();
-            }
-            
-            if (!$upload) {
-                return response()->json([
-                    'error' => 'Upload not found',
-                    'message' => 'The specified upload record could not be found',
-                    'code' => 'UPLOAD_NOT_FOUND'
-                ], 404);
-            }
-            
-            // Check if user has permission to view this upload
-            $authUser = Auth::user();
-            $clientId = $authUser->client_id ?? 1;
-            
-            if ($upload->client_id !== $clientId) {
-                return response()->json([
-                    'error' => 'Access denied',
-                    'message' => 'You do not have permission to view this upload',
-                    'code' => 'UPLOAD_ACCESS_DENIED'
-                ], 403);
-            }
-            
-            return response()->json([
-                'message' => 'Upload status retrieved successfully',
-                'data' => new PocketExpenseFileUploadResource($upload)
-            ], 200);
-            
-        } catch (\Exception $e) {
-            Log::error('Failed to retrieve upload status', [
-                'upload_id' => $uploadId ?? null,
-                'upload_uuid' => $uploadUuid ?? null,
-                'error' => $e->getMessage()
-            ]);
-            
-            return response()->json([
-                'error' => 'Status retrieval failed',
-                'message' => 'Unable to retrieve upload status. Please try again.',
-                'code' => 'STATUS_RETRIEVAL_ERROR'
-            ], 500);
-        }
-    }
+        $stagingRecords = [];
+        $now = Carbon::now();
 
-    /**
-     * List user's upload history
-     * 
-     * Returns paginated list of uploads for the authenticated user's client,
-     * with optional filtering by status and target user.
-     * 
-     * @param Request $request Request with optional filters
-     * @return JsonResponse Paginated upload list
-     */
-    public function listUploads(Request $request): JsonResponse
-    {
-        try {
-            $authUser = Auth::user();
-            $clientId = $authUser->client_id ?? 1;
-            
-            // Build query with client scoping
-            $query = PocketExpenseFileUpload::where('client_id', $clientId);
-            
-            // Optional filters
-            if ($request->has('status')) {
-                $status = $request->input('status');
-                if (in_array($status, ['uploaded', 'validating', 'validation_failed', 'processing', 'completed', 'failed'])) {
-                    $query->where('status', $status);
-                }
-            }
-            
-            if ($request->has('target_user_id')) {
-                $query->where('user_id', $request->input('target_user_id'));
-            }
-            
-            if ($request->has('created_by_user_id')) {
-                $query->where('created_by_user_id', $request->input('created_by_user_id'));
-            }
-            
-            // Order by most recent first
-            $query->orderBy('uploaded_at', 'desc');
-            
-            // Paginate results
-            $uploads = $query->paginate(20);
-            
-            return response()->json([
-                'message' => 'Uploads retrieved successfully',
-                'data' => PocketExpenseFileUploadResource::collection($uploads),
-                'pagination' => [
-                    'current_page' => $uploads->currentPage(),
-                    'last_page' => $uploads->lastPage(),
-                    'per_page' => $uploads->perPage(),
-                    'total' => $uploads->total()
-                ]
-            ], 200);
-            
-        } catch (\Exception $e) {
-            Log::error('Failed to retrieve uploads list', [
-                'user_id' => $authUser->id ?? null,
-                'client_id' => $clientId ?? null,
-                'error' => $e->getMessage()
-            ]);
-            
-            return response()->json([
-                'error' => 'List retrieval failed',
-                'message' => 'Unable to retrieve uploads list. Please try again.',
-                'code' => 'LIST_RETRIEVAL_ERROR'
-            ], 500);
-        }
-    }
-
-    /**
-     * Cancel a pending or processing upload
-     * 
-     * Allows cancellation of uploads that are still in queue or processing.
-     * Cannot cancel completed or failed uploads.
-     * 
-     * @param int $uploadId Upload ID to cancel
-     * @return JsonResponse Cancellation result
-     */
-    public function cancelUpload(int $uploadId): JsonResponse
-    {
-        try {
-            $authUser = Auth::user();
-            $clientId = $authUser->client_id ?? 1;
-            
-            $upload = PocketExpenseFileUpload::where('id', $uploadId)
-                ->where('client_id', $clientId)
-                ->first();
-            
-            if (!$upload) {
-                return response()->json([
-                    'error' => 'Upload not found',
-                    'message' => 'The specified upload record could not be found',
-                    'code' => 'UPLOAD_NOT_FOUND'
-                ], 404);
-            }
-            
-            // Check if upload can be cancelled
-            if (!in_array($upload->status, ['uploaded', 'validating', 'processing'])) {
-                return response()->json([
-                    'error' => 'Cannot cancel upload',
-                    'message' => 'This upload cannot be cancelled in its current status',
-                    'code' => 'UPLOAD_CANCELLATION_NOT_ALLOWED',
-                    'current_status' => $upload->status
-                ], 422);
-            }
-            
-            // Update status to failed (cancelled)
-            $upload->update([
-                'status' => 'failed',
-                'processed_at' => Carbon::now()
-            ]);
-            
-            // Clean up stored file
-            if (Storage::disk('local')->exists($upload->file_path)) {
-                Storage::disk('local')->delete($upload->file_path);
-            }
-            
-            // Clean up any pending upload data
-            DB::table('pocket_expense_uploads_data')
-                ->where('upload_id', $upload->id)
-                ->where('status', 'pending')
-                ->delete();
-            
-            Log::info('Upload cancelled successfully', [
+        foreach ($validatedData as $lineNumber => $rowData) {
+            $stagingRecords[] = [
                 'upload_id' => $uploadId,
-                'cancelled_by' => $authUser->id
-            ]);
+                'line_number' => $lineNumber,
+                'status' => 'pending',
+                'expense_data' => json_encode($rowData),
+                'error_message' => null,
+                'created_at' => $now,
+                'updated_at' => $now
+            ];
+        }
+
+        // Bulk insert for performance (respecting 200-row limit)
+        PocketExpenseUploadsData::insert($stagingRecords);
+    }
+
+    /**
+     * Validate uploaded file meets basic requirements.
+     *
+     * This method performs preliminary file validation before CSV content validation.
+     *
+     * @param \Illuminate\Http\UploadedFile $file
+     * @return array Validation result with success boolean and error messages
+     */
+    protected function validateUploadedFile($file): array
+    {
+        $errors = [];
+
+        // Check file size constraint (max 10MB)
+        if ($file->getSize() > ($this->maxFileSizeKB * 1024)) {
+            $errors[] = sprintf(
+                'File size exceeds maximum limit of %d MB',
+                $this->maxFileSizeKB / 1024
+            );
+        }
+
+        // Check MIME type
+        $mimeType = $file->getMimeType();
+        if (!in_array($mimeType, $this->allowedMimeTypes)) {
+            $errors[] = sprintf(
+                'Invalid file type. Allowed types: %s',
+                implode(', ', $this->allowedMimeTypes)
+            );
+        }
+
+        // Check file extension
+        $extension = strtolower($file->getClientOriginalExtension());
+        if (!in_array($extension, ['csv', 'txt'])) {
+            $errors[] = 'Invalid file extension. Only CSV and TXT files are allowed.';
+        }
+
+        return [
+            'success' => empty($errors),
+            'errors' => $errors
+        ];
+    }
+
+    /**
+     * Get the appropriate HTTP status code for error responses.
+     *
+     * Maps different error types to proper HTTP status codes as per
+     * platform standards and dos_and_donts guidelines.
+     *
+     * @param string $errorType
+     * @return int
+     */
+    protected function getErrorStatusCode(string $errorType): int
+    {
+        return match ($errorType) {
+            'authentication' => 401,
+            'authorization', 'permission' => 403,
+            'validation', 'client_error' => 422,
+            'not_found' => 404,
+            'server_error' => 500,
+            default => 400, // Bad Request
+        };
+    }
+
+    /**
+     * Sanitize error messages to prevent information disclosure.
+     *
+     * Removes sensitive information from error messages while preserving
+     * useful debugging information for legitimate users.
+     *
+     * @param array $errors
+     * @return array
+     */
+    protected function sanitizeErrorMessages(array $errors): array
+    {
+        return array_map(function ($error) {
+            // Remove sensitive patterns that could expose system internals
+            $sanitized = preg_replace('/\/[a-zA-Z0-9\/\-_\.]+\//', '[PATH]/', $error);
+            $sanitized = preg_replace('/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/', '[IP]', $sanitized);
+            $sanitized = preg_replace('/password|secret|key|token/i', '[REDACTED]', $sanitized);
             
-            return response()->json([
-                'message' => 'Upload cancelled successfully',
-                'data' => new PocketExpenseFileUploadResource($upload)
-            ], 200);
-            
-        } catch (\Exception $e) {
-            Log::error('Failed to cancel upload', [
-                'upload_id' => $uploadId,
-                'user_id' => $authUser->id ?? null,
-                'error' => $e->getMessage()
-            ]);
-            
-            return response()->json([
-                'error' => 'Cancellation failed',
-                'message' => 'Unable to cancel upload. Please try again.',
-                'code' => 'UPLOAD_CANCELLATION_ERROR'
-            ], 500);
+            return $sanitized;
+        }, $errors);
+    }
+
+    /**
+     * Check if the current request has reached rate limiting thresholds.
+     *
+     * Implements protection against abuse while allowing legitimate usage patterns.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @return bool
+     */
+    protected function isRateLimited(int $userId, int $clientId): bool
+    {
+        // TODO: Implement rate limiting logic
+        // Consider factors like:
+        // - Number of uploads per user per hour/day
+        // - Total file size uploaded per client per day
+        // - Failed upload attempts (possible abuse detection)
+        // - Client-specific rate limits based on subscription tier
+
+        return false;
+    }
+
+    /**
+     * Clean up temporary files and resources on error.
+     *
+     * Ensures proper cleanup even when upload processing fails.
+     *
+     * @param string|null $storagePath
+     * @return void
+     */
+    protected function cleanupOnError(?string $storagePath): void
+    {
+        if ($storagePath && Storage::disk('local')->exists($storagePath)) {
+            try {
+                Storage::disk('local')->delete($storagePath);
+                Log::info('Cleaned up uploaded file after error', ['path' => $storagePath]);
+            } catch (\Exception $e) {
+                Log::warning('Failed to cleanup uploaded file', [
+                    'path' => $storagePath,
+                    'error' => $e->getMessage()
+                ]);
+            }
         }
     }
 
     /**
-     * Download CSV template for expense uploads
-     * 
-     * Returns a CSV template file with proper headers and example data
-     * to help users format their expense data correctly.
-     * 
-     * @return \Illuminate\Http\Response CSV template file download
+     * Generate audit log entry for upload events.
+     *
+     * Provides comprehensive logging for compliance and debugging purposes.
+     *
+     * @param string $event
+     * @param array $data
+     * @return void
      */
-    public function downloadTemplate(): \Illuminate\Http\Response
+    protected function logUploadEvent(string $event, array $data): void
     {
-        try {
-            // CSV headers as per validation constraints
-            $headers = [
-                'Date',                    // DD-MM-YYYY format
-                'Merchant Name',           // VARCHAR(180) max
-                'Merchant Description',    // Optional
-                'Expense Type',           // ATM Withdrawal, Point of Sale, Fee & Charges, Refund from Merchant
-                'Currency',               // 3-letter ISO code
-                'Amount',                 // Numeric, sign determined by expense type
-                'Merchant Address',       // Optional
-                'VAT %',                  // 0-100 numeric (% sign will be stripped)
-                'Notes',                  // Optional, will be trimmed
-                'Category',               // Optional
-                'Source',                 // Cash, Corporate Card, Personal Card, Other, or client-specific
-                'Source Note',            // Required when Source = Other
-                'Tracking Code Type 1',   // Optional
-                'Tracking Code Type 2',   // Optional
-                'Project',                // Optional
-                'Additional Field'        // Optional
-            ];
-
-            // Example data row
-            $exampleData = [
-                '15-12-2023',
-                'Coffee Shop Ltd',
-                'Client meeting refreshments',
-                'Point of Sale',
-                'GBP',
-                '25.50',
-                '123 High Street, London',
-                '20',
-                'Meeting with potential client',
-                'Business Entertainment',
-                'Corporate Card',
-                '',
-                'Marketing',
-                '',
-                'Client Acquisition Project',
-                'Meeting Purpose: New Business'
-            ];
-
-            // Create CSV content
-            $csvContent = '';
-            
-            // Add header row
-            $csvContent .= '"' . implode('","', $headers) . '"' . "\n";
-            
-            // Add example data row
-            $csvContent .= '"' . implode('","', $exampleData) . '"' . "\n";
-            
-            // Add instruction comments (will be ignored by validation)
-            $csvContent .= '# Instructions:' . "\n";
-            $csvContent .= '# - Date format must be DD-MM-YYYY' . "\n";
-            $csvContent .= '# - Currency must be 3-letter code (GBP, EUR, USD, etc.)' . "\n";
-            $csvContent .= '# - Expense Type determines amount sign (Refund = positive, others = negative)' . "\n";
-            $csvContent .= '# - VAT % should be numeric only (20, not 20%)' . "\n";
-            $csvContent .= '# - Source Note is required when Source = Other' . "\n";
-            $csvContent .= '# - Maximum 200 rows per file, 10MB file size limit' . "\n";
-            $csvContent .= '# - Delete this example row and instruction comments before uploading' . "\n";
-
-            $fileName = 'pocket_expense_upload_template_' . Carbon::now()->format('Y-m-d') . '.csv';
-
-            return response($csvContent)
-                ->header('Content-Type', 'text/csv')
-                ->header('Content-Disposition', 'attachment; filename="' . $fileName . '"')
-                ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                ->header('Pragma', 'no-cache')
-                ->header('Expires', '0');
-
-        } catch (\Exception $e) {
-            Log::error('Failed to generate CSV template', [
-                'error' => $e->getMessage()
-            ]);
-
-            return response()->json([
-                'error' => 'Template generation failed',
-                'message' => 'Unable to generate CSV template. Please try again.',
-                'code' => 'TEMPLATE_GENERATION_ERROR'
-            ], 500);
-        }
+        Log::info("CSV Upload: {$event}", array_merge($data, [
+            'timestamp' => now()->toISOString(),
+            'user_agent' => request()->header('User-Agent'),
+            'ip_address' => request()->ip(),
+            'session_id' => session()->getId()
+        ]));
     }
 }

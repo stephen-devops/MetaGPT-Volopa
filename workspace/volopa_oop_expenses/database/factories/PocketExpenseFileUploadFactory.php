@@ -3,16 +3,14 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseFileUpload;
+use App\Models\User;
+use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 /**
- * Factory for PocketExpenseFileUpload model
- * 
- * Generates test data for pocket expense file uploads with proper relationships
- * to users, clients, and realistic CSV upload scenarios. Handles all upload
- * status workflows, file processing statistics, and validation error tracking.
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\PocketExpenseFileUpload>
  */
 class PocketExpenseFileUploadFactory extends Factory
 {
@@ -30,654 +28,711 @@ class PocketExpenseFileUploadFactory extends Factory
      */
     public function definition(): array
     {
-        $now = Carbon::now();
-        $fileName = 'expenses_' . $this->faker->date('Y_m_d') . '_' . $this->faker->numberBetween(1000, 9999) . '.csv';
-        $totalRecords = $this->faker->numberBetween(10, 200);
-        $validRecords = $this->faker->numberBetween(5, $totalRecords);
+        $uploadDate = now()->subDays($this->faker->numberBetween(0, 30));
+        $totalRecords = $this->faker->numberBetween(1, 200); // Within CSV constraint max 200 rows
+        $validRecords = $this->faker->numberBetween(0, $totalRecords);
         
+        // Generate realistic file names for CSV uploads
+        $fileNames = [
+            'expenses_' . now()->format('Ymd') . '.csv',
+            'pocket_expenses_export.csv',
+            'monthly_expenses_' . $this->faker->monthName() . '.csv',
+            'team_expenses_' . $this->faker->dateTime()->format('Y_m_d') . '.csv',
+            'business_expenses.csv',
+            'travel_expenses_Q' . $this->faker->numberBetween(1, 4) . '.csv',
+            'corporate_card_expenses.csv',
+            'employee_expenses_' . $this->faker->numerify('####') . '.csv'
+        ];
+
+        $fileName = $this->faker->randomElement($fileNames);
+        $filePath = 'uploads/pocket-expenses/' . date('Y/m/') . Str::uuid() . '_' . $fileName;
+
+        // Generate validation errors array if there are invalid records
+        $validationErrors = null;
+        if ($validRecords < $totalRecords) {
+            $validationErrors = $this->generateValidationErrors($totalRecords - $validRecords);
+        }
+
         return [
-            // UUID for external references
             'uuid' => Str::uuid()->toString(),
-            
-            // User and client context - default to ID 1, override in tests
-            'user_id' => 1, // Target user for whom expenses will be created
-            'client_id' => 1, // Client context for multi-tenancy
-            'created_by_user_id' => 1, // Admin user who performed the upload
-            
-            // File information
+            'user_id' => User::factory(),
+            'client_id' => Client::factory(),
+            'created_by_user_id' => User::factory(),
             'file_name' => $fileName,
-            'file_path' => 'pocket-expense-uploads/' . date('Y/m/d') . '/' . $fileName,
-            
-            // Processing statistics
+            'file_path' => $filePath,
             'total_records' => $totalRecords,
             'valid_records' => $validRecords,
-            
-            // Validation and error tracking - default to no errors
-            'validation_errors' => null,
-            
-            // Processing status workflow - default to uploaded
-            'status' => 'uploaded',
-            
-            // Processing timestamps
-            'uploaded_at' => $now,
-            'validated_at' => null,
-            'processed_at' => null,
-            
-            // Laravel standard timestamps
-            'created_at' => $now,
-            'updated_at' => $now,
-            
-            // Not soft deleted by default
+            'validation_errors' => $validationErrors,
+            'status' => $this->faker->randomElement([
+                'uploaded',
+                'validation_failed',
+                'validation_passed',
+                'processing',
+                'completed',
+                'failed',
+                'sync_failed'
+            ]),
+            'uploaded_at' => $uploadDate,
+            'validated_at' => $this->faker->optional(0.7)->dateTimeBetween($uploadDate, $uploadDate->copy()->addHours(2)),
+            'processed_at' => $this->faker->optional(0.5)->dateTimeBetween($uploadDate->copy()->addHours(2), $uploadDate->copy()->addHours(6)),
+            'created_at' => $uploadDate,
+            'updated_at' => $uploadDate->copy()->addMinutes($this->faker->numberBetween(1, 180)),
             'deleted_at' => null,
         ];
     }
 
     /**
-     * Configure the factory for uploaded status.
+     * Generate realistic validation errors for CSV upload testing.
+     *
+     * @param int $errorCount
+     * @return array
+     */
+    private function generateValidationErrors(int $errorCount): array
+    {
+        $errors = [];
+        $errorTypes = [
+            ['field' => 'Date', 'error' => 'Date format must be DD/MM/YYYY', 'value' => '2024-01-15'],
+            ['field' => 'Date', 'error' => 'Date cannot be older than 3 years', 'value' => '15/01/2020'],
+            ['field' => 'Expense Type', 'error' => 'Invalid expense type', 'value' => 'Invalid Type'],
+            ['field' => 'Currency Code', 'error' => 'Currency code must be 3-letter ISO format', 'value' => 'DOLLAR'],
+            ['field' => 'Amount', 'error' => 'Amount must be a valid number', 'value' => 'NOT_A_NUMBER'],
+            ['field' => 'VAT %', 'error' => 'VAT % must be between 0-100', 'value' => '150%'],
+            ['field' => 'Merchant Name', 'error' => 'Merchant name is required', 'value' => ''],
+            ['field' => 'Merchant Name', 'error' => 'Merchant name exceeds maximum length of 180 characters', 'value' => str_repeat('A', 200)],
+            ['field' => 'Source', 'error' => 'Source must match configured sources for client', 'value' => 'Unknown Source'],
+            ['field' => 'Source Note', 'error' => 'Source Note is required when Source = Other', 'value' => ''],
+        ];
+
+        for ($i = 0; $i < $errorCount; $i++) {
+            $error = $this->faker->randomElement($errorTypes);
+            $errors[] = [
+                'line_number' => $this->faker->numberBetween(2, 201), // Line 1 is header, so start from 2
+                'field' => $error['field'],
+                'error' => $error['error'],
+                'value' => $error['value']
+            ];
+        }
+
+        return $errors;
+    }
+
+    /**
+     * Create an upload for existing user and client.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @param int $createdByUserId
+     * @return static
+     */
+    public function forUser(int $userId, int $clientId, int $createdByUserId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'created_by_user_id' => $createdByUserId,
+        ]);
+    }
+
+    /**
+     * Create an upload with a specific status.
+     *
+     * @param string $status
+     * @return static
+     */
+    public function withStatus(string $status): static
+    {
+        return $this->state(function (array $attributes) use ($status) {
+            $uploadDate = $attributes['uploaded_at'] ?? now();
+            $timestamps = $this->generateStatusTimestamps($status, $uploadDate);
+            
+            return array_merge(['status' => $status], $timestamps);
+        });
+    }
+
+    /**
+     * Generate appropriate timestamps based on upload status.
+     *
+     * @param string $status
+     * @param \Carbon\Carbon $uploadDate
+     * @return array
+     */
+    private function generateStatusTimestamps(string $status, Carbon $uploadDate): array
+    {
+        $timestamps = [
+            'uploaded_at' => $uploadDate,
+            'validated_at' => null,
+            'processed_at' => null,
+        ];
+
+        switch ($status) {
+            case 'uploaded':
+                // Only upload timestamp
+                break;
+            case 'validation_failed':
+            case 'validation_passed':
+                $timestamps['validated_at'] = $uploadDate->copy()->addMinutes($this->faker->numberBetween(1, 30));
+                break;
+            case 'processing':
+                $timestamps['validated_at'] = $uploadDate->copy()->addMinutes($this->faker->numberBetween(1, 30));
+                break;
+            case 'completed':
+            case 'failed':
+            case 'sync_failed':
+                $timestamps['validated_at'] = $uploadDate->copy()->addMinutes($this->faker->numberBetween(1, 30));
+                $timestamps['processed_at'] = $uploadDate->copy()->addHours($this->faker->numberBetween(1, 6));
+                break;
+        }
+
+        return $timestamps;
+    }
+
+    /**
+     * Create an upload that just completed uploading.
      *
      * @return static
      */
     public function uploaded(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'uploaded',
-                'uploaded_at' => Carbon::now(),
-                'validated_at' => null,
-                'processed_at' => null,
-                'validation_errors' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'uploaded',
+            'validated_at' => null,
+            'processed_at' => null,
+            'validation_errors' => null,
+        ]);
     }
 
     /**
-     * Configure the factory for validating status.
-     *
-     * @return static
-     */
-    public function validating(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'validating',
-                'uploaded_at' => Carbon::now()->subMinutes(2),
-                'validated_at' => null,
-                'processed_at' => null,
-                'validation_errors' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for validation_failed status.
+     * Create an upload that failed validation.
      *
      * @return static
      */
     public function validationFailed(): static
     {
         return $this->state(function (array $attributes) {
-            $validationErrors = [
-                [
-                    'line_number' => 3,
-                    'field' => 'date',
-                    'error' => 'Date format must be DD/MM/YYYY',
-                    'provided_value' => '2024-01-15'
-                ],
-                [
-                    'line_number' => 5,
-                    'field' => 'currency',
-                    'error' => 'Currency must be a valid 3-letter ISO code',
-                    'provided_value' => 'POUND'
-                ],
-                [
-                    'line_number' => 7,
-                    'field' => 'amount',
-                    'error' => 'Amount must be a valid number',
-                    'provided_value' => 'invalid'
-                ]
-            ];
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            $errorCount = $this->faker->numberBetween(1, $totalRecords);
             
             return [
                 'status' => 'validation_failed',
-                'uploaded_at' => Carbon::now()->subMinutes(5),
-                'validated_at' => Carbon::now()->subMinutes(2),
+                'valid_records' => $totalRecords - $errorCount,
+                'validation_errors' => $this->generateValidationErrors($errorCount),
+                'validated_at' => now()->subMinutes($this->faker->numberBetween(5, 60)),
                 'processed_at' => null,
-                'validation_errors' => json_encode($validationErrors),
-                'valid_records' => 0, // No valid records when validation failed
             ];
         });
     }
 
     /**
-     * Configure the factory for processing status.
+     * Create an upload that passed validation.
+     *
+     * @return static
+     */
+    public function validationPassed(): static
+    {
+        return $this->state(function (array $attributes) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            
+            return [
+                'status' => 'validation_passed',
+                'valid_records' => $totalRecords,
+                'validation_errors' => null,
+                'validated_at' => now()->subMinutes($this->faker->numberBetween(5, 60)),
+                'processed_at' => null,
+            ];
+        });
+    }
+
+    /**
+     * Create an upload that is currently processing.
      *
      * @return static
      */
     public function processing(): static
     {
         return $this->state(function (array $attributes) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            
             return [
                 'status' => 'processing',
-                'uploaded_at' => Carbon::now()->subMinutes(10),
-                'validated_at' => Carbon::now()->subMinutes(7),
-                'processed_at' => null,
+                'valid_records' => $totalRecords,
                 'validation_errors' => null,
+                'validated_at' => now()->subMinutes($this->faker->numberBetween(10, 120)),
+                'processed_at' => null,
             ];
         });
     }
 
     /**
-     * Configure the factory for completed status.
+     * Create an upload that completed successfully.
      *
      * @return static
      */
     public function completed(): static
     {
         return $this->state(function (array $attributes) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            
             return [
                 'status' => 'completed',
-                'uploaded_at' => Carbon::now()->subHour(),
-                'validated_at' => Carbon::now()->subMinutes(55),
-                'processed_at' => Carbon::now()->subMinutes(50),
+                'valid_records' => $totalRecords,
                 'validation_errors' => null,
+                'validated_at' => now()->subHours($this->faker->numberBetween(1, 24)),
+                'processed_at' => now()->subMinutes($this->faker->numberBetween(5, 60)),
             ];
         });
     }
 
     /**
-     * Configure the factory for failed status.
+     * Create an upload that failed during processing.
      *
      * @return static
      */
     public function failed(): static
     {
         return $this->state(function (array $attributes) {
-            $processingErrors = [
-                [
-                    'error_type' => 'database_error',
-                    'error_message' => 'Failed to create expense record',
-                    'line_numbers' => [15, 23, 31],
-                    'timestamp' => Carbon::now()->subMinutes(15)->toISOString()
-                ]
-            ];
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            $validRecords = $this->faker->numberBetween(0, $totalRecords);
             
             return [
                 'status' => 'failed',
-                'uploaded_at' => Carbon::now()->subMinutes(30),
-                'validated_at' => Carbon::now()->subMinutes(25),
-                'processed_at' => Carbon::now()->subMinutes(15),
-                'validation_errors' => json_encode($processingErrors),
+                'valid_records' => $validRecords,
+                'validation_errors' => $validRecords < $totalRecords ? $this->generateValidationErrors($totalRecords - $validRecords) : null,
+                'validated_at' => now()->subHours($this->faker->numberBetween(1, 24)),
+                'processed_at' => now()->subMinutes($this->faker->numberBetween(5, 60)),
             ];
         });
     }
 
     /**
-     * Configure the factory with a specific target user ID.
+     * Create an upload that failed during sync.
      *
-     * @param int $userId
      * @return static
      */
-    public function forUser(int $userId): static
+    public function syncFailed(): static
     {
-        return $this->state(function (array $attributes) use ($userId) {
+        return $this->state(function (array $attributes) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            
             return [
-                'user_id' => $userId,
+                'status' => 'sync_failed',
+                'valid_records' => $totalRecords,
+                'validation_errors' => null,
+                'validated_at' => now()->subHours($this->faker->numberBetween(1, 24)),
+                'processed_at' => now()->subMinutes($this->faker->numberBetween(5, 60)),
             ];
         });
     }
 
     /**
-     * Configure the factory with a specific client ID.
+     * Create an upload with specific record counts.
      *
-     * @param int $clientId
+     * @param int $totalRecords
+     * @param int|null $validRecords
      * @return static
      */
-    public function forClient(int $clientId): static
+    public function withRecordCounts(int $totalRecords, int $validRecords = null): static
     {
-        return $this->state(function (array $attributes) use ($clientId) {
-            return [
-                'client_id' => $clientId,
-            ];
-        });
+        $validRecords = $validRecords ?? $totalRecords;
+        $errorCount = $totalRecords - $validRecords;
+        
+        return $this->state(fn (array $attributes) => [
+            'total_records' => $totalRecords,
+            'valid_records' => $validRecords,
+            'validation_errors' => $errorCount > 0 ? $this->generateValidationErrors($errorCount) : null,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific creating admin user ID.
+     * Create an upload with maximum allowed records (200).
      *
-     * @param int $createdByUserId
      * @return static
      */
-    public function createdBy(int $createdByUserId): static
+    public function maxRecords(): static
     {
-        return $this->state(function (array $attributes) use ($createdByUserId) {
-            return [
-                'created_by_user_id' => $createdByUserId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'total_records' => 200,
+            'valid_records' => 200,
+            'validation_errors' => null,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific file name.
+     * Create an upload with minimal records.
+     *
+     * @return static
+     */
+    public function minimalRecords(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'total_records' => 1,
+            'valid_records' => 1,
+            'validation_errors' => null,
+        ]);
+    }
+
+    /**
+     * Create an upload with a specific file name.
      *
      * @param string $fileName
      * @return static
      */
     public function withFileName(string $fileName): static
     {
-        return $this->state(function (array $attributes) use ($fileName) {
-            return [
-                'file_name' => $fileName,
-                'file_path' => 'pocket-expense-uploads/' . date('Y/m/d') . '/' . $fileName,
-            ];
-        });
+        $filePath = 'uploads/pocket-expenses/' . date('Y/m/') . Str::uuid() . '_' . $fileName;
+        
+        return $this->state(fn (array $attributes) => [
+            'file_name' => $fileName,
+            'file_path' => $filePath,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific file path.
+     * Create an upload with a specific file path.
      *
      * @param string $filePath
      * @return static
      */
     public function withFilePath(string $filePath): static
     {
-        return $this->state(function (array $attributes) use ($filePath) {
-            return [
-                'file_path' => $filePath,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'file_path' => $filePath,
+        ]);
     }
 
     /**
-     * Configure the factory with specific record counts.
-     *
-     * @param int $totalRecords
-     * @param int|null $validRecords
-     * @return static
-     */
-    public function withRecordCounts(int $totalRecords, ?int $validRecords = null): static
-    {
-        return $this->state(function (array $attributes) use ($totalRecords, $validRecords) {
-            return [
-                'total_records' => $totalRecords,
-                'valid_records' => $validRecords ?? $totalRecords,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific UUID.
+     * Create an upload with a specific UUID.
      *
      * @param string $uuid
      * @return static
      */
     public function withUuid(string $uuid): static
     {
-        return $this->state(function (array $attributes) use ($uuid) {
-            return [
-                'uuid' => $uuid,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'uuid' => $uuid,
+        ]);
     }
 
     /**
-     * Configure the factory without UUID (null).
+     * Create an upload from today.
      *
      * @return static
      */
-    public function withoutUuid(): static
+    public function today(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'uuid' => null,
-            ];
-        });
+        $uploadTime = now()->subHours($this->faker->numberBetween(0, 12));
+        
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => $uploadTime,
+            'created_at' => $uploadTime,
+            'updated_at' => $uploadTime->copy()->addMinutes($this->faker->numberBetween(1, 60)),
+        ]);
     }
 
     /**
-     * Configure the factory with specific validation errors.
-     *
-     * @param array $validationErrors
-     * @return static
-     */
-    public function withValidationErrors(array $validationErrors): static
-    {
-        return $this->state(function (array $attributes) use ($validationErrors) {
-            return [
-                'validation_errors' => json_encode($validationErrors),
-                'status' => 'validation_failed',
-                'valid_records' => 0,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory without validation errors.
+     * Create an upload from yesterday.
      *
      * @return static
      */
-    public function withoutValidationErrors(): static
+    public function yesterday(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'validation_errors' => null,
-            ];
-        });
+        $uploadTime = now()->subDay()->addHours($this->faker->numberBetween(0, 12));
+        
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => $uploadTime,
+            'created_at' => $uploadTime,
+            'updated_at' => $uploadTime->copy()->addMinutes($this->faker->numberBetween(1, 180)),
+        ]);
     }
 
     /**
-     * Configure the factory for small CSV files (under 50 records).
+     * Create an upload from a specific number of days ago.
+     *
+     * @param int $daysAgo
+     * @return static
+     */
+    public function daysAgo(int $daysAgo): static
+    {
+        $uploadTime = now()->subDays($daysAgo)->addHours($this->faker->numberBetween(0, 12));
+        
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => $uploadTime,
+            'created_at' => $uploadTime,
+            'updated_at' => $uploadTime->copy()->addMinutes($this->faker->numberBetween(1, 360)),
+        ]);
+    }
+
+    /**
+     * Create a soft-deleted upload.
      *
      * @return static
      */
-    public function smallFile(): static
+    public function deleted(): static
     {
-        return $this->state(function (array $attributes) {
-            $totalRecords = $this->faker->numberBetween(5, 50);
-            $validRecords = $this->faker->numberBetween(4, $totalRecords);
-            
-            return [
-                'total_records' => $totalRecords,
-                'valid_records' => $validRecords,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'deleted_at' => now()->subDays($this->faker->numberBetween(1, 30)),
+        ]);
     }
 
     /**
-     * Configure the factory for large CSV files (over 100 records).
-     *
-     * @return static
-     */
-    public function largeFile(): static
-    {
-        return $this->state(function (array $attributes) {
-            $totalRecords = $this->faker->numberBetween(100, 200);
-            $validRecords = $this->faker->numberBetween(80, $totalRecords);
-            
-            return [
-                'total_records' => $totalRecords,
-                'valid_records' => $validRecords,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for maximum size CSV files (200 records).
-     *
-     * @return static
-     */
-    public function maximumSize(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'total_records' => 200,
-                'valid_records' => $this->faker->numberBetween(180, 200),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for perfect validation (all records valid).
-     *
-     * @return static
-     */
-    public function perfectValidation(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'valid_records' => $attributes['total_records'],
-                'validation_errors' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for partial validation (some invalid records).
-     *
-     * @return static
-     */
-    public function partialValidation(): static
-    {
-        return $this->state(function (array $attributes) {
-            $totalRecords = $attributes['total_records'];
-            $validRecords = $this->faker->numberBetween(1, $totalRecords - 1);
-            
-            $validationErrors = [];
-            for ($i = 0; $i < ($totalRecords - $validRecords); $i++) {
-                $validationErrors[] = [
-                    'line_number' => $this->faker->numberBetween(2, $totalRecords + 1),
-                    'field' => $this->faker->randomElement(['date', 'currency', 'amount', 'merchant_name']),
-                    'error' => $this->faker->randomElement([
-                        'Date format must be DD/MM/YYYY',
-                        'Currency must be a valid 3-letter ISO code',
-                        'Amount must be a valid number',
-                        'Merchant name is required'
-                    ]),
-                    'provided_value' => $this->faker->word()
-                ];
-            }
-            
-            return [
-                'valid_records' => $validRecords,
-                'validation_errors' => json_encode($validationErrors),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific upload timestamp.
-     *
-     * @param \DateTimeInterface|string $uploadedAt
-     * @return static
-     */
-    public function uploadedAt($uploadedAt): static
-    {
-        return $this->state(function (array $attributes) use ($uploadedAt) {
-            $timestamp = $uploadedAt instanceof \DateTimeInterface ? $uploadedAt : Carbon::parse($uploadedAt);
-            return [
-                'uploaded_at' => $timestamp,
-                'created_at' => $timestamp,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific validation timestamp.
-     *
-     * @param \DateTimeInterface|string $validatedAt
-     * @return static
-     */
-    public function validatedAt($validatedAt): static
-    {
-        return $this->state(function (array $attributes) use ($validatedAt) {
-            $timestamp = $validatedAt instanceof \DateTimeInterface ? $validatedAt : Carbon::parse($validatedAt);
-            return [
-                'validated_at' => $timestamp,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with specific processing timestamp.
-     *
-     * @param \DateTimeInterface|string $processedAt
-     * @return static
-     */
-    public function processedAt($processedAt): static
-    {
-        return $this->state(function (array $attributes) use ($processedAt) {
-            $timestamp = $processedAt instanceof \DateTimeInterface ? $processedAt : Carbon::parse($processedAt);
-            return [
-                'processed_at' => $timestamp,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for soft deleted uploads.
-     *
-     * @return static
-     */
-    public function softDeleted(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted_at' => Carbon::now(),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for active (non-deleted) uploads.
+     * Create an active upload (not deleted).
      *
      * @return static
      */
     public function active(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted_at' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'deleted_at' => null,
+        ]);
     }
 
     /**
-     * Configure the factory with updated timestamps for testing updates.
+     * Create an upload with specific timestamps.
      *
+     * @param \Carbon\Carbon|string|null $uploadedAt
+     * @param \Carbon\Carbon|string|null $validatedAt
+     * @param \Carbon\Carbon|string|null $processedAt
      * @return static
      */
-    public function updated(): static
+    public function withTimestamps($uploadedAt = null, $validatedAt = null, $processedAt = null): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'updated_at' => Carbon::now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => $uploadedAt ?? now()->subHours($this->faker->numberBetween(1, 48)),
+            'validated_at' => $validatedAt,
+            'processed_at' => $processedAt,
+        ]);
     }
 
     /**
-     * Configure the factory with realistic CSV processing timeline.
+     * Create an upload with validation errors for specific fields.
      *
+     * @param array $fields
      * @return static
      */
-    public function realisticTimeline(): static
+    public function withValidationErrorsFor(array $fields): static
     {
-        return $this->state(function (array $attributes) {
-            $uploadedAt = Carbon::now()->subHour();
-            $validatedAt = $uploadedAt->copy()->addMinutes(3);
-            $processedAt = $validatedAt->copy()->addMinutes(7);
+        $errors = [];
+        foreach ($fields as $field) {
+            $errors[] = [
+                'line_number' => $this->faker->numberBetween(2, 201),
+                'field' => $field,
+                'error' => "Validation error for field: {$field}",
+                'value' => 'Invalid Value'
+            ];
+        }
+        
+        return $this->state(function (array $attributes) use ($errors) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            $errorCount = count($errors);
             
             return [
-                'uploaded_at' => $uploadedAt,
-                'validated_at' => $validatedAt,
-                'processed_at' => $processedAt,
-                'created_at' => $uploadedAt,
-                'updated_at' => $processedAt,
+                'valid_records' => max(0, $totalRecords - $errorCount),
+                'validation_errors' => $errors,
+                'status' => 'validation_failed',
             ];
         });
     }
 
     /**
-     * Configure the factory with a complete upload scenario.
-     * 
-     * @param int $userId Target user ID
-     * @param int $clientId Client ID
-     * @param int $createdByUserId Creating admin user ID
-     * @param string $status Upload status
+     * Create an upload suitable for testing CSV processing workflows.
+     *
      * @return static
      */
-    public function complete(int $userId, int $clientId, int $createdByUserId, string $status = 'uploaded'): static
+    public function forWorkflowTesting(): static
     {
-        return $this->state(function (array $attributes) use ($userId, $clientId, $createdByUserId, $status) {
-            return [
+        return $this->state(function (array $attributes) {
+            $statuses = ['validation_passed', 'processing', 'completed'];
+            $status = $this->faker->randomElement($statuses);
+            $totalRecords = $this->faker->numberBetween(5, 50); // Reasonable size for testing
+            
+            $timestamps = $this->generateStatusTimestamps($status, now()->subHours(2));
+            
+            return array_merge([
+                'status' => $status,
+                'total_records' => $totalRecords,
+                'valid_records' => $totalRecords,
+                'validation_errors' => null,
+                'file_name' => 'test_upload_' . now()->format('Ymd_His') . '.csv',
+            ], $timestamps);
+        });
+    }
+
+    /**
+     * Create multiple uploads for the same user-client combination.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @param int $createdByUserId
+     * @param array $statuses
+     * @return static
+     */
+    public function multipleForUser(int $userId, int $clientId, int $createdByUserId, array $statuses = ['completed', 'failed']): static
+    {
+        return $this->state(function (array $attributes) use ($userId, $clientId, $createdByUserId, $statuses) {
+            $status = $this->faker->randomElement($statuses);
+            $totalRecords = $this->faker->numberBetween(1, 100);
+            $timestamps = $this->generateStatusTimestamps($status, now()->subDays($this->faker->numberBetween(1, 30)));
+            
+            return array_merge([
                 'user_id' => $userId,
                 'client_id' => $clientId,
                 'created_by_user_id' => $createdByUserId,
                 'status' => $status,
-                'deleted_at' => null,
+                'total_records' => $totalRecords,
+                'valid_records' => $status === 'validation_failed' ? $this->faker->numberBetween(0, $totalRecords - 1) : $totalRecords,
+            ], $timestamps);
+        });
+    }
+
+    /**
+     * Create an upload with realistic business file naming.
+     *
+     * @return static
+     */
+    public function businessFile(): static
+    {
+        $businessFiles = [
+            'Q1_2024_Travel_Expenses.csv',
+            'Corporate_Card_Transactions_March.csv',
+            'Employee_Reimbursements_Weekly.csv',
+            'Petty_Cash_Expenses_Department_A.csv',
+            'Conference_Expenses_TeamBuilding_2024.csv',
+            'Client_Entertainment_Q2.csv',
+            'Office_Supplies_Monthly_Report.csv',
+            'Vehicle_Expenses_Fleet_Management.csv'
+        ];
+        
+        $fileName = $this->faker->randomElement($businessFiles);
+        $filePath = 'uploads/pocket-expenses/' . date('Y/m/') . Str::uuid() . '_' . $fileName;
+        
+        return $this->state(fn (array $attributes) => [
+            'file_name' => $fileName,
+            'file_path' => $filePath,
+        ]);
+    }
+
+    /**
+     * Create all possible upload statuses for comprehensive testing.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @param int $createdByUserId
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public function createAllStatuses(int $userId, int $clientId, int $createdByUserId): \Illuminate\Database\Eloquent\Collection
+    {
+        $statuses = ['uploaded', 'validation_failed', 'validation_passed', 'processing', 'completed', 'failed', 'sync_failed'];
+        $uploads = collect();
+        
+        foreach ($statuses as $status) {
+            $uploads->push(
+                $this->forUser($userId, $clientId, $createdByUserId)
+                     ->withStatus($status)
+                     ->create()
+            );
+        }
+        
+        return $uploads;
+    }
+
+    /**
+     * Create an upload that represents a large batch suitable for performance testing.
+     *
+     * @return static
+     */
+    public function largeBatch(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'total_records' => $this->faker->numberBetween(150, 200), // Near the 200-row limit
+            'valid_records' => $this->faker->numberBetween(140, 200),
+            'file_name' => 'large_batch_' . now()->format('Ymd_His') . '.csv',
+            'status' => 'completed',
+        ]);
+    }
+
+    /**
+     * Create an upload that represents a small test batch.
+     *
+     * @return static
+     */
+    public function smallBatch(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'total_records' => $this->faker->numberBetween(1, 10),
+            'valid_records' => $this->faker->numberBetween(1, 10),
+            'file_name' => 'test_batch_' . now()->format('Ymd_His') . '.csv',
+            'status' => 'completed',
+        ]);
+    }
+
+    /**
+     * Create an upload with mixed validation results for testing error handling.
+     *
+     * @return static
+     */
+    public function mixedValidation(): static
+    {
+        return $this->state(function (array $attributes) {
+            $totalRecords = $this->faker->numberBetween(20, 100);
+            $validRecords = $this->faker->numberBetween(10, $totalRecords - 5);
+            $errorCount = $totalRecords - $validRecords;
+            
+            return [
+                'total_records' => $totalRecords,
+                'valid_records' => $validRecords,
+                'validation_errors' => $this->generateValidationErrors($errorCount),
+                'status' => 'validation_failed',
+                'validated_at' => now()->subMinutes($this->faker->numberBetween(15, 120)),
             ];
         });
     }
 
     /**
-     * Configure the factory for different upload statuses as a sequence.
-     * Useful for testing scenarios that need various upload workflow states.
+     * Create an upload with no validation errors (perfect upload).
      *
      * @return static
      */
-    public function statusSequence(): static
-    {
-        return $this->sequence(
-            ['status' => 'uploaded', 'validated_at' => null, 'processed_at' => null],
-            ['status' => 'validating', 'validated_at' => null, 'processed_at' => null],
-            ['status' => 'processing', 'validated_at' => Carbon::now()->subMinutes(5), 'processed_at' => null],
-            ['status' => 'completed', 'validated_at' => Carbon::now()->subMinutes(10), 'processed_at' => Carbon::now()->subMinutes(5)],
-            ['status' => 'validation_failed', 'validated_at' => Carbon::now()->subMinutes(5), 'processed_at' => null],
-            ['status' => 'failed', 'validated_at' => Carbon::now()->subMinutes(10), 'processed_at' => Carbon::now()->subMinutes(5)]
-        );
-    }
-
-    /**
-     * Configure the factory for different file sizes as a sequence.
-     * Useful for testing scenarios that need various CSV file sizes.
-     *
-     * @return static
-     */
-    public function fileSizeSequence(): static
-    {
-        return $this->sequence(
-            ['total_records' => 10, 'valid_records' => 8],   // Small file
-            ['total_records' => 50, 'valid_records' => 45],  // Medium file
-            ['total_records' => 100, 'valid_records' => 90], // Large file
-            ['total_records' => 200, 'valid_records' => 180] // Maximum size file
-        );
-    }
-
-    /**
-     * Configure the factory for common validation error scenarios.
-     *
-     * @return static
-     */
-    public function commonValidationErrors(): static
+    public function perfect(): static
     {
         return $this->state(function (array $attributes) {
-            $validationErrors = [
-                [
-                    'line_number' => 3,
-                    'field' => 'date',
-                    'error' => 'Date format must be DD/MM/YYYY',
-                    'provided_value' => '2024-01-15'
-                ],
-                [
-                    'line_number' => 5,
-                    'field' => 'currency',
-                    'error' => 'Currency must be a valid 3-letter ISO code',
-                    'provided_value' => 'POUND'
-                ],
-                [
-                    'line_number' => 8,
-                    'field' => 'amount',
-                    'error' => 'Amount must be a valid number',
-                    'provided_value' => 'N/A'
-                ],
-                [
-                    'line_number' => 12,
-                    'field' => 'merchant_name',
-                    'error' => 'Merchant name exceeds maximum length of 180 characters',
-                    'provided_value' => str_repeat('Very Long Merchant Name ', 20)
-                ],
-                [
-                    'line_number' => 15,
-                    'field' => 'source',
-                    'error' => 'Source Note is required when Source is Other',
-                    'provided_value' => 'Other'
-                ]
-            ];
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(10, 100);
             
             return [
-                'status' => 'validation_failed',
-                'validation_errors' => json_encode($validationErrors),
-                'valid_records' => max(0, $attributes['total_records'] - count($validationErrors)),
-                'validated_at' => Carbon::now()->subMinutes(2),
+                'total_records' => $totalRecords,
+                'valid_records' => $totalRecords,
+                'validation_errors' => null,
+                'status' => 'completed',
+            ];
+        });
+    }
+
+    /**
+     * Create an upload for testing edge cases.
+     *
+     * @return static
+     */
+    public function edgeCase(): static
+    {
+        return $this->state(function (array $attributes) {
+            $scenarios = [
+                // Exactly at the limit
+                ['total_records' => 200, 'valid_records' => 200],
+                // All records failed validation
+                ['total_records' => 50, 'valid_records' => 0],
+                // Single record
+                ['total_records' => 1, 'valid_records' => 1],
+                // Mixed with many errors
+                ['total_records' => 100, 'valid_records' => 10],
+            ];
+            
+            $scenario = $this->faker->randomElement($scenarios);
+            $errorCount = $scenario['total_records'] - $scenario['valid_records'];
+            
+            return [
+                'total_records' => $scenario['total_records'],
+                'valid_records' => $scenario['valid_records'],
+                'validation_errors' => $errorCount > 0 ? $this->generateValidationErrors($errorCount) : null,
+                'status' => $errorCount > 0 ? 'validation_failed' : 'completed',
+                'file_name' => 'edge_case_test_' . $scenario['total_records'] . '_records.csv',
             ];
         });
     }

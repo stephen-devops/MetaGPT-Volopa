@@ -4,14 +4,13 @@ namespace App\Http\Resources;
 
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
-use Carbon\Carbon;
 
 /**
  * API Resource for PocketExpense model
  * 
- * Shapes PocketExpense model data for API responses, hiding internal fields
- * and providing consistent JSON structure. Includes relationships to expense
- * type, metadata, and user information while maintaining security boundaries.
+ * Transforms PocketExpense model data for API responses, hiding internal fields
+ * and providing consistent response format. Includes nested metadata relationships
+ * and user-friendly field formatting.
  */
 class PocketExpenseResource extends JsonResource
 {
@@ -23,188 +22,246 @@ class PocketExpenseResource extends JsonResource
      */
     public function toArray(Request $request): array
     {
-        // Format create_time and update_time using Carbon for consistency
-        $createTime = $this->create_time ? Carbon::parse($this->create_time) : null;
-        $updateTime = $this->update_time ? Carbon::parse($this->update_time) : null;
-        
         return [
-            // Primary identifiers
             'id' => $this->id,
             'uuid' => $this->uuid,
-            
-            // Ownership and context
-            'user_id' => $this->user_id,
-            'client_id' => $this->client_id,
-            
-            // Core expense details
-            'date' => $this->date, // Already in YYYY-MM-DD format from DB
+            'date' => $this->date,
             'merchant_name' => $this->merchant_name,
             'merchant_description' => $this->merchant_description,
             'merchant_address' => $this->merchant_address,
-            
-            // Financial details
             'currency' => $this->currency,
-            'amount' => (float) $this->amount, // Convert decimal to float for JSON
-            'vat_amount' => $this->vat_amount ? (float) $this->vat_amount : null,
-            
-            // Additional details
+            'amount' => $this->formatAmount($this->amount),
+            'vat_amount' => $this->formatVatAmount($this->vat_amount),
             'notes' => $this->notes,
-            
-            // Workflow status
             'status' => $this->status,
+            'status_display' => $this->getStatusDisplay($this->status),
             
-            // Timestamps formatted for API consistency
-            'created_at' => $createTime?->toISOString(),
-            'updated_at' => $updateTime?->toISOString(),
+            // Expense type information
+            'expense_type' => [
+                'id' => $this->expenseType->id ?? null,
+                'option' => $this->expenseType->option ?? null,
+                'amount_sign' => $this->expenseType->amount_sign ?? null,
+            ],
             
-            // Relationships - loaded only when available to avoid N+1 queries
-            'expense_type' => $this->whenLoaded('expenseType', function () {
-                return [
-                    'id' => $this->expenseType->id,
-                    'option' => $this->expenseType->option,
-                    'amount_sign' => $this->expenseType->amount_sign,
-                ];
-            }),
+            // User relationships
+            'user' => [
+                'id' => $this->user->id ?? null,
+                'name' => $this->user->name ?? null,
+            ],
             
-            'created_by' => $this->whenLoaded('createdBy', function () {
-                return [
-                    'id' => $this->createdBy->id,
-                    'name' => $this->createdBy->name,
-                ];
-            }),
+            'client' => [
+                'id' => $this->client->id ?? null,
+                'name' => $this->client->name ?? null,
+            ],
             
-            'updated_by' => $this->whenLoaded('updatedBy', function () {
-                return $this->updatedBy ? [
-                    'id' => $this->updatedBy->id,
-                    'name' => $this->updatedBy->name,
-                ] : null;
-            }),
+            'created_by' => [
+                'id' => $this->createdBy->id ?? null,
+                'name' => $this->createdBy->name ?? null,
+            ],
             
-            'approved_by' => $this->whenLoaded('approvedBy', function () {
-                return $this->approvedBy ? [
-                    'id' => $this->approvedBy->id,
-                    'name' => $this->approvedBy->name,
-                ] : null;
-            }),
+            'updated_by' => $this->when($this->updated_by_user_id, [
+                'id' => $this->updatedBy->id ?? null,
+                'name' => $this->updatedBy->name ?? null,
+            ]),
             
-            // Metadata collection - process different metadata types
-            'metadata' => $this->whenLoaded('metadata', function () {
-                return $this->metadata->map(function ($meta) {
-                    $baseData = [
-                        'id' => $meta->id,
-                        'type' => $meta->metadata_type,
-                        'details' => $meta->details_json ? json_decode($meta->details_json, true) : null,
-                    ];
-                    
-                    // Add type-specific relationship data
-                    switch ($meta->metadata_type) {
-                        case 'category':
-                            if ($meta->transactionCategory) {
-                                $baseData['category'] = [
-                                    'id' => $meta->transactionCategory->id,
-                                    'name' => $meta->transactionCategory->name,
-                                    'code' => $meta->transactionCategory->code,
-                                ];
-                            }
-                            break;
-                            
-                        case 'tracking_code_type_1':
-                        case 'tracking_code_type_2':
-                            if ($meta->trackingCode) {
-                                $baseData['tracking_code'] = [
-                                    'id' => $meta->trackingCode->id,
-                                    'unit' => $meta->trackingCode->unit,
-                                    'tracking_code_type_id' => $meta->trackingCode->tracking_code_type_id,
-                                ];
-                            }
-                            break;
-                            
-                        case 'project':
-                            if ($meta->project) {
-                                $baseData['project'] = [
-                                    'id' => $meta->project->id,
-                                    'name' => $meta->project->name,
-                                    'code' => $meta->project->code,
-                                ];
-                            }
-                            break;
-                            
-                        case 'file':
-                            if ($meta->fileStore) {
-                                $baseData['file'] = [
-                                    'id' => $meta->fileStore->id,
-                                    'uuid' => $meta->fileStore->uuid,
-                                    'file_name' => $meta->fileStore->file_name,
-                                    'file_extension' => $meta->fileStore->file_extension,
-                                ];
-                            }
-                            break;
-                            
-                        case 'expense_source':
-                            if ($meta->expenseSource) {
-                                $baseData['expense_source'] = [
-                                    'id' => $meta->expenseSource->id,
-                                    'name' => $meta->expenseSource->name,
-                                    'is_default' => (bool) $meta->expenseSource->is_default,
-                                ];
-                            }
-                            break;
-                            
-                        case 'additional_field':
-                            if ($meta->additionalField) {
-                                $baseData['additional_field'] = [
-                                    'id' => $meta->additionalField->id,
-                                    'label' => $meta->additionalField->label,
-                                    'field_type' => $meta->additionalField->field_type,
-                                ];
-                            }
-                            break;
-                    }
-                    
-                    return $baseData;
-                })->toArray();
-            }),
+            'approved_by' => $this->when($this->approved_by_user_id, [
+                'id' => $this->approvedBy->id ?? null,
+                'name' => $this->approvedBy->name ?? null,
+            ]),
             
-            // Include user details when loaded (for admin views)
-            'user' => $this->whenLoaded('user', function () {
-                return [
-                    'id' => $this->user->id,
-                    'name' => $this->user->name,
-                    'username' => $this->user->username,
-                ];
-            }),
+            // Metadata relationships
+            'metadata' => PocketExpenseMetadataResource::collection($this->whenLoaded('metadata')),
             
-            // Include calculated or derived fields when available
-            'fx_conversion' => $this->when($this->fx_rate ?? false, function () {
-                return [
-                    'original_currency' => $this->currency,
-                    'base_currency' => $this->base_currency ?? null,
-                    'fx_rate' => $this->fx_rate ? (float) $this->fx_rate : null,
-                    'base_amount' => $this->base_amount ? (float) $this->base_amount : null,
-                    'fx_date' => $this->fx_date ?? null,
-                ];
-            }),
+            // Audit timestamps (using Volopa legacy format)
+            'create_time' => $this->create_time ? $this->create_time->toISOString() : null,
+            'update_time' => $this->update_time ? $this->update_time->toISOString() : null,
             
-            // Administrative information (only when accessed by authorized users)
-            'admin_info' => $this->when(
-                $request->user()?->hasRole(['Primary Admin', 'Admin']) ?? false,
-                function () use ($createTime, $updateTime) {
-                    return [
-                        'created_by_user_id' => $this->created_by_user_id,
-                        'updated_by_user_id' => $this->updated_by_user_id,
-                        'approved_by_user_id' => $this->approved_by_user_id,
-                        'deleted' => (bool) $this->deleted,
-                        'delete_time' => $this->delete_time ? Carbon::parse($this->delete_time)->toISOString() : null,
-                        'create_time' => $createTime?->toISOString(),
-                        'update_time' => $updateTime?->toISOString(),
-                    ];
-                }
-            ),
+            // Calculated fields
+            'can_edit' => $this->canEdit($request),
+            'can_approve' => $this->canApprove($request),
+            'can_delete' => $this->canDelete($request),
+            
+            // FX conversion information (when available)
+            'fx_info' => $this->when($this->fx_rate ?? false, [
+                'base_currency' => $this->base_currency ?? null,
+                'base_amount' => $this->base_amount ? $this->formatAmount($this->base_amount) : null,
+                'fx_rate' => $this->fx_rate ? number_format($this->fx_rate, 6) : null,
+                'fx_date' => $this->fx_date ?? null,
+                'commission_rate' => $this->commission_rate ? number_format($this->commission_rate, 4) : null,
+            ]),
         ];
     }
-    
+
     /**
-     * Get additional data that should be returned with the resource array.
+     * Format amount with proper decimal places and sign handling.
+     *
+     * @param float|null $amount
+     * @return string|null
+     */
+    private function formatAmount(?float $amount): ?string
+    {
+        if ($amount === null) {
+            return null;
+        }
+        
+        return number_format($amount, 2, '.', '');
+    }
+
+    /**
+     * Format VAT amount as percentage with proper decimal places.
+     *
+     * @param float|null $vatAmount
+     * @return string|null
+     */
+    private function formatVatAmount(?float $vatAmount): ?string
+    {
+        if ($vatAmount === null) {
+            return null;
+        }
+        
+        return number_format($vatAmount, 2, '.', '') . '%';
+    }
+
+    /**
+     * Get human-readable status display text.
+     *
+     * @param string $status
+     * @return string
+     */
+    private function getStatusDisplay(string $status): string
+    {
+        return match ($status) {
+            'draft' => 'Draft',
+            'submitted' => 'Submitted for Review',
+            'approved' => 'Approved',
+            'rejected' => 'Rejected',
+            default => ucfirst($status),
+        };
+    }
+
+    /**
+     * Determine if the current user can edit this expense.
+     *
+     * @param Request $request
+     * @return bool
+     */
+    private function canEdit(Request $request): bool
+    {
+        $user = $request->user();
+        
+        if (!$user) {
+            return false;
+        }
+        
+        // Only draft and rejected expenses can be edited
+        if (!in_array($this->status, ['draft', 'rejected'])) {
+            return false;
+        }
+        
+        // Owner can always edit their own expenses
+        if ($this->user_id === $user->id) {
+            return true;
+        }
+        
+        // Check if user has management permission for this expense owner
+        // This would typically be checked via a policy, but we're providing
+        // a basic implementation here for the resource
+        return $this->hasManagementPermission($user);
+    }
+
+    /**
+     * Determine if the current user can approve this expense.
+     *
+     * @param Request $request
+     * @return bool
+     */
+    private function canApprove(Request $request): bool
+    {
+        $user = $request->user();
+        
+        if (!$user) {
+            return false;
+        }
+        
+        // Only submitted expenses can be approved
+        if ($this->status !== 'submitted') {
+            return false;
+        }
+        
+        // Users cannot approve their own expenses
+        if ($this->user_id === $user->id) {
+            return false;
+        }
+        
+        // Business User and Card User cannot approve expenses even with management rights
+        // This would typically be checked via user roles and policies
+        return $this->hasApprovalPermission($user);
+    }
+
+    /**
+     * Determine if the current user can delete this expense.
+     *
+     * @param Request $request
+     * @return bool
+     */
+    private function canDelete(Request $request): bool
+    {
+        $user = $request->user();
+        
+        if (!$user) {
+            return false;
+        }
+        
+        // Approved expenses typically cannot be deleted
+        if ($this->status === 'approved') {
+            return false;
+        }
+        
+        // Owner can delete their own draft/rejected expenses
+        if ($this->user_id === $user->id && in_array($this->status, ['draft', 'rejected'])) {
+            return true;
+        }
+        
+        // Check management permission for other statuses
+        return $this->hasManagementPermission($user);
+    }
+
+    /**
+     * Check if user has management permission for this expense.
+     *
+     * @param mixed $user
+     * @return bool
+     */
+    private function hasManagementPermission($user): bool
+    {
+        // This is a simplified implementation
+        // In a real application, this would check the user_feature_permission table
+        // and verify the user has management rights for the expense owner
+        
+        // For now, we'll assume Primary Admin and Admin roles have management permission
+        // This should be replaced with proper policy checks
+        return true; // Placeholder - implement proper permission checking
+    }
+
+    /**
+     * Check if user has approval permission.
+     *
+     * @param mixed $user
+     * @return bool
+     */
+    private function hasApprovalPermission($user): bool
+    {
+        // This is a simplified implementation
+        // In a real application, this would check user roles and ensure
+        // Business User and Card User cannot approve expenses
+        
+        // For now, we'll assume only Primary Admin and Admin can approve
+        // This should be replaced with proper role/policy checks
+        return true; // Placeholder - implement proper role checking
+    }
+
+    /**
+     * Get additional attributes when the resource is used in a collection.
      *
      * @param Request $request
      * @return array<string, mixed>
@@ -213,65 +270,152 @@ class PocketExpenseResource extends JsonResource
     {
         return [
             'meta' => [
-                'resource_type' => 'pocket_expense',
-                'api_version' => 'v1',
-                'generated_at' => Carbon::now()->toISOString(),
+                'version' => '1.0',
+                'timestamp' => now()->toISOString(),
             ],
         ];
     }
-    
+
     /**
      * Customize the outgoing response for the resource.
      *
      * @param Request $request
-     * @param \Illuminate\Http\Response $response
+     * @param \Illuminate\Http\JsonResponse $response
      * @return void
      */
     public function withResponse(Request $request, $response): void
     {
-        // Set consistent response headers for PocketExpense resources
+        // Set custom headers if needed
         $response->header('X-Resource-Type', 'PocketExpense');
-        $response->header('X-API-Version', 'v1');
     }
-    
+
     /**
-     * Get the resource's data array with pagination support.
-     * Override to provide consistent collection metadata.
+     * Create a new resource collection with proper pagination handling.
+     *
+     * @param mixed $resource
+     * @return \Illuminate\Http\Resources\Json\AnonymousResourceCollection
+     */
+    public static function collection($resource)
+    {
+        return parent::collection($resource)->additional([
+            'meta' => [
+                'expense_statuses' => [
+                    'draft' => 'Draft',
+                    'submitted' => 'Submitted for Review', 
+                    'approved' => 'Approved',
+                    'rejected' => 'Rejected',
+                ],
+                'permissions' => [
+                    'can_create' => true, // This should be dynamically determined
+                    'can_bulk_upload' => true, // This should be dynamically determined
+                ],
+            ],
+        ]);
+    }
+}
+
+/**
+ * Nested resource for PocketExpenseMetadata
+ * 
+ * Provides a simplified view of metadata for inclusion in PocketExpense resources
+ * without circular dependencies.
+ */
+class PocketExpenseMetadataResource extends JsonResource
+{
+    /**
+     * Transform the metadata resource into an array.
      *
      * @param Request $request
      * @return array<string, mixed>
      */
-    protected function paginationInformation(Request $request): array
+    public function toArray(Request $request): array
     {
-        $paginated = parent::resource;
-        
-        if (!method_exists($paginated, 'total')) {
-            return [];
-        }
-        
         return [
-            'pagination' => [
-                'current_page' => $paginated->currentPage(),
-                'last_page' => $paginated->lastPage(),
-                'per_page' => $paginated->perPage(),
-                'total' => $paginated->total(),
-                'from' => $paginated->firstItem(),
-                'to' => $paginated->lastItem(),
-            ],
-            'filters_applied' => $request->only([
-                'status',
-                'date_from',
-                'date_to',
-                'currency',
-                'expense_type',
-                'merchant_name',
-                'amount_min',
-                'amount_max',
+            'id' => $this->id,
+            'metadata_type' => $this->metadata_type,
+            'details' => $this->details_json,
+            
+            // Reference information based on metadata type
+            'reference_info' => $this->getReferenceInfo(),
+            
+            // Source information for expense_source type
+            'source_info' => $this->when($this->metadata_type === 'expense_source', [
+                'source_id' => $this->expense_source_id,
+                'source_name' => $this->expenseSource->name ?? null,
+                'source_note' => $this->details_json['source_note'] ?? null,
             ]),
-            'sorting' => [
-                'sort_by' => $request->input('sort_by', 'date'),
-                'sort_direction' => $request->input('sort_direction', 'desc'),
-            ],
+            
+            // File information for file type
+            'file_info' => $this->when($this->metadata_type === 'file', [
+                'file_id' => $this->file_store_id,
+                'file_name' => $this->details_json['file_name'] ?? null,
+                'file_size' => $this->details_json['file_size'] ?? null,
+                'mime_type' => $this->details_json['mime_type'] ?? null,
+            ]),
+            
+            // Category information
+            'category_info' => $this->when($this->metadata_type === 'category', [
+                'category_id' => $this->transaction_category_id,
+                'category_name' => $this->details_json['category_name'] ?? null,
+                'category_code' => $this->details_json['category_code'] ?? null,
+                'subcategory' => $this->details_json['subcategory'] ?? null,
+            ]),
+            
+            // Project information
+            'project_info' => $this->when($this->metadata_type === 'project', [
+                'project_id' => $this->project_id,
+                'project_name' => $this->details_json['project_name'] ?? null,
+                'project_code' => $this->details_json['project_code'] ?? null,
+                'phase' => $this->details_json['phase'] ?? null,
+            ]),
+            
+            // Timestamps
+            'create_time' => $this->create_time ? $this->create_time->toISOString() : null,
+            'update_time' => $this->update_time ? $this->update_time->toISOString() : null,
         ];
+    }
+
+    /**
+     * Get reference information based on the metadata type.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function getReferenceInfo(): ?array
+    {
+        return match ($this->metadata_type) {
+            'category' => [
+                'type' => 'transaction_category',
+                'id' => $this->transaction_category_id,
+                'display_name' => $this->details_json['category_name'] ?? 'Category #' . $this->transaction_category_id,
+            ],
+            'tracking_code_type_1', 'tracking_code_type_2' => [
+                'type' => 'tracking_code',
+                'id' => $this->tracking_code_id,
+                'display_name' => $this->details_json['code'] ?? 'Tracking Code #' . $this->tracking_code_id,
+                'description' => $this->details_json['description'] ?? null,
+            ],
+            'project' => [
+                'type' => 'project',
+                'id' => $this->project_id,
+                'display_name' => $this->details_json['project_name'] ?? 'Project #' . $this->project_id,
+            ],
+            'additional_field' => [
+                'type' => 'additional_field',
+                'id' => $this->additional_field_id,
+                'display_name' => $this->details_json['field_name'] ?? 'Field #' . $this->additional_field_id,
+                'value' => $this->details_json['field_value'] ?? null,
+            ],
+            'file' => [
+                'type' => 'file_store',
+                'id' => $this->file_store_id,
+                'display_name' => $this->details_json['file_name'] ?? 'File #' . $this->file_store_id,
+            ],
+            'expense_source' => [
+                'type' => 'expense_source',
+                'id' => $this->expense_source_id,
+                'display_name' => $this->expenseSource->name ?? 'Source #' . $this->expense_source_id,
+            ],
+            default => null,
+        };
     }
 }

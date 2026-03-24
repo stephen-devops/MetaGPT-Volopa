@@ -3,16 +3,15 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpense;
+use App\Models\User;
+use App\Models\Client;
+use App\Models\OptPocketExpenseType;
 use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 /**
- * Factory for PocketExpense model
- * 
- * Generates test data for pocket expenses with proper relationships
- * to users, clients, expense types, and realistic expense scenarios.
- * Handles all expense status workflows and audit trail fields.
+ * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\PocketExpense>
  */
 class PocketExpenseFactory extends Factory
 {
@@ -30,597 +29,555 @@ class PocketExpenseFactory extends Factory
      */
     public function definition(): array
     {
-        $now = Carbon::now();
-        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now');
-        $amount = $this->faker->randomFloat(2, 5.00, 500.00);
+        // Generate expense date within the last 2 years (within 3-year constraint)
+        $expenseDate = $this->faker->dateTimeBetween('-2 years', 'now')->format('Y-m-d');
+        
+        // Common currency codes as per platform constraints
+        $currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'CHF', 'JPY', 'SGD'];
+        
+        // Generate merchant data
+        $merchantNames = [
+            'Starbucks Coffee',
+            'Amazon.com',
+            'Shell Gas Station',
+            'Walmart Supercenter',
+            'McDonald\'s Restaurant',
+            'Home Depot',
+            'Target Corporation',
+            'Best Buy Electronics',
+            'CVS Pharmacy',
+            'Uber Technologies',
+            'Delta Air Lines',
+            'Marriott Hotels',
+            'Microsoft Store',
+            'Apple Store',
+            'Google Cloud Services'
+        ];
+
+        $merchantName = $this->faker->randomElement($merchantNames);
         
         return [
-            // UUID for external references
             'uuid' => Str::uuid()->toString(),
-            
-            // Foreign key relationships - default to ID 1, override in tests
-            'user_id' => 1,
-            'client_id' => 1,
-            
-            // Expense details
-            'date' => $expenseDate->format('Y-m-d'),
-            'merchant_name' => $this->faker->company(),
-            'merchant_description' => $this->faker->optional(0.7)->sentence(8),
-            
-            // Expense type - default to Point of Sale (ID 2 from seeded data)
-            'expense_type' => 2,
-            
-            // Currency and amounts
-            'currency' => $this->faker->randomElement(['GBP', 'EUR', 'USD']),
-            'amount' => $amount,
-            
-            // Additional expense fields
-            'merchant_address' => $this->faker->optional(0.6)->address(),
-            'vat_amount' => $this->faker->optional(0.4)->randomFloat(2, 1.00, $amount * 0.2),
-            'notes' => $this->faker->optional(0.5)->sentence(12),
-            
-            // Status workflow - default to draft
-            'status' => 'draft',
-            
-            // Audit fields - created by same user initially
-            'created_by_user_id' => 1,
+            'user_id' => User::factory(),
+            'client_id' => Client::factory(),
+            'date' => $expenseDate,
+            'merchant_name' => $merchantName,
+            'merchant_description' => $this->faker->optional(0.7)->sentence(6, 12),
+            'expense_type' => OptPocketExpenseType::factory(),
+            'currency' => $this->faker->randomElement($currencies),
+            'amount' => $this->faker->randomFloat(2, -500.00, -10.00), // Default to negative amount (most expense types)
+            'merchant_address' => $this->faker->optional(0.6)->address,
+            'vat_amount' => $this->faker->optional(0.4)->randomFloat(2, 0, 25.00), // VAT % between 0-25%
+            'notes' => $this->faker->optional(0.5)->paragraph(2),
+            'status' => $this->faker->randomElement(['draft', 'submitted', 'approved', 'rejected']),
+            'created_by_user_id' => User::factory(),
             'updated_by_user_id' => null,
             'approved_by_user_id' => null,
-            
-            // Volopa legacy timestamp pattern
-            'create_time' => $now,
-            'update_time' => $now,
-            
-            // Active record (not soft deleted)
-            'deleted' => 0,
+            'create_time' => now(),
+            'update_time' => now(),
+            'deleted' => false,
             'delete_time' => null,
         ];
     }
 
     /**
-     * Configure the factory for draft status expenses.
+     * Create an expense for an existing user and client.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @param int $createdByUserId
+     * @return static
+     */
+    public function forUser(int $userId, int $clientId, int $createdByUserId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'created_by_user_id' => $createdByUserId,
+        ]);
+    }
+
+    /**
+     * Create an expense with a specific status.
+     *
+     * @param string $status
+     * @return static
+     */
+    public function withStatus(string $status): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => $status,
+        ]);
+    }
+
+    /**
+     * Create a draft expense.
      *
      * @return static
      */
     public function draft(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'draft',
-                'approved_by_user_id' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'draft',
+            'updated_by_user_id' => null,
+            'approved_by_user_id' => null,
+        ]);
     }
 
     /**
-     * Configure the factory for submitted status expenses.
+     * Create a submitted expense.
      *
      * @return static
      */
     public function submitted(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'submitted',
-                'approved_by_user_id' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'submitted',
+            'updated_by_user_id' => User::factory(),
+            'approved_by_user_id' => null,
+        ]);
     }
 
     /**
-     * Configure the factory for approved status expenses.
+     * Create an approved expense.
      *
      * @return static
      */
     public function approved(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'approved',
-                'approved_by_user_id' => 1, // Default approver, override in tests
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'approved',
+            'updated_by_user_id' => User::factory(),
+            'approved_by_user_id' => User::factory(),
+            'update_time' => now()->subDays($this->faker->numberBetween(1, 7)),
+        ]);
     }
 
     /**
-     * Configure the factory for rejected status expenses.
+     * Create a rejected expense.
      *
      * @return static
      */
     public function rejected(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'rejected',
-                'approved_by_user_id' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'rejected',
+            'updated_by_user_id' => User::factory(),
+            'approved_by_user_id' => User::factory(),
+            'update_time' => now()->subDays($this->faker->numberBetween(1, 7)),
+        ]);
     }
 
     /**
-     * Configure the factory with a specific user ID.
-     *
-     * @param int $userId
-     * @return static
-     */
-    public function forUser(int $userId): static
-    {
-        return $this->state(function (array $attributes) use ($userId) {
-            return [
-                'user_id' => $userId,
-                'created_by_user_id' => $userId, // Assume user created their own expense
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with a specific client ID.
-     *
-     * @param int $clientId
-     * @return static
-     */
-    public function forClient(int $clientId): static
-    {
-        return $this->state(function (array $attributes) use ($clientId) {
-            return [
-                'client_id' => $clientId,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with a specific expense type ID.
-     *
-     * @param int $expenseTypeId
-     * @return static
-     */
-    public function withExpenseType(int $expenseTypeId): static
-    {
-        return $this->state(function (array $attributes) use ($expenseTypeId) {
-            return [
-                'expense_type' => $expenseTypeId,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for ATM Withdrawal expenses (expense type ID 1).
+     * Create an expense with a positive amount (for refunds).
      *
      * @return static
      */
-    public function atmWithdrawal(): static
+    public function refund(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'expense_type' => 1, // ATM Withdrawal from seeded data
-                'merchant_name' => $this->faker->randomElement([
-                    'ATM - Barclays Bank',
-                    'ATM - HSBC',
-                    'ATM - Santander',
-                    'ATM - Nationwide',
-                    'ATM - Lloyds Bank'
-                ]),
-                'merchant_description' => 'Cash withdrawal',
-                'vat_amount' => null, // ATM withdrawals typically don't have VAT
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount' => $this->faker->randomFloat(2, 10.00, 500.00),
+            'expense_type' => OptPocketExpenseType::factory()->positive(),
+        ]);
     }
 
     /**
-     * Configure the factory for Point of Sale expenses (expense type ID 2).
+     * Create an expense with a negative amount.
      *
      * @return static
      */
-    public function pointOfSale(): static
+    public function charge(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'expense_type' => 2, // Point of Sale from seeded data
-                'merchant_name' => $this->faker->company(),
-                'merchant_description' => $this->faker->randomElement([
-                    'Business meeting lunch',
-                    'Office supplies',
-                    'Client entertainment',
-                    'Travel expenses',
-                    'Conference materials'
-                ]),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount' => $this->faker->randomFloat(2, -500.00, -10.00),
+            'expense_type' => OptPocketExpenseType::factory()->negative(),
+        ]);
     }
 
     /**
-     * Configure the factory for Fee & Charges expenses (expense type ID 3).
+     * Create an expense with a specific currency.
      *
-     * @return static
-     */
-    public function feeAndCharges(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'expense_type' => 3, // Fee & Charges from seeded data
-                'merchant_name' => $this->faker->randomElement([
-                    'Foreign Exchange Fee',
-                    'Card Processing Fee',
-                    'Transaction Charge',
-                    'Service Fee',
-                    'Administration Charge'
-                ]),
-                'merchant_description' => 'Bank or card processing fee',
-                'vat_amount' => null, // Fees typically don't include VAT
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for Refund from Merchant expenses (expense type ID 4).
-     *
-     * @return static
-     */
-    public function refundFromMerchant(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'expense_type' => 4, // Refund from Merchant from seeded data
-                'merchant_name' => $this->faker->company(),
-                'merchant_description' => $this->faker->randomElement([
-                    'Cancelled order refund',
-                    'Product return refund',
-                    'Overcharge adjustment',
-                    'Service cancellation refund',
-                    'Duplicate payment refund'
-                ]),
-                'amount' => $this->faker->randomFloat(2, 5.00, 200.00), // Typically smaller refund amounts
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory with a specific currency.
-     *
-     * @param string $currency 3-letter ISO currency code
+     * @param string $currency
      * @return static
      */
     public function withCurrency(string $currency): static
     {
-        return $this->state(function (array $attributes) use ($currency) {
-            return [
-                'currency' => strtoupper($currency),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'currency' => strtoupper($currency),
+        ]);
     }
 
     /**
-     * Configure the factory with GBP currency.
-     *
-     * @return static
-     */
-    public function gbp(): static
-    {
-        return $this->withCurrency('GBP');
-    }
-
-    /**
-     * Configure the factory with EUR currency.
-     *
-     * @return static
-     */
-    public function eur(): static
-    {
-        return $this->withCurrency('EUR');
-    }
-
-    /**
-     * Configure the factory with USD currency.
-     *
-     * @return static
-     */
-    public function usd(): static
-    {
-        return $this->withCurrency('USD');
-    }
-
-    /**
-     * Configure the factory with a specific amount.
+     * Create an expense with a specific amount.
      *
      * @param float $amount
      * @return static
      */
     public function withAmount(float $amount): static
     {
-        return $this->state(function (array $attributes) use ($amount) {
-            return [
-                'amount' => $amount,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount' => $amount,
+        ]);
     }
 
     /**
-     * Configure the factory with a specific date.
+     * Create an expense for a specific date.
      *
-     * @param string|\DateTimeInterface $date
+     * @param string|\Carbon\Carbon $date
      * @return static
      */
-    public function withDate($date): static
+    public function onDate($date): static
     {
-        return $this->state(function (array $attributes) use ($date) {
-            $dateObj = $date instanceof \DateTimeInterface ? $date : Carbon::parse($date);
-            return [
-                'date' => $dateObj->format('Y-m-d'),
-            ];
-        });
+        if (is_string($date)) {
+            $date = Carbon::parse($date);
+        }
+
+        return $this->state(fn (array $attributes) => [
+            'date' => $date->format('Y-m-d'),
+        ]);
     }
 
     /**
-     * Configure the factory with a specific merchant name.
+     * Create an expense within the last N days.
      *
-     * @param string $merchantName
+     * @param int $days
      * @return static
      */
-    public function withMerchant(string $merchantName): static
+    public function recent(int $days = 30): static
     {
-        return $this->state(function (array $attributes) use ($merchantName) {
-            return [
-                'merchant_name' => $merchantName,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'date' => $this->faker->dateTimeBetween("-{$days} days", 'now')->format('Y-m-d'),
+        ]);
     }
 
     /**
-     * Configure the factory with VAT amount.
+     * Create an old expense (within 3-year constraint).
      *
-     * @param float $vatAmount
+     * @param int $minDaysAgo
+     * @param int $maxDaysAgo
      * @return static
      */
-    public function withVat(float $vatAmount): static
+    public function old(int $minDaysAgo = 365, int $maxDaysAgo = 1095): static
     {
-        return $this->state(function (array $attributes) use ($vatAmount) {
-            return [
-                'vat_amount' => $vatAmount,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'date' => $this->faker->dateTimeBetween("-{$maxDaysAgo} days", "-{$minDaysAgo} days")->format('Y-m-d'),
+        ]);
     }
 
     /**
-     * Configure the factory without VAT.
+     * Create a soft-deleted expense.
+     *
+     * @return static
+     */
+    public function deleted(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'deleted' => true,
+            'delete_time' => now()->subDays($this->faker->numberBetween(1, 30)),
+        ]);
+    }
+
+    /**
+     * Create an expense with VAT.
+     *
+     * @param float|null $vatPercentage
+     * @return static
+     */
+    public function withVat(float $vatPercentage = null): static
+    {
+        $vat = $vatPercentage ?? $this->faker->randomFloat(2, 5.00, 25.00);
+        
+        return $this->state(fn (array $attributes) => [
+            'vat_amount' => $vat,
+        ]);
+    }
+
+    /**
+     * Create an expense without VAT.
      *
      * @return static
      */
     public function withoutVat(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'vat_amount' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'vat_amount' => null,
+        ]);
     }
 
     /**
-     * Configure the factory with specific notes.
+     * Create an expense with detailed notes.
      *
-     * @param string $notes
+     * @param string|null $notes
      * @return static
      */
-    public function withNotes(string $notes): static
+    public function withNotes(string $notes = null): static
     {
-        return $this->state(function (array $attributes) use ($notes) {
-            return [
-                'notes' => $notes,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'notes' => $notes ?? $this->faker->paragraph(3),
+        ]);
     }
 
     /**
-     * Configure the factory without notes.
+     * Create an expense for a specific merchant.
+     *
+     * @param string $merchantName
+     * @param string|null $merchantDescription
+     * @param string|null $merchantAddress
+     * @return static
+     */
+    public function atMerchant(string $merchantName, string $merchantDescription = null, string $merchantAddress = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'merchant_name' => $merchantName,
+            'merchant_description' => $merchantDescription ?? $this->faker->sentence(8),
+            'merchant_address' => $merchantAddress ?? $this->faker->address,
+        ]);
+    }
+
+    /**
+     * Create an expense with specific expense type.
+     *
+     * @param int $expenseTypeId
+     * @return static
+     */
+    public function withExpenseType(int $expenseTypeId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_type' => $expenseTypeId,
+        ]);
+    }
+
+    /**
+     * Create an expense for ATM withdrawal.
      *
      * @return static
      */
-    public function withoutNotes(): static
+    public function atmWithdrawal(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'notes' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_type' => OptPocketExpenseType::factory()->atmWithdrawal(),
+            'merchant_name' => $this->faker->randomElement([
+                'Bank of America ATM',
+                'Chase Bank ATM',
+                'Wells Fargo ATM',
+                'Citibank ATM',
+                'Capital One ATM'
+            ]),
+            'merchant_description' => 'ATM Cash Withdrawal',
+            'amount' => $this->faker->randomFloat(2, -500.00, -20.00),
+            'vat_amount' => null, // ATM withdrawals typically don't have VAT
+        ]);
     }
 
     /**
-     * Configure the factory with specific creator user ID.
+     * Create an expense for point of sale transaction.
      *
+     * @return static
+     */
+    public function pointOfSale(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_type' => OptPocketExpenseType::factory()->pointOfSale(),
+            'amount' => $this->faker->randomFloat(2, -200.00, -5.00),
+            'vat_amount' => $this->faker->randomFloat(2, 5.00, 20.00), // POS transactions often have VAT
+        ]);
+    }
+
+    /**
+     * Create an expense for fees and charges.
+     *
+     * @return static
+     */
+    public function feeAndCharges(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_type' => OptPocketExpenseType::factory()->feeAndCharges(),
+            'merchant_name' => $this->faker->randomElement([
+                'Bank Service Fee',
+                'Transaction Fee',
+                'Monthly Maintenance',
+                'Overdraft Fee',
+                'Wire Transfer Fee'
+            ]),
+            'amount' => $this->faker->randomFloat(2, -50.00, -1.00),
+            'vat_amount' => null, // Bank fees typically don't have VAT
+        ]);
+    }
+
+    /**
+     * Create multiple expenses for the same user/client combination.
+     *
+     * @param int $userId
+     * @param int $clientId
      * @param int $createdByUserId
+     * @param int $count
      * @return static
      */
-    public function createdBy(int $createdByUserId): static
+    public function multipleForUser(int $userId, int $clientId, int $createdByUserId, int $count = 5): static
     {
-        return $this->state(function (array $attributes) use ($createdByUserId) {
-            return [
-                'created_by_user_id' => $createdByUserId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'created_by_user_id' => $createdByUserId,
+        ]);
     }
 
     /**
-     * Configure the factory with specific updater user ID.
+     * Create an expense with specific timestamps.
      *
-     * @param int $updatedByUserId
+     * @param \Carbon\Carbon|string|null $createTime
+     * @param \Carbon\Carbon|string|null $updateTime
      * @return static
      */
-    public function updatedBy(int $updatedByUserId): static
+    public function withTimestamps($createTime = null, $updateTime = null): static
     {
-        return $this->state(function (array $attributes) use ($updatedByUserId) {
-            return [
-                'updated_by_user_id' => $updatedByUserId,
-                'update_time' => Carbon::now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'create_time' => $createTime ?? now()->subDays($this->faker->numberBetween(1, 30)),
+            'update_time' => $updateTime ?? now()->subDays($this->faker->numberBetween(0, 10)),
+        ]);
     }
 
     /**
-     * Configure the factory with specific approver user ID.
+     * Create an expense with audit trail (updated and approved by users).
      *
-     * @param int $approvedByUserId
+     * @param int|null $updatedByUserId
+     * @param int|null $approvedByUserId
      * @return static
      */
-    public function approvedBy(int $approvedByUserId): static
+    public function withAuditTrail(int $updatedByUserId = null, int $approvedByUserId = null): static
     {
-        return $this->state(function (array $attributes) use ($approvedByUserId) {
-            return [
-                'status' => 'approved',
-                'approved_by_user_id' => $approvedByUserId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'updated_by_user_id' => $updatedByUserId ?? User::factory()->create()->id,
+            'approved_by_user_id' => $approvedByUserId,
+            'update_time' => now()->subDays($this->faker->numberBetween(0, 5)),
+        ]);
     }
 
     /**
-     * Configure the factory for soft deleted expenses.
-     *
-     * @return static
-     */
-    public function softDeleted(): static
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted' => 1,
-                'delete_time' => Carbon::now(),
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for active (non-deleted) expenses.
+     * Create an active expense (not deleted).
      *
      * @return static
      */
     public function active(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted' => 0,
-                'delete_time' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'deleted' => false,
+            'delete_time' => null,
+        ]);
     }
 
     /**
-     * Configure the factory to update timestamps for testing updates.
+     * Create expenses with various statuses for testing workflows.
+     *
+     * @return \Illuminate\Database\Eloquent\Collection
+     */
+    public function createAllStatuses(): \Illuminate\Database\Eloquent\Collection
+    {
+        return collect([
+            $this->draft()->create(),
+            $this->submitted()->create(),
+            $this->approved()->create(),
+            $this->rejected()->create(),
+        ]);
+    }
+
+    /**
+     * Create an expense that mimics CSV upload data.
      *
      * @return static
      */
-    public function updated(): static
+    public function fromCsv(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'update_time' => Carbon::now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'submitted', // CSV uploads typically go straight to submitted
+            'notes' => 'Imported from CSV upload on ' . now()->format('Y-m-d H:i:s'),
+            'merchant_description' => $this->faker->sentence(6),
+            'merchant_address' => $this->faker->optional(0.3)->address,
+            'vat_amount' => $this->faker->optional(0.3)->randomFloat(2, 0, 25.00),
+        ]);
     }
 
     /**
-     * Configure the factory with recent expense dates (within last 30 days).
+     * Create an expense with minimum required fields only.
      *
      * @return static
      */
-    public function recent(): static
+    public function minimal(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'date' => $this->faker->dateTimeBetween('-30 days', 'now')->format('Y-m-d'),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'merchant_description' => null,
+            'merchant_address' => null,
+            'vat_amount' => null,
+            'notes' => null,
+            'updated_by_user_id' => null,
+            'approved_by_user_id' => null,
+        ]);
     }
 
     /**
-     * Configure the factory with old expense dates (older than 1 year).
+     * Create an expense with maximum field utilization for testing.
      *
      * @return static
      */
-    public function old(): static
+    public function maximal(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'date' => $this->faker->dateTimeBetween('-3 years', '-1 year')->format('Y-m-d'),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'merchant_description' => $this->faker->paragraph(3),
+            'merchant_address' => $this->faker->address,
+            'vat_amount' => $this->faker->randomFloat(2, 5.00, 25.00),
+            'notes' => $this->faker->paragraph(5),
+            'updated_by_user_id' => User::factory(),
+            'approved_by_user_id' => User::factory(),
+            'status' => 'approved',
+        ]);
     }
 
     /**
-     * Configure the factory for high-value expenses (over £100).
+     * Create expenses with amounts suitable for testing FX conversion.
+     * Uses various currencies and significant amounts.
      *
      * @return static
      */
-    public function highValue(): static
+    public function forFxTesting(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'amount' => $this->faker->randomFloat(2, 100.00, 1000.00),
-            ];
-        });
+        $currencies = ['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF'];
+        $currency = $this->faker->randomElement($currencies);
+        
+        // Adjust amount ranges based on typical currency values
+        $amount = match ($currency) {
+            'JPY' => $this->faker->randomFloat(0, -50000, -1000), // JPY has no decimal places typically
+            'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'CHF' => $this->faker->randomFloat(2, -1000.00, -50.00),
+            default => $this->faker->randomFloat(2, -500.00, -25.00),
+        };
+
+        return $this->state(fn (array $attributes) => [
+            'currency' => $currency,
+            'amount' => $amount,
+        ]);
     }
 
     /**
-     * Configure the factory for low-value expenses (under £50).
+     * Create expenses within date constraint (not older than 3 years).
      *
      * @return static
      */
-    public function lowValue(): static
+    public function withinDateConstraint(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'amount' => $this->faker->randomFloat(2, 1.00, 49.99),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'date' => $this->faker->dateTimeBetween('-3 years', 'now')->format('Y-m-d'),
+        ]);
     }
 
     /**
-     * Configure the factory with a complete expense scenario.
-     * 
-     * @param int $userId
-     * @param int $clientId
-     * @param int $expenseTypeId
-     * @param string $status
-     * @return static
-     */
-    public function complete(int $userId, int $clientId, int $expenseTypeId, string $status = 'draft'): static
-    {
-        return $this->state(function (array $attributes) use ($userId, $clientId, $expenseTypeId, $status) {
-            return [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'expense_type' => $expenseTypeId,
-                'status' => $status,
-                'created_by_user_id' => $userId,
-                'deleted' => 0,
-                'delete_time' => null,
-            ];
-        });
-    }
-
-    /**
-     * Configure the factory for expenses in different status workflow states as a sequence.
+     * Create an expense with a UUID suitable for testing.
      *
+     * @param string|null $uuid
      * @return static
      */
-    public function statusSequence(): static
+    public function withUuid(string $uuid = null): static
     {
-        return $this->sequence(
-            ['status' => 'draft', 'approved_by_user_id' => null],
-            ['status' => 'submitted', 'approved_by_user_id' => null],
-            ['status' => 'approved', 'approved_by_user_id' => 1],
-            ['status' => 'rejected', 'approved_by_user_id' => null]
-        );
-    }
-
-    /**
-     * Configure the factory for different expense types as a sequence.
-     *
-     * @return static
-     */
-    public function expenseTypeSequence(): static
-    {
-        return $this->sequence(
-            ['expense_type' => 1], // ATM Withdrawal
-            ['expense_type' => 2], // Point of Sale
-            ['expense_type' => 3], // Fee & Charges
-            ['expense_type' => 4]  // Refund from Merchant
-        );
+        return $this->state(fn (array $attributes) => [
+            'uuid' => $uuid ?? Str::uuid()->toString(),
+        ]);
     }
 }

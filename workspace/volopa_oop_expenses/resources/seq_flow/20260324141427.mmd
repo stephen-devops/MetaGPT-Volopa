@@ -1,0 +1,72 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant C as Client
+    participant MW as Oauth2UserClient
+    participant PC as PocketExpenseController
+    participant PS as PocketExpenseService
+    participant FX as FXConversionService
+    participant PP as PocketExpensePolicy
+    
+    Note over C, PP: Single Expense CRUD with FX Conversion
+    C->>MW: POST /api/v1/pocket-expenses (expense data)
+    MW->>PC: authenticated request
+    PC->>PP: authorize('create')
+    PP-->>PC: authorized
+    PC->>PS: create(validated_data)
+    PS->>FX: convertAmount(currency, amount, date, client_id)
+    FX->>FX: getWalletBaseCurrency(client_id)
+    FX->>FX: getFXRate(from_currency, to_currency, date)
+    FX-->>PS: converted_amount + rate_info
+    PS->>PS: create PocketExpense with metadata
+    PS-->>PC: created expense
+    PC-->>C: 201 Created + expense resource
+    
+    participant UC as PocketExpenseUploadController
+    participant CSV as PocketExpenseCSVValidator
+    participant Job as ProcessExpenseUpload
+    participant DB as Database
+    
+    Note over C, DB: CSV Batch Upload Processing
+    C->>MW: POST /api/uploads/pocket-expense/csv (file + params)
+    MW->>UC: authenticated request
+    UC->>UC: validate file (size, type, permissions)
+    UC->>DB: create PocketExpenseFileUpload (status=uploaded)
+    UC->>CSV: validate(file, target_user_id, client_id, admin_id)
+    CSV->>CSV: preloadReferenceData(client_id)
+    CSV->>CSV: validateHeaders(headers)
+    CSV->>CSV: validateRow() for each row
+    CSV-->>UC: validation_result (errors or valid_rows)
+    UC->>DB: update upload record (total_records, valid_records, errors)
+    alt validation failed
+        UC-->>C: 422 Unprocessable Entity + error details
+    else validation passed
+        UC->>DB: bulk insert to PocketExpenseUploadsData (status=pending)
+        UC->>Job: dispatch ProcessExpenseUpload(upload_id)
+        UC-->>C: 200 Success + upload_id
+        Job->>Job: syncExpenseBatch() in background
+        Job->>DB: update upload status to completed
+    end
+    
+    participant UPC as UserFeaturePermissionController
+    participant UPS as UserFeaturePermissionService
+    participant UPP as UserFeaturePermissionPolicy
+    
+    Note over C, UPP: User Permission Management
+    C->>MW: POST /api/v1/user-feature-permissions (grant data)
+    MW->>UPC: authenticated request
+    UPC->>UPP: authorize('create')
+    UPP-->>UPC: authorized
+    UPC->>UPS: grantPermission(user_id, client_id, feature_id, grantor_id, manager_id)
+    UPS->>DB: create UserFeaturePermission record
+    UPS-->>UPC: created permission
+    UPC-->>C: 201 Created + permission resource
+    
+    C->>MW: DELETE /api/v1/user-feature-permissions/{id}
+    MW->>UPC: authenticated request
+    UPC->>UPP: authorize('delete', permission)
+    UPP-->>UPC: authorized
+    UPC->>UPS: revokePermission(permission)
+    UPS->>DB: update permission (is_enabled = false)
+    UPS-->>UPC: revoked
+    UPC-->>C: 204 No Content
