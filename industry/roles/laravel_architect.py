@@ -46,7 +46,7 @@ class LaravelArchitect(Architect):
         """
         super().__init__(**kwargs)
 
-        # Use Laravel-specific WriteDesign that includes SYSTEM_CONSTRAINTS
+        # Use Laravel-specific WriteDesign
         self.set_actions([LaravelWriteDesign])
 
         # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
@@ -91,15 +91,13 @@ class LaravelArchitect(Architect):
         lines.append("")
         lines.append(context_reader.get_permission_matrix())
         lines.append("")
+        lines.append(context_reader.get_inherited_behaviors())
+        lines.append("")
         lines.append(context_reader.get_fx_infrastructure())
         lines.append("")
         lines.append(context_reader.get_design_principles())
-        # lines.append("")
-        # lines.append(context_reader.get_inherited_behaviors())
         lines.append("")
         lines.append(context_reader.get_platform_decisions())
-        # lines.append()
-        # lines.append(context_reader.get_platform_flow_touchpoints())
         lines.append("")
         lines.append(context_reader.get_existing_tables_and_models())
         lines.append("")

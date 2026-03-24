@@ -97,7 +97,7 @@ requirements:
       description: "Primary Admin or Volopa Admin can revoke management rights"
       details:
         - "Revoked user loses add/edit/view/approve access to that specific user"
-        - "Until another manager is set, the base user is managed by Primary Administrator"
+        - "Until another manager is set, the base user is managed by Primary Admin"
 
     # --- Single Expense Data Capturing ---
     - id: "REQ-006"
@@ -270,7 +270,7 @@ constraints:
     - "Commission formula: AdjustedRate = BaseRate x (1 - Comm%)"
 
   data_model_constraints:
-    - rule: "Tables with similar columns across modules are DISTINCT entities with different column types, status enums, and relationships. Each MUST have its own Model and Migration. Do NOT merge or conflate tables from different modules."
+    - rule: "Tables with similar columns across modules are DISTINCT entities with different column types, status enums, and relationships. Each MUST have its own Model and Migration and Factory. Do NOT merge or conflate tables from different modules."
       example: "oop_expenses (User Management) and pocket_expense (Single Data Capturing) are separate tables despite both storing expense data."
     - rule: "When tables track both a target user and the performing admin, DB column names and API form field names may differ. Refer to database_tables and api_routes for exact column-to-field mappings. Do NOT assume DB column names match API form field names."
       example: "pocket_expense_file_uploads: DB column 'created_by_user_id' maps to API form field 'user_id' (admin); DB column 'user_id' maps to API form field 'expense_user_id' (target user)."
@@ -280,7 +280,7 @@ constraints:
     rules:
       - id: "DOC-001"
         scope: "classDiagram"
-        rule: "Every file in the 'File List' that defines a class (model, controller, service, request, resource, job, policy) MUST have a corresponding class entry in the 'Data structures and interfaces' classDiagram. Do NOT omit any classes."
+        rule: "Every file in the 'File List' that defines a class (model, controller, service, request, resource, job, policy, factory) MUST have a corresponding class entry in the 'Data structures and interfaces' classDiagram. Do NOT omit any classes."
       - id: "DOC-002"
         scope: "sequenceDiagram"
         rule: "Every Controller and Service class from the classDiagram MUST appear as a participant in at least one sequence flow in the 'Program call flow' sequenceDiagram."
@@ -372,7 +372,7 @@ flows:
         description: "Primary Admin or Volopa Admin revokes managing rights"
       - id: "FLOW-PD-005"
         name: "Fallback"
-        description: "Revoked user falls back to Primary Administrator management until reassigned"
+        description: "Revoked user falls back to Primary Admin management until reassigned"
 
   single_expense_fx_flow:
     name: "FX Conversion for Single Expense Entry"
@@ -1009,13 +1009,13 @@ interfaces:
     source: "SD-OOP_User_Management_System.json#permission_metrics"
     origin: NEW
     roles:
-      - role: "Primary Administrator"
+      - role: "Primary Admin"
         role_origin: EXISTING
         default_permissions:
           own_expenses: ["create", "view", "update", "delete", "approve"]
           all_users_expenses: ["create", "view", "update", "approve"]
           management_rights: ["grant", "revoke"]
-      - role: "Administrator"
+      - role: "Admin"
         role_origin: EXISTING
         default_permissions:
           own_expenses: ["create", "view", "update", "delete", "approve"]

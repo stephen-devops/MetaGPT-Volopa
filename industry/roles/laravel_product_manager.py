@@ -79,8 +79,6 @@ class LaravelProductManager(ProductManager):
         lines.append(context_reader.get_dos_and_donts())
         lines.append("")
         lines.append(context_reader.get_do_not_build())
-        # lines.append("")
-        # lines.append(context_reader.get_components_to_build())
         lines.append("")
         lines.append(context_reader.get_database_tables("names"))
         lines.append("")

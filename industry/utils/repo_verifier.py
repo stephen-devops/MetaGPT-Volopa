@@ -30,6 +30,7 @@ class VerificationReport:
     symbol_name: str | None = None     # from best ES hit
     symbol_type: str | None = None     # from best ES hit
     description: str | None = None     # from best ES hit
+    type_data: dict | None = None      # type-specific metadata (columns, relationships, capabilities, etc.)
     raw_hits: list[dict] = field(default_factory=list)  # full _source from all hits
 
     @property
@@ -130,10 +131,14 @@ class RepoVerifier:
 
     @staticmethod
     def _parse_response(response: dict) -> VerificationReport:
-        """Parse ES response into a VerificationResult.
+        """Parse ES response into a VerificationReport.
 
         resolved_origin is determined purely by whether hits were found:
         found → EXISTING (symbol is in the repo), not found → NEW (symbol is not).
+
+        type_data is extracted from the best hit and contains type-specific
+        metadata (columns, relationships, capabilities, etc.) that lets
+        downstream code generation reference the correct interface.
         """
         hits_list = response.get("hits", {}).get("hits", [])
         total = len(hits_list)
@@ -143,6 +148,7 @@ class RepoVerifier:
         symbol_type = None
         file_path = None
         description = None
+        type_data = None
         raw_hits = []
 
         if found:
@@ -151,9 +157,10 @@ class RepoVerifier:
             # Best hit is first (highest score)
             best = hits_list[0].get("_source", {})
             file_path = best.get("file_path")
-            symbol_name =  best.get("symbol_name")
+            symbol_name = best.get("symbol_name")
             symbol_type = best.get("symbol_type")
             description = best.get("description")
+            type_data = best.get("type_data")
 
         resolved_origin = "EXISTING" if found else "NEW"
 
@@ -165,6 +172,7 @@ class RepoVerifier:
             symbol_name=symbol_name,
             symbol_type=symbol_type,
             description=description,
+            type_data=type_data,
             raw_hits=raw_hits,
         )
 

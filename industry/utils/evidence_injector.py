@@ -23,6 +23,40 @@ class EvidenceInjector:
     DELIMITER_END = "=" * 60 + "\n## END RAG VERIFICATION EVIDENCE\n" + "=" * 60
 
     @staticmethod
+    def _format_type_data(type_data: dict) -> list[str]:
+        """Format type_data dict into indented evidence lines.
+
+        Handles all symbol_types dynamically — no hardcoded type structure.
+        Lists are comma-joined, nested dicts are flattened one level,
+        and scalar values are rendered directly.
+        """
+        lines: list[str] = []
+        for key, value in type_data.items():
+            if value is None:
+                continue
+            if isinstance(value, list):
+                if not value:
+                    continue
+                # List of dicts (e.g. key_columns_used: [{column, type, note}])
+                if isinstance(value[0], dict):
+                    lines.append(f"    {key}:")
+                    for entry in value:
+                        parts = [f"{k}: {v}" for k, v in entry.items() if v is not None]
+                        lines.append(f"      - {', '.join(parts)}")
+                else:
+                    # Simple list of scalars (e.g. capabilities, returns)
+                    lines.append(f"    {key}: {', '.join(str(v) for v in value)}")
+            elif isinstance(value, dict):
+                # Nested dict — flatten one level
+                lines.append(f"    {key}:")
+                for sub_key, sub_value in value.items():
+                    if sub_value is not None:
+                        lines.append(f"      {sub_key}: {sub_value}")
+            else:
+                lines.append(f"    {key}: {value}")
+        return lines
+
+    @staticmethod
     def format_observations(results: list[VerificationReport]) -> str:
         """Group verification results into 4 categories and produce observation text.
 
@@ -32,7 +66,11 @@ class EvidenceInjector:
         - UNVERIFIED: claimed EXISTING but NOT found (warning)
         - COLLISION: claimed NEW but already exists (warning)
 
-        Returns a delimited text block for injection into task_doc.content.
+        For EXISTING_VERIFIED symbols, type_data is included so that downstream
+        code generation can reference correct interfaces (methods, columns,
+        relationships, capabilities) rather than guessing.
+
+        Returns a delimited text block for injection into design_doc.content.
         """
         if not results:
             return ""
@@ -69,7 +107,10 @@ class EvidenceInjector:
                 kind = f" ({r.item.kind})" if r.item.kind else ""
                 path = f" -> {r.file_path}" if r.file_path else ""
                 stype = f" [{r.symbol_type}]" if r.symbol_type else ""
-                lines.append(f"- {r.item.name}{kind}{stype}{path}")
+                desc = f" — {r.description}" if r.description else ""
+                lines.append(f"- {r.item.name}{kind}{stype}{path}{desc}")
+                if r.type_data:
+                    lines.extend(EvidenceInjector._format_type_data(r.type_data))
 
         if new_safe:
             lines.append("\n### NEW (no collision, safe to create)")
@@ -90,7 +131,11 @@ class EvidenceInjector:
             for r in collisions:
                 kind = f" ({r.item.kind})" if r.item.kind else ""
                 path = f" -> exists at {r.file_path}" if r.file_path else " -> exists in index"
-                lines.append(f"- {r.item.name}{kind}{path}")
+                stype = f" [{r.symbol_type}]" if r.symbol_type else ""
+                desc = f" — {r.description}" if r.description else ""
+                lines.append(f"- {r.item.name}{kind}{stype}{path}{desc}")
+                if r.type_data:
+                    lines.extend(EvidenceInjector._format_type_data(r.type_data))
 
         lines.append("")
         lines.append(EvidenceInjector.DELIMITER_END)

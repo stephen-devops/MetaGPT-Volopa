@@ -362,7 +362,7 @@ class ContextReader:
         return f"=== PROJECT REQUIREMENTS ===\n{self.format_section(filtered_data)}"
 
     def get_project_constraints(self) -> str:
-        """Return project.constraints (file, validation, permission, expense source, FX).
+        """Return project.constraints (file, validation, permission, expense source, FX, data model).
         """
         data = self.get("project", "constraints")
         filtered = {k: v for k, v in data.items() if k not in ("description", "design_output_constraints")}

@@ -2,116 +2,116 @@
 
 namespace App\Http\Resources;
 
-use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Http\Request;
 
 /**
- * UserFeaturePermissionResource
+ * API Resource for UserFeaturePermission model
  * 
- * API resource for transforming UserFeaturePermission model data into JSON responses.
- * Shapes the output to hide internal implementation details and provide consistent formatting.
- * Follows Laravel API resource pattern with relationship loading and conditional data inclusion.
+ * Transforms UserFeaturePermission model data into a consistent JSON response format
+ * for API consumers. Includes related user and client information while hiding
+ * sensitive internal fields and properly formatting timestamps.
  * 
- * @property-read \App\Models\UserFeaturePermission $resource
+ * This resource follows the Volopa API response patterns with camelCase field names
+ * and proper data type formatting for frontend consumption.
  */
 class UserFeaturePermissionResource extends JsonResource
 {
     /**
      * Transform the resource into an array.
      *
-     * @param \Illuminate\Http\Request $request
+     * @param Request $request
      * @return array<string, mixed>
      */
     public function toArray(Request $request): array
     {
         return [
+            // Primary identifier
             'id' => $this->id,
-            'user_id' => $this->user_id,
-            'client_id' => $this->client_id,
-            'feature_id' => $this->feature_id,
-            'grantor_id' => $this->grantor_id,
-            'manager_user_id' => $this->manager_user_id,
-            'is_enabled' => $this->is_enabled,
-            'has_manager' => $this->hasManager(),
-            'is_active' => $this->isActive(),
-            'status' => $this->is_enabled ? 'enabled' : 'disabled',
-            'descriptive_name' => $this->descriptive_name,
-            'created_at' => $this->created_at,
-            'updated_at' => $this->updated_at,
             
-            // Include related user information when loaded
+            // User information - target user receiving the permission
+            'userId' => $this->user_id,
             'user' => $this->whenLoaded('user', function () {
                 return [
                     'id' => $this->user->id,
-                    'name' => $this->user->name ?? 'Unknown User',
-                    'email' => $this->user->email ?? null,
+                    'name' => $this->user->name,
+                    'username' => $this->user->username,
                 ];
             }),
             
-            // Include client information when loaded
+            // Client context information
+            'clientId' => $this->client_id,
             'client' => $this->whenLoaded('client', function () {
                 return [
                     'id' => $this->client->id,
-                    'name' => $this->client->name ?? 'Unknown Client',
-                    'code' => $this->client->code ?? null,
+                    'name' => $this->client->name,
                 ];
             }),
             
-            // Include grantor information when loaded
+            // Feature information
+            'featureId' => $this->feature_id,
+            'feature' => $this->whenLoaded('feature', function () {
+                return [
+                    'id' => $this->feature->id,
+                    'name' => $this->feature->name ?? 'OOP Expense', // Default name for feature ID 16
+                ];
+            }),
+            
+            // Permission grantor information
+            'grantorId' => $this->grantor_id,
             'grantor' => $this->whenLoaded('grantor', function () {
                 return [
                     'id' => $this->grantor->id,
-                    'name' => $this->grantor->name ?? 'Unknown User',
-                    'email' => $this->grantor->email ?? null,
+                    'name' => $this->grantor->name,
+                    'username' => $this->grantor->username,
                 ];
             }),
             
-            // Include manager information when loaded and exists
-            'manager' => $this->whenLoaded('manager', function () {
-                if ($this->manager) {
-                    return [
-                        'id' => $this->manager->id,
-                        'name' => $this->manager->name ?? 'Unknown User',
-                        'email' => $this->manager->email ?? null,
-                    ];
-                }
-                return null;
+            // Optional manager information
+            'managerUserId' => $this->manager_user_id,
+            'managerUser' => $this->whenLoaded('managerUser', function () {
+                return $this->manager_user_id ? [
+                    'id' => $this->managerUser->id,
+                    'name' => $this->managerUser->name,
+                    'username' => $this->managerUser->username,
+                ] : null;
             }),
             
-            // Feature information (if available)
-            'feature' => $this->when($this->feature_id, function () {
-                // Since we don't have a Feature model in the context, 
-                // we'll provide basic feature identification
-                return [
-                    'id' => $this->feature_id,
-                    'name' => $this->getFeatureName($this->feature_id),
-                ];
-            }),
+            // Permission state
+            'isEnabled' => (bool) $this->is_enabled,
+            'enabled' => (bool) $this->is_enabled, // Alternative field name for consistency
             
-            // Permission management information
-            'permission_details' => [
-                'granted_at' => $this->created_at,
-                'last_modified_at' => $this->updated_at,
-                'can_be_managed' => $this->hasManager(),
-                'delegation_enabled' => !is_null($this->manager_user_id),
-            ],
+            // Timestamps formatted for API consumption
+            'createdAt' => $this->create_time ? $this->create_time->toISOString() : null,
+            'updatedAt' => $this->update_time ? $this->update_time->toISOString() : null,
             
-            // Audit information (conditionally included for admin users)
-            $this->mergeWhen($request->user()?->isAdmin() ?? false, [
-                'audit_trail' => [
-                    'granted_by_user_id' => $this->grantor_id,
-                    'managed_by_user_id' => $this->manager_user_id,
-                    'created_timestamp' => $this->created_at,
-                    'updated_timestamp' => $this->updated_at,
-                ],
-            ]),
+            // Additional metadata for frontend use
+            'permissionType' => 'user_feature_permission',
+            'scope' => 'client', // Indicates this is a client-scoped permission
+            
+            // Conditional fields based on loaded relationships
+            'canManage' => $this->when(
+                $this->relationLoaded('managerUser'),
+                fn() => !is_null($this->manager_user_id)
+            ),
+            
+            // Permission summary for quick reference
+            'summary' => $this->when(
+                $this->relationLoaded('user') && $this->relationLoaded('feature'),
+                fn() => sprintf(
+                    '%s has %s access to %s',
+                    $this->user->name ?? 'User',
+                    $this->is_enabled ? 'enabled' : 'disabled',
+                    $this->feature->name ?? 'OOP Expense'
+                )
+            ),
         ];
     }
 
     /**
      * Get additional data that should be returned with the resource array.
      *
-     * @param \Illuminate\Http\Request $request
+     * @param Request $request
      * @return array<string, mixed>
      */
     public function with(Request $request): array
@@ -126,44 +126,23 @@ class UserFeaturePermissionResource extends JsonResource
     }
 
     /**
-     * Customize the response for a request.
+     * Customize the outgoing response for the resource.
      *
-     * @param \Illuminate\Http\Request $request
-     * @param \Illuminate\Http\Response $response
+     * @param Request $request
+     * @param \Illuminate\Http\JsonResponse $response
      * @return void
      */
     public function withResponse(Request $request, $response): void
     {
-        // Set custom headers for permission resources
+        // Set consistent API headers
         $response->header('X-Resource-Type', 'UserFeaturePermission');
-        $response->header('X-Permission-Status', $this->is_enabled ? 'enabled' : 'disabled');
+        $response->header('X-API-Version', 'v1');
     }
 
     /**
-     * Get a human-readable feature name based on feature ID.
-     * This is a placeholder method since we don't have a Feature model in the context.
-     *
-     * @param int $featureId
-     * @return string
-     */
-    protected function getFeatureName(int $featureId): string
-    {
-        // This would typically query a features table or use a feature service
-        // For now, we'll return a generic name based on common feature IDs
-        return match ($featureId) {
-            1 => 'Pocket Expenses Management',
-            2 => 'User Permission Management', 
-            3 => 'CSV Batch Upload',
-            4 => 'Expense Approval',
-            5 => 'Financial Reporting',
-            default => 'Feature ' . $featureId,
-        };
-    }
-
-    /**
-     * Create a collection resource for multiple UserFeaturePermission instances.
-     *
-     * @param mixed $resource
+     * Static method to create a collection response with pagination.
+     * 
+     * @param \Illuminate\Contracts\Pagination\Paginator|\Illuminate\Support\Collection $resource
      * @return \Illuminate\Http\Resources\Json\AnonymousResourceCollection
      */
     public static function collection($resource)
@@ -173,135 +152,111 @@ class UserFeaturePermissionResource extends JsonResource
                 'resource_type' => 'user_feature_permission_collection',
                 'api_version' => 'v1',
                 'timestamp' => now()->toISOString(),
-                'total_permissions' => $resource->count(),
-                'enabled_permissions' => $resource->where('is_enabled', true)->count(),
-                'disabled_permissions' => $resource->where('is_enabled', false)->count(),
+                'total_items' => method_exists($resource, 'total') ? $resource->total() : $resource->count(),
             ],
         ]);
     }
 
     /**
-     * Transform the resource for a summary view (minimal data).
-     *
+     * Create a minimal resource representation for nested responses.
+     * 
+     * @return array<string, mixed>
+     */
+    public function toMinimal(): array
+    {
+        return [
+            'id' => $this->id,
+            'userId' => $this->user_id,
+            'clientId' => $this->client_id,
+            'featureId' => $this->feature_id,
+            'isEnabled' => (bool) $this->is_enabled,
+            'hasManager' => !is_null($this->manager_user_id),
+        ];
+    }
+
+    /**
+     * Create a summary resource representation for list views.
+     * 
      * @return array<string, mixed>
      */
     public function toSummary(): array
     {
         return [
             'id' => $this->id,
-            'user_id' => $this->user_id,
-            'feature_id' => $this->feature_id,
-            'feature_name' => $this->getFeatureName($this->feature_id),
-            'is_enabled' => $this->is_enabled,
-            'status' => $this->is_enabled ? 'enabled' : 'disabled',
-            'has_manager' => $this->hasManager(),
-            'granted_at' => $this->created_at,
+            'userId' => $this->user_id,
+            'userName' => $this->whenLoaded('user', fn() => $this->user->name, 'Unknown User'),
+            'clientId' => $this->client_id,
+            'clientName' => $this->whenLoaded('client', fn() => $this->client->name, 'Unknown Client'),
+            'featureId' => $this->feature_id,
+            'featureName' => $this->whenLoaded('feature', fn() => $this->feature->name, 'OOP Expense'),
+            'isEnabled' => (bool) $this->is_enabled,
+            'grantedBy' => $this->whenLoaded('grantor', fn() => $this->grantor->name, 'System'),
+            'managedBy' => $this->whenLoaded('managerUser', fn() => $this->managerUser->name ?? null, null),
+            'createdAt' => $this->create_time ? $this->create_time->toISOString() : null,
         ];
     }
 
     /**
-     * Transform the resource for a detailed admin view.
-     *
-     * @return array<string, mixed>
+     * Determine if the permission is currently active and effective.
+     * 
+     * @return bool
      */
-    public function toAdminView(): array
+    public function isActive(): bool
     {
-        $baseData = $this->toArray(request());
-        
-        return array_merge($baseData, [
-            'system_information' => [
-                'internal_id' => $this->id,
-                'database_timestamps' => [
-                    'created_at' => $this->created_at,
-                    'updated_at' => $this->updated_at,
-                ],
-                'permission_hierarchy' => [
-                    'grantor_user_id' => $this->grantor_id,
-                    'target_user_id' => $this->user_id,
-                    'delegated_manager_id' => $this->manager_user_id,
-                ],
-                'validation_status' => [
-                    'is_valid_permission' => $this->isActive(),
-                    'has_delegation' => $this->hasManager(),
-                    'permission_scope' => 'client_scoped',
-                ],
-            ],
-            'debug_information' => [
-                'model_class' => get_class($this->resource),
-                'resource_class' => self::class,
-                'loaded_relationships' => array_keys($this->resource->getRelations()),
-            ],
-        ]);
+        return (bool) $this->is_enabled;
     }
 
     /**
-     * Get permissions grouped by status.
-     *
-     * @param \Illuminate\Database\Eloquent\Collection $permissions
-     * @return array<string, mixed>
+     * Get the permission status as a human-readable string.
+     * 
+     * @return string
      */
-    public static function getGroupedByStatus($permissions): array
+    public function getStatusText(): string
     {
-        $grouped = $permissions->groupBy(function ($permission) {
-            return $permission->is_enabled ? 'enabled' : 'disabled';
-        });
-
-        return [
-            'enabled' => self::collection($grouped->get('enabled', collect())),
-            'disabled' => self::collection($grouped->get('disabled', collect())),
-            'summary' => [
-                'total_permissions' => $permissions->count(),
-                'enabled_count' => $grouped->get('enabled', collect())->count(),
-                'disabled_count' => $grouped->get('disabled', collect())->count(),
-            ],
-        ];
+        return $this->is_enabled ? 'Active' : 'Inactive';
     }
 
     /**
-     * Get permissions grouped by feature.
-     *
-     * @param \Illuminate\Database\Eloquent\Collection $permissions
-     * @return array<string, mixed>
+     * Check if this permission has management delegation.
+     * 
+     * @return bool
      */
-    public static function getGroupedByFeature($permissions): array
+    public function hasManagementDelegation(): bool
     {
-        $grouped = $permissions->groupBy('feature_id');
-        $result = [];
-
-        foreach ($grouped as $featureId => $featurePermissions) {
-            $result[] = [
-                'feature_id' => $featureId,
-                'feature_name' => (new self(new \App\Models\UserFeaturePermission()))->getFeatureName($featureId),
-                'permissions' => self::collection($featurePermissions),
-                'summary' => [
-                    'total_users' => $featurePermissions->count(),
-                    'enabled_users' => $featurePermissions->where('is_enabled', true)->count(),
-                    'disabled_users' => $featurePermissions->where('is_enabled', false)->count(),
-                ],
-            ];
-        }
-
-        return $result;
+        return !is_null($this->manager_user_id);
     }
 
     /**
-     * Create a minimal resource for dropdown/select options.
-     *
+     * Get permission details for audit trail display.
+     * 
      * @return array<string, mixed>
      */
-    public function toSelectOption(): array
+    public function toAuditTrail(): array
     {
         return [
-            'value' => $this->id,
-            'label' => sprintf(
-                '%s - %s (%s)',
-                $this->user->name ?? 'User #' . $this->user_id,
-                $this->getFeatureName($this->feature_id),
-                $this->is_enabled ? 'Enabled' : 'Disabled'
-            ),
-            'is_enabled' => $this->is_enabled,
-            'feature_id' => $this->feature_id,
-            'user_id' => $this->user_id,
+            'permissionId' => $this->id,
+            'action' => $this->is_enabled ? 'granted' : 'revoked',
+            'targetUser' => $this->whenLoaded('user', fn() => [
+                'id' => $this->user->id,
+                'name' => $this->user->name,
+            ], ['id' => $this->user_id, 'name' => 'Unknown User']),
+            'feature' => [
+                'id' => $this->feature_id,
+                'name' => 'OOP Expense', // Default for feature ID 16
+            ],
+            'client' => $this->whenLoaded('client', fn() => [
+                'id' => $this->client->id,
+                'name' => $this->client->name,
+            ], ['id' => $this->client_id, 'name' => 'Unknown Client']),
+            'grantedBy' => $this->whenLoaded('grantor', fn() => [
+                'id' => $this->grantor->id,
+                'name' => $this->grantor->name,
+            ], ['id' => $this->grantor_id, 'name' => 'System']),
+            'delegatedTo' => $this->manager_user_id ? $this->whenLoaded('managerUser', fn() => [
+                'id' => $this->managerUser->id,
+                'name' => $this->managerUser->name,
+            ], ['id' => $this->manager_user_id, 'name' => 'Manager']) : null,
+            'timestamp' => $this->create_time ? $this->create_time->toISOString() : null,
         ];
     }
 }

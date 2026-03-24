@@ -24,28 +24,31 @@ from metagpt.actions.design_api_an import (
 SYSTEM_CONSTRAINTS = ActionNode(
     key="System constraints",
     expected_type=List[str],
-    instruction="Identify and list ALL constraints the system design must respect. "
-                "Derive them from the project/environment constraints-based YAML context provided. "
-                "Cover each of these categories:\n"
+    instruction="Extract COMPLETE, CLEAN AND DETAILED constraints the system design must respect. "
+                "Derive them from the total YAML context files provided. "
+                "Covers these categories:\n"
                 "  - Business rules and limits\n"
                 "  - Routing and API conventions\n"
-                "  - Data model constraints (field types, lengths, relationships, engines, table identity rules)\n"
-                "  - Validation rules (formats, ranges, allowed values)\n"
-                "  - Security, performance, tenancy and authorization\n"
-                "  - Permission delegation and hierarchy\n"
-                "  - Soft delete and timestamp patterns, conventions and variants\n"
-                "  - Coding standards and code quality\n"
-                "  - File-based constraints (formats, limits, uploads)\n"
-                "Include both required practises and prohibited anti-patterns. "
+                "  - Authentication and middleware identity\n"
+                "  - Data model details (column types, fields, seed data, relationships, foreign keys)\n"
+                "  - Validation rules, security, performance and authorization\n"
+                "  - Permissions, identity checks, tenancy and hierarchy\n"
+                "  - Timestamp patterns, conventions and variants\n"
+                "  - Exact default data records existing on feature activation\n"
+                "  - Coding standards, constants and code quality\n"
+                "  - Numeric standards or file-based constraints, limits and thresholds\n\n"
+                "Include both required practises and prohibited patterns derived from the input YAML context. "
                 "Each constraint must be a single, actionable statement.",
     example=[
         "Maximum number of rows per CSV file.",
+        "Lookup table seeded with exact records: 'Type A' (negative), 'Type B' (positive)",
         "All-or-nothing: if any CSV row fails validation, no records are created.",
-        "FX rate lookup: max window lookback from initial date.",
+        "Table X uses pattern A for timestamps; Table Y uses pattern B",
         "Parameter Name max length per DB definition (e.g. VARCHAR 180)",
-        "Only Primary Admin has full access to all users by default",
-        "Create ONE Migration per new data table schema",
-        "Responses must be shaped through a transform layer"
+        "Role hierarchy: highest role has full access by default",
+        "All API routes must use Oauth2 client middleware",
+        "Create ONE Migration and ONE Factory per new data table schema",
+        "Numeric columns use the exact DECIMAL precision specified per column in the schema",
     ],
 )
 

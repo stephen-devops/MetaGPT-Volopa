@@ -6,44 +6,46 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 /**
  * PocketExpense Model
  * 
- * Represents out-of-pocket expenses with comprehensive tracking and approval workflow.
- * Supports multi-tenant client scoping, FX conversion, and audit trail capabilities.
- * Uses Volopa's timestamp and soft delete patterns.
+ * Manages out-of-pocket expenses with full audit trail, status workflow,
+ * and metadata relationships. Uses Volopa legacy timestamp pattern and
+ * soft delete conventions. Supports multi-tenant client scoping and
+ * comprehensive expense tracking with FX conversion capabilities.
  * 
- * @property int $id
- * @property string $uuid
- * @property int $user_id
- * @property int $client_id
- * @property \Carbon\Carbon $date
- * @property string $merchant_name
- * @property string|null $merchant_description
- * @property int|null $expense_type
- * @property string $currency
- * @property float $amount
- * @property string|null $merchant_address
- * @property float|null $vat_amount
- * @property string|null $notes
- * @property string $status
- * @property int $created_by_user_id
- * @property int|null $updated_by_user_id
- * @property int|null $approved_by_user_id
- * @property \Carbon\Carbon $create_time
- * @property \Carbon\Carbon|null $update_time
- * @property bool $deleted
- * @property \Carbon\Carbon|null $delete_time
- * @property-read \App\Models\User $user
- * @property-read \App\Models\Client $client
- * @property-read \App\Models\OptPocketExpenseType|null $expenseType
- * @property-read \App\Models\User $createdBy
- * @property-read \App\Models\User|null $updatedBy
- * @property-read \App\Models\User|null $approvedBy
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\PocketExpenseMetadata> $metadata
- * @property-read int|null $metadata_count
+ * @property int $id Primary key
+ * @property string|null $uuid External UUID reference
+ * @property int $user_id User who owns this expense
+ * @property int $client_id Client context for multi-tenancy
+ * @property string $date Expense date (YYYY-MM-DD format)
+ * @property string $merchant_name Merchant/vendor name (max 180 chars)
+ * @property string|null $merchant_description Additional merchant details
+ * @property int $expense_type Foreign key to opt_pocket_expense_type table
+ * @property string $currency 3-letter ISO currency code
+ * @property float $amount Expense amount with decimal precision
+ * @property string|null $merchant_address Merchant address information
+ * @property float|null $vat_amount VAT amount if applicable
+ * @property string|null $notes Additional notes (trimmed, SQL injection safe)
+ * @property string $status Expense approval status workflow (draft, submitted, approved, rejected)
+ * @property int $created_by_user_id User who created this expense record
+ * @property int|null $updated_by_user_id User who last updated this expense
+ * @property int|null $approved_by_user_id User who approved this expense (if status=approved)
+ * @property Carbon|null $create_time Record creation timestamp
+ * @property Carbon|null $update_time Record update timestamp
+ * @property int $deleted Soft delete flag (0=active, 1=deleted)
+ * @property Carbon|null $delete_time Soft delete timestamp
+ * 
+ * @property-read User $user Expense owner relationship
+ * @property-read User $client Client relationship
+ * @property-read OptPocketExpenseType $expenseType Expense type relationship
+ * @property-read User $createdBy User who created this expense
+ * @property-read User|null $updatedBy User who last updated this expense
+ * @property-read User|null $approvedBy User who approved this expense
+ * @property-read \Illuminate\Database\Eloquent\Collection|PocketExpenseMetadata[] $metadata Related metadata records
  */
 class PocketExpense extends Model
 {
@@ -57,8 +59,15 @@ class PocketExpense extends Model
     protected $table = 'pocket_expense';
 
     /**
-     * Indicates if the model should be timestamped using Volopa pattern.
-     * We override Laravel timestamps to use Volopa's create_time/update_time pattern.
+     * The primary key for the model.
+     *
+     * @var string
+     */
+    protected $primaryKey = 'id';
+
+    /**
+     * Indicates if the model should be timestamped using Laravel conventions.
+     * We use Volopa legacy timestamp pattern instead.
      *
      * @var bool
      */
@@ -86,37 +95,10 @@ class PocketExpense extends Model
         'created_by_user_id',
         'updated_by_user_id',
         'approved_by_user_id',
+        'create_time',
+        'update_time',
         'deleted',
         'delete_time',
-    ];
-
-    /**
-     * The attributes that should be cast.
-     *
-     * @var array<string, string>
-     */
-    protected $casts = [
-        'id' => 'integer',
-        'uuid' => 'string',
-        'user_id' => 'integer',
-        'client_id' => 'integer',
-        'date' => 'date',
-        'merchant_name' => 'string',
-        'merchant_description' => 'string',
-        'expense_type' => 'integer',
-        'currency' => 'string',
-        'amount' => 'decimal:2',
-        'merchant_address' => 'string',
-        'vat_amount' => 'decimal:2',
-        'notes' => 'string',
-        'status' => 'string',
-        'created_by_user_id' => 'integer',
-        'updated_by_user_id' => 'integer',
-        'approved_by_user_id' => 'integer',
-        'create_time' => 'datetime',
-        'update_time' => 'datetime',
-        'deleted' => 'boolean',
-        'delete_time' => 'datetime',
     ];
 
     /**
@@ -132,42 +114,74 @@ class PocketExpense extends Model
     ];
 
     /**
+     * The attributes that should be cast.
+     *
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'id' => 'integer',
+        'user_id' => 'integer',
+        'client_id' => 'integer',
+        'expense_type' => 'integer',
+        'amount' => 'decimal:2',
+        'vat_amount' => 'decimal:2',
+        'created_by_user_id' => 'integer',
+        'updated_by_user_id' => 'integer',
+        'approved_by_user_id' => 'integer',
+        'create_time' => 'datetime',
+        'update_time' => 'datetime',
+        'delete_time' => 'datetime',
+        'deleted' => 'integer',
+        'date' => 'date',
+    ];
+
+    /**
+     * The attributes that should be mutated to dates.
+     * Using Volopa legacy timestamp fields.
+     *
+     * @var array<int, string>
+     */
+    protected $dates = [
+        'create_time',
+        'update_time',
+        'delete_time',
+        'date',
+    ];
+
+    /**
      * The model's default values for attributes.
      *
      * @var array<string, mixed>
      */
     protected $attributes = [
         'status' => 'draft',
-        'deleted' => false,
-        'amount' => 0.00,
+        'deleted' => 0,
+        'delete_time' => null,
+        'merchant_description' => null,
+        'merchant_address' => null,
+        'vat_amount' => null,
+        'notes' => null,
+        'updated_by_user_id' => null,
+        'approved_by_user_id' => null,
+        'uuid' => null,
     ];
 
     /**
-     * The attributes that should be validated as dates.
-     *
-     * @var array<int, string>
-     */
-    protected $dates = [
-        'date',
-        'create_time',
-        'update_time',
-        'delete_time',
-    ];
-
-    /**
-     * Status enum values.
-     */
-    const STATUS_DRAFT = 'draft';
-    const STATUS_SUBMITTED = 'submitted';
-    const STATUS_APPROVED = 'approved';
-    const STATUS_REJECTED = 'rejected';
-
-    /**
-     * Valid status values.
+     * The expense status enumeration values.
      *
      * @var array<string>
      */
-    public static array $validStatuses = [
+    public const STATUS_DRAFT = 'draft';
+    public const STATUS_SUBMITTED = 'submitted';
+    public const STATUS_APPROVED = 'approved';
+    public const STATUS_REJECTED = 'rejected';
+
+    /**
+     * Valid expense status values.
+     *
+     * @var array<string>
+     */
+    public const VALID_STATUSES = [
         self::STATUS_DRAFT,
         self::STATUS_SUBMITTED,
         self::STATUS_APPROVED,
@@ -175,29 +189,66 @@ class PocketExpense extends Model
     ];
 
     /**
-     * Get the user that owns the expense.
+     * Boot the model and set up event listeners.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\User, \App\Models\PocketExpense>
+     * @return void
+     */
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        // Generate UUID on creation if not provided
+        static::creating(function (self $model) {
+            if (empty($model->uuid)) {
+                $model->uuid = Str::uuid()->toString();
+            }
+
+            // Set create_time if not provided
+            if (empty($model->create_time)) {
+                $model->create_time = Carbon::now();
+            }
+
+            // Set update_time to match create_time on creation
+            if (empty($model->update_time)) {
+                $model->update_time = $model->create_time;
+            }
+        });
+
+        // Update the update_time on model updates
+        static::updating(function (self $model) {
+            $model->update_time = Carbon::now();
+        });
+
+        // Add global scope to exclude soft deleted records
+        static::addGlobalScope('notDeleted', function ($builder) {
+            $builder->where('deleted', 0);
+        });
+    }
+
+    /**
+     * Get the user who owns this expense.
+     *
+     * @return BelongsTo<User, PocketExpense>
      */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'user_id');
+        return $this->belongsTo(User::class, 'user_id', 'id');
     }
 
     /**
-     * Get the client that this expense is scoped to.
+     * Get the client this expense belongs to.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\Client, \App\Models\PocketExpense>
+     * @return BelongsTo<Client, PocketExpense>
      */
     public function client(): BelongsTo
     {
-        return $this->belongsTo(Client::class, 'client_id');
+        return $this->belongsTo(Client::class, 'client_id', 'id');
     }
 
     /**
-     * Get the expense type configuration.
+     * Get the expense type for this expense.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\OptPocketExpenseType, \App\Models\PocketExpense>
+     * @return BelongsTo<OptPocketExpenseType, PocketExpense>
      */
     public function expenseType(): BelongsTo
     {
@@ -207,76 +258,41 @@ class PocketExpense extends Model
     /**
      * Get the user who created this expense.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\User, \App\Models\PocketExpense>
+     * @return BelongsTo<User, PocketExpense>
      */
     public function createdBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'created_by_user_id');
+        return $this->belongsTo(User::class, 'created_by_user_id', 'id');
     }
 
     /**
      * Get the user who last updated this expense.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\User, \App\Models\PocketExpense>
+     * @return BelongsTo<User, PocketExpense>
      */
     public function updatedBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'updated_by_user_id');
+        return $this->belongsTo(User::class, 'updated_by_user_id', 'id');
     }
 
     /**
      * Get the user who approved this expense.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\User, \App\Models\PocketExpense>
+     * @return BelongsTo<User, PocketExpense>
      */
     public function approvedBy(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'approved_by_user_id');
+        return $this->belongsTo(User::class, 'approved_by_user_id', 'id');
     }
 
     /**
-     * Get the metadata entries associated with this expense.
+     * Get all metadata records associated with this expense.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\HasMany<\App\Models\PocketExpenseMetadata>
+     * @return HasMany<PocketExpenseMetadata>
      */
     public function metadata(): HasMany
     {
-        return $this->hasMany(PocketExpenseMetadata::class, 'pocket_expense_id', 'id')
-                    ->where('deleted', false);
-    }
-
-    /**
-     * Scope a query to only include active (non-deleted) expenses.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeActive($query)
-    {
-        return $query->where('deleted', false);
-    }
-
-    /**
-     * Scope a query to only include soft deleted expenses.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeDeleted($query)
-    {
-        return $query->where('deleted', true);
-    }
-
-    /**
-     * Scope a query to only include expenses for a specific client.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeForClient($query, int $clientId)
-    {
-        return $query->where('client_id', $clientId);
+        return $this->hasMany(PocketExpenseMetadata::class, 'pocket_expense_id', 'id');
     }
 
     /**
@@ -292,6 +308,18 @@ class PocketExpense extends Model
     }
 
     /**
+     * Scope a query to only include expenses for a specific client.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $clientId
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeForClient($query, int $clientId)
+    {
+        return $query->where('client_id', $clientId);
+    }
+
+    /**
      * Scope a query to only include expenses with a specific status.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
@@ -304,60 +332,19 @@ class PocketExpense extends Model
     }
 
     /**
-     * Scope a query to only include draft expenses.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeDraft($query)
-    {
-        return $query->where('status', self::STATUS_DRAFT);
-    }
-
-    /**
-     * Scope a query to only include submitted expenses.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeSubmitted($query)
-    {
-        return $query->where('status', self::STATUS_SUBMITTED);
-    }
-
-    /**
-     * Scope a query to only include approved expenses.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeApproved($query)
-    {
-        return $query->where('status', self::STATUS_APPROVED);
-    }
-
-    /**
-     * Scope a query to only include rejected expenses.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeRejected($query)
-    {
-        return $query->where('status', self::STATUS_REJECTED);
-    }
-
-    /**
      * Scope a query to only include expenses within a date range.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param \Carbon\Carbon $startDate
-     * @param \Carbon\Carbon $endDate
+     * @param string|\DateTimeInterface $startDate
+     * @param string|\DateTimeInterface $endDate
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeDateRange($query, \Carbon\Carbon $startDate, \Carbon\Carbon $endDate)
+    public function scopeWithinDateRange($query, $startDate, $endDate)
     {
-        return $query->whereBetween('date', [$startDate, $endDate]);
+        $start = $startDate instanceof \DateTimeInterface ? $startDate->format('Y-m-d') : $startDate;
+        $end = $endDate instanceof \DateTimeInterface ? $endDate->format('Y-m-d') : $endDate;
+        
+        return $query->whereBetween('date', [$start, $end]);
     }
 
     /**
@@ -369,43 +356,57 @@ class PocketExpense extends Model
      */
     public function scopeWithCurrency($query, string $currency)
     {
-        return $query->where('currency', $currency);
+        return $query->where('currency', strtoupper($currency));
     }
 
     /**
-     * Scope a query to only include expenses of a specific type.
+     * Scope a query to only include expenses above a certain amount.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $expenseTypeId
+     * @param float $amount
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeWithExpenseType($query, int $expenseTypeId)
+    public function scopeAboveAmount($query, float $amount)
     {
-        return $query->where('expense_type', $expenseTypeId);
+        return $query->where('amount', '>', $amount);
     }
 
     /**
-     * Check if the expense is currently active (not soft deleted).
+     * Scope a query to only include expenses below a certain amount.
      *
-     * @return bool
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param float $amount
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function isActive(): bool
+    public function scopeBelowAmount($query, float $amount)
     {
-        return $this->deleted === false;
+        return $query->where('amount', '<', $amount);
     }
 
     /**
-     * Check if the expense is soft deleted.
+     * Scope a query to include soft deleted records.
      *
-     * @return bool
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function isDeleted(): bool
+    public function scopeWithDeleted($query)
     {
-        return $this->deleted === true;
+        return $query->withoutGlobalScope('notDeleted');
     }
 
     /**
-     * Check if the expense is in draft status.
+     * Scope a query to only include soft deleted records.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeOnlyDeleted($query)
+    {
+        return $query->withoutGlobalScope('notDeleted')->where('deleted', 1);
+    }
+
+    /**
+     * Check if this expense is in draft status.
      *
      * @return bool
      */
@@ -415,7 +416,7 @@ class PocketExpense extends Model
     }
 
     /**
-     * Check if the expense is submitted for approval.
+     * Check if this expense is submitted for approval.
      *
      * @return bool
      */
@@ -425,7 +426,7 @@ class PocketExpense extends Model
     }
 
     /**
-     * Check if the expense is approved.
+     * Check if this expense is approved.
      *
      * @return bool
      */
@@ -435,7 +436,7 @@ class PocketExpense extends Model
     }
 
     /**
-     * Check if the expense is rejected.
+     * Check if this expense is rejected.
      *
      * @return bool
      */
@@ -445,433 +446,357 @@ class PocketExpense extends Model
     }
 
     /**
-     * Check if the expense can be edited (only drafts can be edited).
+     * Check if this expense can be edited.
+     * Only draft and rejected expenses can be edited.
      *
      * @return bool
      */
-    public function canEdit(): bool
+    public function canBeEdited(): bool
     {
-        return $this->isDraft() && $this->isActive();
+        return in_array($this->status, [self::STATUS_DRAFT, self::STATUS_REJECTED]);
     }
 
     /**
-     * Check if the expense can be submitted for approval.
+     * Check if this expense can be submitted for approval.
+     * Only draft and rejected expenses can be submitted.
      *
      * @return bool
      */
-    public function canSubmit(): bool
+    public function canBeSubmitted(): bool
     {
-        return $this->isDraft() && $this->isActive();
+        return in_array($this->status, [self::STATUS_DRAFT, self::STATUS_REJECTED]);
     }
 
     /**
-     * Check if the expense can be approved.
+     * Check if this expense can be approved.
+     * Only submitted expenses can be approved.
      *
      * @return bool
      */
-    public function canApprove(): bool
+    public function canBeApproved(): bool
     {
-        return $this->isSubmitted() && $this->isActive();
+        return $this->status === self::STATUS_SUBMITTED;
     }
 
     /**
-     * Check if the expense can be rejected.
+     * Check if this expense can be rejected.
+     * Only submitted expenses can be rejected.
      *
      * @return bool
      */
-    public function canReject(): bool
+    public function canBeRejected(): bool
     {
-        return $this->isSubmitted() && $this->isActive();
+        return $this->status === self::STATUS_SUBMITTED;
     }
 
     /**
-     * Check if the expense can be deleted (only drafts can be deleted).
+     * Check if this expense is soft deleted.
      *
      * @return bool
      */
-    public function canDelete(): bool
+    public function isSoftDeleted(): bool
     {
-        return $this->isDraft() && $this->isActive();
+        return $this->deleted === 1;
     }
 
     /**
-     * Submit the expense for approval.
-     *
-     * @param int $submittedByUserId
-     * @return bool
-     */
-    public function submit(int $submittedByUserId): bool
-    {
-        if (!$this->canSubmit()) {
-            return false;
-        }
-
-        $this->status = self::STATUS_SUBMITTED;
-        $this->updated_by_user_id = $submittedByUserId;
-        return $this->save();
-    }
-
-    /**
-     * Approve the expense.
-     *
-     * @param int $approvedByUserId
-     * @return bool
-     */
-    public function approve(int $approvedByUserId): bool
-    {
-        if (!$this->canApprove()) {
-            return false;
-        }
-
-        $this->status = self::STATUS_APPROVED;
-        $this->approved_by_user_id = $approvedByUserId;
-        $this->updated_by_user_id = $approvedByUserId;
-        return $this->save();
-    }
-
-    /**
-     * Reject the expense.
-     *
-     * @param int $rejectedByUserId
-     * @return bool
-     */
-    public function reject(int $rejectedByUserId): bool
-    {
-        if (!$this->canReject()) {
-            return false;
-        }
-
-        $this->status = self::STATUS_REJECTED;
-        $this->updated_by_user_id = $rejectedByUserId;
-        return $this->save();
-    }
-
-    /**
-     * Revert the expense back to draft status.
-     *
-     * @param int $revertedByUserId
-     * @return bool
-     */
-    public function revertToDraft(int $revertedByUserId): bool
-    {
-        if (!in_array($this->status, [self::STATUS_SUBMITTED, self::STATUS_REJECTED])) {
-            return false;
-        }
-
-        $this->status = self::STATUS_DRAFT;
-        $this->updated_by_user_id = $revertedByUserId;
-        $this->approved_by_user_id = null;
-        return $this->save();
-    }
-
-    /**
-     * Soft delete the expense.
+     * Soft delete this expense.
      *
      * @return bool
      */
     public function softDelete(): bool
     {
-        if (!$this->canDelete()) {
-            return false;
-        }
-
-        $this->deleted = true;
-        $this->delete_time = now();
+        $this->deleted = 1;
+        $this->delete_time = Carbon::now();
+        $this->update_time = Carbon::now();
+        
         return $this->save();
     }
 
     /**
-     * Restore the soft deleted expense.
+     * Restore this soft deleted expense.
      *
      * @return bool
      */
     public function restore(): bool
     {
-        $this->deleted = false;
+        $this->deleted = 0;
         $this->delete_time = null;
+        $this->update_time = Carbon::now();
+        
         return $this->save();
     }
 
     /**
-     * Get the formatted amount with currency.
+     * Submit this expense for approval.
+     * Changes status from draft or rejected to submitted.
+     *
+     * @return bool
+     */
+    public function submit(): bool
+    {
+        if (!$this->canBeSubmitted()) {
+            return false;
+        }
+
+        $this->status = self::STATUS_SUBMITTED;
+        $this->approved_by_user_id = null; // Clear any previous approval
+        
+        return $this->save();
+    }
+
+    /**
+     * Approve this expense.
+     * Changes status to approved and sets the approver.
+     *
+     * @param int $approverUserId
+     * @return bool
+     */
+    public function approve(int $approverUserId): bool
+    {
+        if (!$this->canBeApproved()) {
+            return false;
+        }
+
+        $this->status = self::STATUS_APPROVED;
+        $this->approved_by_user_id = $approverUserId;
+        
+        return $this->save();
+    }
+
+    /**
+     * Reject this expense.
+     * Changes status to rejected and clears the approver.
+     *
+     * @return bool
+     */
+    public function reject(): bool
+    {
+        if (!$this->canBeRejected()) {
+            return false;
+        }
+
+        $this->status = self::STATUS_REJECTED;
+        $this->approved_by_user_id = null;
+        
+        return $this->save();
+    }
+
+    /**
+     * Get the formatted amount with currency symbol.
      *
      * @return string
      */
     public function getFormattedAmountAttribute(): string
     {
-        return number_format($this->amount, 2) . ' ' . $this->currency;
+        $symbols = [
+            'GBP' => '£',
+            'EUR' => '€',
+            'USD' => '$',
+        ];
+        
+        $symbol = $symbols[$this->currency] ?? $this->currency;
+        return $symbol . number_format($this->amount, 2);
     }
 
     /**
-     * Get the status display name.
+     * Get the formatted VAT amount with currency symbol.
+     *
+     * @return string|null
+     */
+    public function getFormattedVatAmountAttribute(): ?string
+    {
+        if ($this->vat_amount === null) {
+            return null;
+        }
+        
+        $symbols = [
+            'GBP' => '£',
+            'EUR' => '€',
+            'USD' => '$',
+        ];
+        
+        $symbol = $symbols[$this->currency] ?? $this->currency;
+        return $symbol . number_format($this->vat_amount, 2);
+    }
+
+    /**
+     * Get the human readable status.
      *
      * @return string
      */
     public function getStatusDisplayAttribute(): string
     {
-        return match ($this->status) {
+        $statusDisplayMap = [
             self::STATUS_DRAFT => 'Draft',
-            self::STATUS_SUBMITTED => 'Awaiting Approval',
+            self::STATUS_SUBMITTED => 'Submitted',
             self::STATUS_APPROVED => 'Approved',
             self::STATUS_REJECTED => 'Rejected',
-            default => ucfirst($this->status),
-        };
+        ];
+        
+        return $statusDisplayMap[$this->status] ?? 'Unknown';
     }
 
     /**
-     * Get the count of associated metadata entries.
+     * Get the expense age in days from the expense date.
      *
      * @return int
      */
-    public function getMetadataCountAttribute(): int
+    public function getAgeInDaysAttribute(): int
     {
-        return $this->metadata()->count();
+        return Carbon::parse($this->date)->diffInDays(Carbon::now());
     }
 
     /**
-     * Check if the expense has VAT information.
+     * Check if the expense date is within the allowed age limit (3 years).
      *
      * @return bool
      */
-    public function hasVat(): bool
+    public function isWithinAgeLimit(): bool
     {
-        return !is_null($this->vat_amount) && $this->vat_amount > 0;
+        $threeYearsAgo = Carbon::now()->subYears(3);
+        return Carbon::parse($this->date)->isAfter($threeYearsAgo);
     }
 
     /**
-     * Get the net amount (amount minus VAT).
+     * Get metadata of a specific type.
      *
-     * @return float
+     * @param string $metadataType
+     * @return PocketExpenseMetadata|null
      */
-    public function getNetAmount(): float
+    public function getMetadataByType(string $metadataType): ?PocketExpenseMetadata
     {
-        return $this->hasVat() ? $this->amount - $this->vat_amount : $this->amount;
+        return $this->metadata()->where('metadata_type', $metadataType)->first();
     }
 
     /**
-     * Calculate VAT percentage if VAT amount is provided.
+     * Check if this expense has metadata of a specific type.
      *
-     * @return float|null
-     */
-    public function getVatPercentage(): ?float
-    {
-        if (!$this->hasVat() || $this->getNetAmount() == 0) {
-            return null;
-        }
-
-        return ($this->vat_amount / $this->getNetAmount()) * 100;
-    }
-
-    /**
-     * Find expense by UUID.
-     *
-     * @param string $uuid
-     * @return \App\Models\PocketExpense|null
-     */
-    public static function findByUuid(string $uuid): ?PocketExpense
-    {
-        return static::where('uuid', $uuid)->first();
-    }
-
-    /**
-     * Get expenses for a specific user and client.
-     *
-     * @param int $userId
-     * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public static function forUserAndClient(int $userId, int $clientId): \Illuminate\Database\Eloquent\Builder
-    {
-        return static::active()
-                     ->forUser($userId)
-                     ->forClient($clientId);
-    }
-
-    /**
-     * Get pending expenses (submitted but not yet approved/rejected) for a client.
-     *
-     * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Collection
-     */
-    public static function getPendingForClient(int $clientId): \Illuminate\Database\Eloquent\Collection
-    {
-        return static::active()
-                     ->forClient($clientId)
-                     ->submitted()
-                     ->orderBy('create_time', 'asc')
-                     ->get();
-    }
-
-    /**
-     * Create a new expense with proper defaults.
-     *
-     * @param array $attributes
-     * @return static
-     */
-    public static function createExpense(array $attributes): static
-    {
-        $attributes['uuid'] = $attributes['uuid'] ?? Str::uuid()->toString();
-        $attributes['create_time'] = now();
-        $attributes['status'] = $attributes['status'] ?? self::STATUS_DRAFT;
-        $attributes['deleted'] = false;
-        
-        return static::create($attributes);
-    }
-
-    /**
-     * Validate if a status value is valid.
-     *
-     * @param string $status
+     * @param string $metadataType
      * @return bool
      */
-    public static function isValidStatus(string $status): bool
+    public function hasMetadataType(string $metadataType): bool
     {
-        return in_array($status, self::$validStatuses);
+        return $this->metadata()->where('metadata_type', $metadataType)->exists();
     }
 
     /**
-     * Boot method for model events.
+     * Set the merchant name with proper trimming and validation.
      *
+     * @param string $value
      * @return void
      */
-    protected static function boot()
+    public function setMerchantNameAttribute(string $value): void
     {
-        parent::boot();
+        // Trim whitespace and limit to 180 characters as per DB constraint
+        $this->attributes['merchant_name'] = substr(trim($value), 0, 180);
+    }
 
-        // Generate UUID on creation if not provided
-        static::creating(function (PocketExpense $expense) {
-            if (empty($expense->uuid)) {
-                $expense->uuid = Str::uuid()->toString();
-            }
-            
-            if (is_null($expense->create_time)) {
-                $expense->create_time = now();
-            }
-            
-            // Ensure defaults
-            if (is_null($expense->deleted)) {
-                $expense->deleted = false;
-            }
-            
-            if (empty($expense->status)) {
-                $expense->status = self::STATUS_DRAFT;
-            }
+    /**
+     * Set the notes with proper trimming to prevent SQL injection and follow DB limit.
+     *
+     * @param string|null $value
+     * @return void
+     */
+    public function setNotesAttribute(?string $value): void
+    {
+        if ($value === null) {
+            $this->attributes['notes'] = null;
+        } else {
+            // Trim whitespace and HTML tags for security
+            $this->attributes['notes'] = trim(strip_tags($value));
+        }
+    }
 
-            // Validate status
-            if (!self::isValidStatus($expense->status)) {
-                throw new \InvalidArgumentException('Invalid expense status: ' . $expense->status);
-            }
+    /**
+     * Set the currency code to uppercase.
+     *
+     * @param string $value
+     * @return void
+     */
+    public function setCurrencyAttribute(string $value): void
+    {
+        $this->attributes['currency'] = strtoupper($value);
+    }
 
-            // Ensure amount is positive
-            if (isset($expense->amount)) {
-                $expense->amount = abs($expense->amount);
-            }
+    /**
+     * Set the status with validation.
+     *
+     * @param string $value
+     * @return void
+     */
+    public function setStatusAttribute(string $value): void
+    {
+        if (!in_array($value, self::VALID_STATUSES)) {
+            throw new \InvalidArgumentException("Invalid status: {$value}");
+        }
+        
+        $this->attributes['status'] = $value;
+    }
 
-            // Trim merchant name to fit database constraint
-            if (isset($expense->merchant_name)) {
-                $expense->merchant_name = substr(trim($expense->merchant_name), 0, 180);
-            }
+    /**
+     * Get the route key name for model binding.
+     *
+     * @return string
+     */
+    public function getRouteKeyName(): string
+    {
+        return 'uuid';
+    }
 
-            // Validate currency format (3-letter ISO)
-            if (isset($expense->currency) && !preg_match('/^[A-Z]{3}$/', $expense->currency)) {
-                throw new \InvalidArgumentException('Currency must be a 3-letter ISO code: ' . $expense->currency);
-            }
+    /**
+     * Convert the model instance to an array for API responses.
+     * Excludes sensitive internal fields.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        $array = parent::toArray();
+        
+        // Add computed attributes
+        $array['formatted_amount'] = $this->formatted_amount;
+        $array['formatted_vat_amount'] = $this->formatted_vat_amount;
+        $array['status_display'] = $this->status_display;
+        $array['age_in_days'] = $this->age_in_days;
+        $array['can_be_edited'] = $this->canBeEdited();
+        $array['can_be_submitted'] = $this->canBeSubmitted();
+        $array['can_be_approved'] = $this->canBeApproved();
+        $array['can_be_rejected'] = $this->canBeRejected();
+        $array['is_within_age_limit'] = $this->isWithinAgeLimit();
+        
+        return $array;
+    }
 
-            // Validate expense date is not too old (3 years maximum)
-            if (isset($expense->date)) {
-                $threeYearsAgo = now()->subYears(3);
-                if ($expense->date < $threeYearsAgo) {
-                    throw new \InvalidArgumentException('Expense date cannot be older than 3 years.');
-                }
-            }
-        });
+    /**
+     * Determine if the model should be searchable.
+     * Used for search functionality if implemented.
+     *
+     * @return bool
+     */
+    public function shouldBeSearchable(): bool
+    {
+        return !$this->isSoftDeleted();
+    }
 
-        // Handle updates
-        static::updating(function (PocketExpense $expense) {
-            // Set update_time (handled by database trigger, but set here for consistency)
-            $expense->update_time = now();
-
-            // Validate status changes
-            if ($expense->isDirty('status') && !self::isValidStatus($expense->status)) {
-                throw new \InvalidArgumentException('Invalid expense status: ' . $expense->status);
-            }
-
-            // Ensure amount is positive when updated
-            if ($expense->isDirty('amount') && isset($expense->amount)) {
-                $expense->amount = abs($expense->amount);
-            }
-
-            // Trim merchant name to fit database constraint
-            if ($expense->isDirty('merchant_name') && isset($expense->merchant_name)) {
-                $expense->merchant_name = substr(trim($expense->merchant_name), 0, 180);
-            }
-
-            // Validate currency format on updates
-            if ($expense->isDirty('currency') && isset($expense->currency)) {
-                if (!preg_match('/^[A-Z]{3}$/', $expense->currency)) {
-                    throw new \InvalidArgumentException('Currency must be a 3-letter ISO code: ' . $expense->currency);
-                }
-            }
-
-            // Validate expense date is not too old on updates
-            if ($expense->isDirty('date') && isset($expense->date)) {
-                $threeYearsAgo = now()->subYears(3);
-                if ($expense->date < $threeYearsAgo) {
-                    throw new \InvalidArgumentException('Expense date cannot be older than 3 years.');
-                }
-            }
-        });
-
-        // Log expense status changes for audit purposes
-        static::updated(function (PocketExpense $expense) {
-            if ($expense->isDirty('status')) {
-                \Log::info('Expense status changed', [
-                    'expense_id' => $expense->id,
-                    'uuid' => $expense->uuid,
-                    'user_id' => $expense->user_id,
-                    'client_id' => $expense->client_id,
-                    'old_status' => $expense->getOriginal('status'),
-                    'new_status' => $expense->status,
-                    'updated_by' => $expense->updated_by_user_id,
-                    'approved_by' => $expense->approved_by_user_id,
-                    'changed_at' => now(),
-                ]);
-            }
-        });
-
-        // Log soft deletion events
-        static::updated(function (PocketExpense $expense) {
-            if ($expense->isDirty('deleted') && $expense->deleted === true) {
-                \Log::info('Expense soft deleted', [
-                    'expense_id' => $expense->id,
-                    'uuid' => $expense->uuid,
-                    'user_id' => $expense->user_id,
-                    'client_id' => $expense->client_id,
-                    'amount' => $expense->amount,
-                    'currency' => $expense->currency,
-                    'deleted_at' => $expense->delete_time,
-                ]);
-            }
-        });
-
-        // Log restoration events
-        static::updated(function (PocketExpense $expense) {
-            if ($expense->isDirty('deleted') && $expense->deleted === false) {
-                \Log::info('Expense restored', [
-                    'expense_id' => $expense->id,
-                    'uuid' => $expense->uuid,
-                    'user_id' => $expense->user_id,
-                    'client_id' => $expense->client_id,
-                    'restored_at' => now(),
-                ]);
-            }
-        });
-
-        // Prevent hard deletion if not in draft status
-        static::deleting(function (PocketExpense $expense) {
-            if (!$expense->isDraft()) {
-                throw new \RuntimeException('Cannot delete expense that is not in draft status. Use soft delete instead.');
-            }
-        });
+    /**
+     * Get the searchable data array for the model.
+     * Used for search functionality if implemented.
+     *
+     * @return array<string, mixed>
+     */
+    public function toSearchableArray(): array
+    {
+        return [
+            'id' => $this->id,
+            'uuid' => $this->uuid,
+            'merchant_name' => $this->merchant_name,
+            'merchant_description' => $this->merchant_description,
+            'currency' => $this->currency,
+            'amount' => $this->amount,
+            'status' => $this->status,
+            'notes' => $this->notes,
+            'date' => $this->date->format('Y-m-d'),
+        ];
     }
 }

@@ -8,318 +8,646 @@ use App\Models\PocketExpenseSourceClientConfig;
 use App\Policies\PocketExpensePolicy;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Gate;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
- * UpdatePocketExpenseRequest
+ * Form Request for updating pocket expenses
  * 
- * Form request for validating pocket expense updates with authorization policy.
- * Handles validation rules, field sanitization, and authorization checks.
- * Supports partial updates while maintaining data integrity constraints.
+ * Handles validation and authorization for expense update operations.
+ * Implements business rules including date constraints, currency validation,
+ * amount sign logic based on expense type, VAT percentage validation,
+ * source validation with "Other" note requirements, and field length limits.
  */
 class UpdatePocketExpenseRequest extends FormRequest
 {
     /**
-     * The PocketExpense model instance being updated.
-     *
-     * @var \App\Models\PocketExpense|null
-     */
-    protected ?PocketExpense $expense = null;
-
-    /**
      * Determine if the user is authorized to make this request.
-     *
-     * @return bool
      */
     public function authorize(): bool
     {
-        // Get the expense model from route binding
-        $this->expense = $this->route('pocket_expense') ?? $this->route('expense');
-        
-        if (!$this->expense) {
+        $user = Auth::user();
+        if (!$user) {
             return false;
         }
 
-        // Use the policy to check if user can update this expense
-        return Gate::forUser($this->user())->allows('update', $this->expense);
+        // Get the expense being updated from route model binding
+        $expense = $this->route('expense');
+        if (!$expense instanceof PocketExpense) {
+            return false;
+        }
+
+        // Use the PocketExpensePolicy to check update authorization
+        return $user->can('update', $expense);
     }
 
     /**
      * Get the validation rules that apply to the request.
      *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
+     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array|string>
      */
     public function rules(): array
     {
-        $clientId = $this->user()->client_id ?? null;
-        $expenseId = $this->expense ? $this->expense->id : null;
+        $user = Auth::user();
+        $clientId = $user ? $user->client_id : null;
         
-        return [
-            // Core expense fields
-            'date' => [
-                'sometimes',
+        // Get the expense being updated to allow partial updates
+        $expense = $this->route('expense');
+        $isDateRequired = $this->has('date');
+        $isMerchantNameRequired = $this->has('merchant_name');
+        $isAmountRequired = $this->has('amount');
+        $isCurrencyRequired = $this->has('currency');
+        $isExpenseTypeRequired = $this->has('expense_type');
+
+        $rules = [];
+
+        // Date validation - not older than 3 years, DD/MM/YYYY format expected from frontend
+        if ($isDateRequired || $this->filled('date')) {
+            $rules['date'] = [
                 'required',
-                'date_format:Y-m-d',
-                'before_or_equal:today',
+                'date_format:d/m/Y',
                 function ($attribute, $value, $fail) {
-                    $date = Carbon::parse($value);
-                    $threeYearsAgo = now()->subYears(3);
-                    if ($date->lt($threeYearsAgo)) {
-                        $fail('The expense date cannot be older than 3 years.');
+                    try {
+                        $parsedDate = Carbon::createFromFormat('d/m/Y', $value);
+                        $threeYearsAgo = Carbon::now()->subYears(3);
+                        
+                        if ($parsedDate->isBefore($threeYearsAgo)) {
+                            $fail('The expense date must not be older than 3 years.');
+                        }
+                        
+                        if ($parsedDate->isFuture()) {
+                            $fail('The expense date cannot be in the future.');
+                        }
+                    } catch (\Exception $e) {
+                        $fail('The expense date must be in DD/MM/YYYY format.');
                     }
                 },
-            ],
-            
-            'merchant_name' => [
-                'sometimes',
+            ];
+        }
+
+        // Merchant name - max 180 characters as per DB definition
+        if ($isMerchantNameRequired || $this->filled('merchant_name')) {
+            $rules['merchant_name'] = [
                 'required',
                 'string',
                 'max:180',
-                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]+$/u', // Prevent control characters
-            ],
-            
-            'merchant_description' => [
-                'sometimes',
+                'not_regex:/[<>"\']/', // Prevent basic XSS patterns
+            ];
+        }
+
+        // Merchant description - optional text field
+        if ($this->has('merchant_description')) {
+            $rules['merchant_description'] = [
                 'nullable',
                 'string',
-                'max:255',
-                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$/u',
-            ],
-            
-            'expense_type' => [
-                'sometimes',
-                'nullable',
+                'max:1000',
+                'not_regex:/[<>"\']/', // Prevent basic XSS patterns
+            ];
+        }
+
+        // Expense type validation - must exist in opt_pocket_expense_type table
+        if ($isExpenseTypeRequired || $this->filled('expense_type')) {
+            $rules['expense_type'] = [
+                'required',
                 'integer',
-                'min:1',
-                Rule::exists('opt_pocket_expense_type', 'id'),
-            ],
-            
-            'currency' => [
-                'sometimes',
+                'exists:opt_pocket_expense_type,id',
+            ];
+        }
+
+        // Currency validation - 3-letter ISO format, must be in platform allowed list
+        if ($isCurrencyRequired || $this->filled('currency')) {
+            $rules['currency'] = [
                 'required',
                 'string',
                 'size:3',
                 'regex:/^[A-Z]{3}$/',
                 function ($attribute, $value, $fail) {
-                    // Basic currency validation - should be expanded with actual currency list
-                    $validCurrencies = [
-                        'USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD',
-                        'MXN', 'SGD', 'HKD', 'NOK', 'TRY', 'ZAR', 'BRL', 'INR', 'KRW', 'PLN'
-                    ];
-                    
-                    if (!in_array(strtoupper($value), $validCurrencies)) {
+                    // Platform-managed currency validation
+                    $allowedCurrencies = ['GBP', 'EUR', 'USD', 'CAD', 'AUD', 'CHF', 'JPY', 'SEK', 'NOK', 'DKK'];
+                    if (!in_array(strtoupper($value), $allowedCurrencies)) {
                         $fail('The selected currency is not supported.');
                     }
                 },
-            ],
-            
-            'amount' => [
-                'sometimes',
+            ];
+        }
+
+        // Amount validation - decimal with precision, sign determined by expense type
+        if ($isAmountRequired || $this->filled('amount')) {
+            $rules['amount'] = [
                 'required',
                 'numeric',
-                'min:0.01',
-                'max:999999.99',
-                'regex:/^\d+(\.\d{1,2})?$/', // Ensure max 2 decimal places
-            ],
-            
-            'merchant_address' => [
-                'sometimes',
+                'not_in:0',
+                'regex:/^\d+(\.\d{1,2})?$/', // Max 2 decimal places
+                function ($attribute, $value, $fail) {
+                    $expenseTypeId = $this->input('expense_type');
+                    
+                    if ($expenseTypeId) {
+                        $expenseType = OptPocketExpenseType::find($expenseTypeId);
+                        if ($expenseType) {
+                            // Validate amount sign based on expense type
+                            if ($expenseType->amount_sign === 'positive' && $value < 0) {
+                                $fail('Amount must be positive for ' . $expenseType->option . ' expense type.');
+                            } elseif ($expenseType->amount_sign === 'negative' && $value > 0) {
+                                $fail('Amount must be negative for ' . $expenseType->option . ' expense type.');
+                            }
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Merchant address - optional text field
+        if ($this->has('merchant_address')) {
+            $rules['merchant_address'] = [
                 'nullable',
                 'string',
                 'max:500',
-                'regex:/^[^\x00-\x08\x0B\x0C\x0E-\x1F\x7F]*$/u',
-            ],
-            
-            'vat_amount' => [
-                'sometimes',
+                'not_regex:/[<>"\']/', // Prevent basic XSS patterns
+            ];
+        }
+
+        // VAT amount validation - must be numeric, between 0 and amount
+        if ($this->has('vat_amount')) {
+            $rules['vat_amount'] = [
                 'nullable',
                 'numeric',
                 'min:0',
-                'max:999999.99',
-                'regex:/^\d+(\.\d{1,2})?$/',
+                'regex:/^\d+(\.\d{1,2})?$/', // Max 2 decimal places
                 function ($attribute, $value, $fail) {
-                    $amount = $this->input('amount') ?? ($this->expense ? $this->expense->amount : 0);
-                    if ($value !== null && $amount > 0 && $value >= $amount) {
-                        $fail('The VAT amount must be less than the total amount.');
+                    $amount = abs($this->input('amount', 0));
+                    if ($value && $amount && $value > $amount) {
+                        $fail('VAT amount cannot exceed the total expense amount.');
                     }
                 },
-            ],
-            
-            'notes' => [
-                'sometimes',
+            ];
+        }
+
+        // VAT percentage validation - strip % sign, numeric between 0-100
+        if ($this->has('vat_percentage')) {
+            $rules['vat_percentage'] = [
                 'nullable',
                 'string',
-                'max:1000',
                 function ($attribute, $value, $fail) {
-                    if ($value !== null) {
-                        // Prevent potential SQL injection patterns
-                        $dangerousPatterns = [
-                            '/\b(union|select|insert|update|delete|drop|create|alter|exec|execute)\b/i',
-                            '/[<>]/', // Basic XSS prevention
-                            '/\x00/', // Null byte
-                        ];
-                        
-                        foreach ($dangerousPatterns as $pattern) {
-                            if (preg_match($pattern, $value)) {
-                                $fail('The notes field contains invalid characters.');
-                                break;
-                            }
-                        }
+                    if ($value === null || $value === '') {
+                        return;
+                    }
+                    
+                    // Strip % sign if present
+                    $cleanValue = str_replace('%', '', $value);
+                    
+                    if (!is_numeric($cleanValue)) {
+                        $fail('VAT percentage must be a numeric value.');
+                        return;
+                    }
+                    
+                    $numericValue = (float) $cleanValue;
+                    if ($numericValue < 0 || $numericValue > 100) {
+                        $fail('VAT percentage must be between 0 and 100.');
                     }
                 },
-            ],
-            
-            'status' => [
-                'sometimes',
-                'string',
-                Rule::in(PocketExpense::$validStatuses),
-                function ($attribute, $value, $fail) {
-                    // Business rule: only drafts can change status to submitted
-                    if ($this->expense && $value && $value !== $this->expense->status) {
-                        if ($this->expense->status !== PocketExpense::STATUS_DRAFT && 
-                            $value === PocketExpense::STATUS_SUBMITTED) {
-                            $fail('Only draft expenses can be submitted for approval.');
-                        }
-                        
-                        // Business rule: only certain roles can approve/reject
-                        if (in_array($value, [PocketExpense::STATUS_APPROVED, PocketExpense::STATUS_REJECTED])) {
-                            if (!Gate::forUser($this->user())->allows('approve', $this->expense)) {
-                                $fail('You do not have permission to approve or reject expenses.');
-                            }
-                        }
-                    }
-                },
-            ],
-            
-            // Metadata fields (optional)
-            'category_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                Rule::exists('transaction_categories', 'id')->where('client_id', $clientId),
-            ],
-            
-            'tracking_code_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                Rule::exists('tracking_codes', 'id')->where('client_id', $clientId),
-            ],
-            
-            'project_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                Rule::exists('configurable_projects', 'id')->where('client_id', $clientId),
-            ],
-            
-            'expense_source_id' => [
-                'sometimes',
-                'nullable',
-                'integer',
-                'min:1',
-                function ($attribute, $value, $fail) use ($clientId) {
-                    if ($value !== null) {
-                        $source = PocketExpenseSourceClientConfig::active()
-                            ->where('id', $value)
-                            ->where(function ($query) use ($clientId) {
-                                $query->whereNull('client_id') // Global sources
-                                      ->orWhere('client_id', $clientId); // Client-specific sources
-                            })
-                            ->first();
-                            
-                        if (!$source) {
-                            $fail('The selected expense source is not available.');
-                        }
-                    }
-                },
-            ],
-            
-            'source_note' => [
-                'sometimes',
+            ];
+        }
+
+        // Notes validation - trim and prevent SQL injection, follow DB limit
+        if ($this->has('notes')) {
+            $rules['notes'] = [
                 'nullable',
                 'string',
-                'max:500',
+                'max:2000',
+                'not_regex:/[<>"\']/', // Prevent basic XSS patterns
+            ];
+        }
+
+        // Status validation - must be valid enum value
+        if ($this->has('status')) {
+            $rules['status'] = [
+                'sometimes',
+                'string',
+                Rule::in(['draft', 'submitted', 'approved', 'rejected']),
                 function ($attribute, $value, $fail) {
-                    $sourceId = $this->input('expense_source_id');
-                    if ($sourceId) {
-                        $source = PocketExpenseSourceClientConfig::find($sourceId);
-                        if ($source && $source->name === 'Other' && empty(trim($value))) {
-                            $fail('Source note is required when expense source is "Other".');
-                        }
+                    $user = Auth::user();
+                    $expense = $this->route('expense');
+                    
+                    // Business users and card users cannot approve expenses
+                    if ($value === 'approved' && $user && in_array($user->role, ['Business User', 'Card User'])) {
+                        $fail('You do not have permission to approve expenses.');
+                    }
+                    
+                    // Prevent status regression (approved/rejected -> draft/submitted)
+                    if ($expense && in_array($expense->status, ['approved', 'rejected']) && in_array($value, ['draft', 'submitted'])) {
+                        $fail('Cannot change status from ' . $expense->status . ' back to ' . $value . '.');
                     }
                 },
-            ],
-            
-            // File upload field (for receipt attachments)
-            'receipt_file' => [
-                'sometimes',
-                'nullable',
-                'file',
-                'mimes:jpg,jpeg,png,pdf',
-                'max:10240', // 10MB max
-            ],
-        ];
+            ];
+        }
+
+        // Metadata validation rules
+        $this->addMetadataValidationRules($rules, $clientId);
+
+        return $rules;
     }
 
     /**
-     * Get custom messages for validator errors.
+     * Add metadata-related validation rules.
+     *
+     * @param array $rules
+     * @param int|null $clientId
+     * @return void
+     */
+    protected function addMetadataValidationRules(array &$rules, ?int $clientId): void
+    {
+        // Transaction category validation
+        if ($this->has('transaction_category_id')) {
+            $rules['transaction_category_id'] = [
+                'nullable',
+                'integer',
+                function ($attribute, $value, $fail) use ($clientId) {
+                    if ($value && $clientId) {
+                        $exists = DB::table('transaction_category')
+                            ->where('id', $value)
+                            ->where('client_id', $clientId)
+                            ->where('deleted', 0)
+                            ->exists();
+                        
+                        if (!$exists) {
+                            $fail('The selected transaction category is invalid for your organization.');
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Tracking code validation
+        if ($this->has('tracking_code_id')) {
+            $rules['tracking_code_id'] = [
+                'nullable',
+                'integer',
+                function ($attribute, $value, $fail) use ($clientId) {
+                    if ($value && $clientId) {
+                        $user = Auth::user();
+                        $exists = DB::table('tracking_codes')
+                            ->where('id', $value)
+                            ->where('client_id', $clientId)
+                            ->where(function ($query) use ($user) {
+                                $query->whereNull('user_id')
+                                    ->orWhere('user_id', $user->id);
+                            })
+                            ->where('deleted', 0)
+                            ->exists();
+                        
+                        if (!$exists) {
+                            $fail('The selected tracking code is invalid or not accessible to you.');
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Project validation
+        if ($this->has('project_id')) {
+            $rules['project_id'] = [
+                'nullable',
+                'integer',
+                function ($attribute, $value, $fail) {
+                    if ($value) {
+                        $exists = DB::table('configurable_projects')
+                            ->where('id', $value)
+                            ->where('deleted', 0)
+                            ->exists();
+                        
+                        if (!$exists) {
+                            $fail('The selected project is invalid.');
+                        }
+                    }
+                },
+            ];
+        }
+
+        // File store validation
+        if ($this->has('file_store_id')) {
+            $rules['file_store_id'] = [
+                'nullable',
+                'integer',
+                function ($attribute, $value, $fail) {
+                    if ($value) {
+                        $user = Auth::user();
+                        $exists = DB::table('file_store')
+                            ->where('id', $value)
+                            ->where('user_id', $user->id)
+                            ->where('deleted', 0)
+                            ->exists();
+                        
+                        if (!$exists) {
+                            $fail('The selected file is invalid or not accessible to you.');
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Expense source validation - must match client sources or global "Other"
+        if ($this->has('expense_source_id')) {
+            $rules['expense_source_id'] = [
+                'nullable',
+                'integer',
+                function ($attribute, $value, $fail) use ($clientId) {
+                    if ($value) {
+                        $source = PocketExpenseSourceClientConfig::where('id', $value)
+                            ->where('deleted', 0)
+                            ->where(function ($query) use ($clientId) {
+                                $query->where('client_id', $clientId)
+                                    ->orWhereNull('client_id'); // Global "Other" source
+                            })
+                            ->first();
+                        
+                        if (!$source) {
+                            $fail('The selected expense source is invalid for your organization.');
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Source note validation - required when expense source is "Other"
+        if ($this->has('source_note')) {
+            $rules['source_note'] = [
+                'nullable',
+                'string',
+                'max:255',
+                'not_regex:/[<>"\']/', // Prevent basic XSS patterns
+                function ($attribute, $value, $fail) {
+                    $expenseSourceId = $this->input('expense_source_id');
+                    
+                    if ($expenseSourceId) {
+                        $source = PocketExpenseSourceClientConfig::find($expenseSourceId);
+                        
+                        // Require note when source is "Other" (global source with client_id = null)
+                        if ($source && $source->name === 'Other' && $source->client_id === null) {
+                            if (empty($value)) {
+                                $fail('Source note is required when expense source is "Other".');
+                            }
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Additional field validation
+        if ($this->has('additional_field_id')) {
+            $rules['additional_field_id'] = [
+                'nullable',
+                'integer',
+                function ($attribute, $value, $fail) use ($clientId) {
+                    if ($value && $clientId) {
+                        $exists = DB::table('expense_additional_field')
+                            ->where('id', $value)
+                            ->where('client_id', $clientId)
+                            ->where('deleted', 0)
+                            ->exists();
+                        
+                        if (!$exists) {
+                            $fail('The selected additional field is invalid for your organization.');
+                        }
+                    }
+                },
+            ];
+        }
+
+        // Additional field value validation
+        if ($this->has('additional_field_value')) {
+            $rules['additional_field_value'] = [
+                'nullable',
+                'string',
+                'max:500',
+                'not_regex:/[<>"\']/', // Prevent basic XSS patterns
+            ];
+        }
+    }
+
+    /**
+     * Configure the validator instance.
+     *
+     * @param  \Illuminate\Validation\Validator  $validator
+     * @return void
+     */
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            $this->validateExpenseOwnership($validator);
+            $this->validateStatusTransitions($validator);
+            $this->validateAmountConsistency($validator);
+        });
+    }
+
+    /**
+     * Validate that the expense belongs to the authenticated user's client.
+     *
+     * @param \Illuminate\Validation\Validator $validator
+     * @return void
+     */
+    protected function validateExpenseOwnership($validator): void
+    {
+        $user = Auth::user();
+        $expense = $this->route('expense');
+        
+        if ($user && $expense && $expense->client_id !== $user->client_id) {
+            $validator->errors()->add('expense', 'This expense does not belong to your organization.');
+        }
+    }
+
+    /**
+     * Validate status transition business rules.
+     *
+     * @param \Illuminate\Validation\Validator $validator
+     * @return void
+     */
+    protected function validateStatusTransitions($validator): void
+    {
+        $expense = $this->route('expense');
+        $newStatus = $this->input('status');
+        $user = Auth::user();
+        
+        if (!$expense || !$newStatus || !$user) {
+            return;
+        }
+
+        // Users can only edit their own expenses unless they have management rights
+        if ($expense->user_id !== $user->id) {
+            // Check if user has management rights for the expense owner
+            $hasManagementRights = DB::table('user_feature_permission')
+                ->where('manager_user_id', $user->id)
+                ->where('user_id', $expense->user_id)
+                ->where('client_id', $expense->client_id)
+                ->where('feature_id', 16) // OOP Expense feature
+                ->where('is_enabled', 1)
+                ->exists();
+            
+            if (!$hasManagementRights && !in_array($user->role, ['Primary Admin'])) {
+                $validator->errors()->add('expense', 'You do not have permission to update this expense.');
+                return;
+            }
+        }
+
+        // Validate specific status transitions
+        switch ($expense->status) {
+            case 'approved':
+                if ($newStatus !== 'approved') {
+                    $validator->errors()->add('status', 'Approved expenses cannot be changed to another status.');
+                }
+                break;
+            
+            case 'rejected':
+                if ($newStatus === 'approved') {
+                    $validator->errors()->add('status', 'Rejected expenses cannot be directly approved. Change to draft or submitted first.');
+                }
+                break;
+            
+            case 'submitted':
+                // Only admins and users with approval rights can change from submitted
+                if ($newStatus === 'approved' && in_array($user->role, ['Business User', 'Card User'])) {
+                    $validator->errors()->add('status', 'You do not have permission to approve expenses.');
+                }
+                break;
+        }
+    }
+
+    /**
+     * Validate amount and VAT consistency.
+     *
+     * @param \Illuminate\Validation\Validator $validator
+     * @return void
+     */
+    protected function validateAmountConsistency($validator): void
+    {
+        $amount = $this->input('amount');
+        $vatAmount = $this->input('vat_amount');
+        $vatPercentage = $this->input('vat_percentage');
+        
+        if (!$amount) {
+            return;
+        }
+
+        $absAmount = abs($amount);
+        
+        // Validate VAT amount doesn't exceed total amount
+        if ($vatAmount && $vatAmount > $absAmount) {
+            $validator->errors()->add('vat_amount', 'VAT amount cannot exceed the total expense amount.');
+        }
+        
+        // Validate VAT percentage calculation consistency
+        if ($vatAmount && $vatPercentage) {
+            $cleanPercentage = str_replace('%', '', $vatPercentage);
+            if (is_numeric($cleanPercentage)) {
+                $expectedVat = $absAmount * ((float) $cleanPercentage / 100);
+                $tolerance = 0.01; // 1 cent tolerance for rounding
+                
+                if (abs($vatAmount - $expectedVat) > $tolerance) {
+                    $validator->errors()->add('vat_amount', 'VAT amount does not match the calculated VAT percentage.');
+                }
+            }
+        }
+    }
+
+    /**
+     * Get the error messages for the defined validation rules.
      *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
-            'date.required' => 'The expense date is required.',
-            'date.date_format' => 'The expense date must be in YYYY-MM-DD format.',
-            'date.before_or_equal' => 'The expense date cannot be in the future.',
-            
-            'merchant_name.required' => 'The merchant name is required.',
-            'merchant_name.max' => 'The merchant name must not exceed 180 characters.',
-            'merchant_name.regex' => 'The merchant name contains invalid characters.',
-            
-            'merchant_description.max' => 'The merchant description must not exceed 255 characters.',
-            'merchant_description.regex' => 'The merchant description contains invalid characters.',
-            
+            'date.required' => 'Expense date is required.',
+            'date.date_format' => 'Expense date must be in DD/MM/YYYY format.',
+            'merchant_name.required' => 'Merchant name is required.',
+            'merchant_name.max' => 'Merchant name cannot exceed 180 characters.',
+            'merchant_name.not_regex' => 'Merchant name contains invalid characters.',
+            'expense_type.required' => 'Expense type is required.',
             'expense_type.exists' => 'The selected expense type is invalid.',
-            
-            'currency.required' => 'The currency is required.',
-            'currency.size' => 'The currency must be exactly 3 characters.',
-            'currency.regex' => 'The currency must be a valid 3-letter ISO code (e.g., USD, EUR).',
-            
-            'amount.required' => 'The expense amount is required.',
-            'amount.numeric' => 'The expense amount must be a valid number.',
-            'amount.min' => 'The expense amount must be at least 0.01.',
-            'amount.max' => 'The expense amount must not exceed 999,999.99.',
-            'amount.regex' => 'The expense amount can have at most 2 decimal places.',
-            
-            'merchant_address.max' => 'The merchant address must not exceed 500 characters.',
-            'merchant_address.regex' => 'The merchant address contains invalid characters.',
-            
-            'vat_amount.numeric' => 'The VAT amount must be a valid number.',
-            'vat_amount.min' => 'The VAT amount must be at least 0.',
-            'vat_amount.max' => 'The VAT amount must not exceed 999,999.99.',
-            'vat_amount.regex' => 'The VAT amount can have at most 2 decimal places.',
-            
-            'notes.max' => 'The notes must not exceed 1,000 characters.',
-            
-            'status.in' => 'The selected status is invalid.',
-            
-            'category_id.exists' => 'The selected category is invalid.',
-            'tracking_code_id.exists' => 'The selected tracking code is invalid.',
-            'project_id.exists' => 'The selected project is invalid.',
-            
-            'source_note.max' => 'The source note must not exceed 500 characters.',
-            
-            'receipt_file.file' => 'The receipt must be a valid file.',
-            'receipt_file.mimes' => 'The receipt must be a JPG, PNG, or PDF file.',
-            'receipt_file.max' => 'The receipt file must not exceed 10MB.',
+            'currency.required' => 'Currency is required.',
+            'currency.size' => 'Currency must be exactly 3 characters.',
+            'currency.regex' => 'Currency must be 3 uppercase letters (e.g., GBP, EUR, USD).',
+            'amount.required' => 'Amount is required.',
+            'amount.numeric' => 'Amount must be a valid number.',
+            'amount.not_in' => 'Amount cannot be zero.',
+            'amount.regex' => 'Amount must have at most 2 decimal places.',
+            'vat_amount.numeric' => 'VAT amount must be a valid number.',
+            'vat_amount.min' => 'VAT amount cannot be negative.',
+            'vat_amount.regex' => 'VAT amount must have at most 2 decimal places.',
+            'status.in' => 'Status must be one of: draft, submitted, approved, rejected.',
+            'source_note.max' => 'Source note cannot exceed 255 characters.',
+            'source_note.not_regex' => 'Source note contains invalid characters.',
+            'notes.max' => 'Notes cannot exceed 2000 characters.',
+            'notes.not_regex' => 'Notes contain invalid characters.',
+            'merchant_description.max' => 'Merchant description cannot exceed 1000 characters.',
+            'merchant_description.not_regex' => 'Merchant description contains invalid characters.',
+            'merchant_address.max' => 'Merchant address cannot exceed 500 characters.',
+            'merchant_address.not_regex' => 'Merchant address contains invalid characters.',
+            'additional_field_value.max' => 'Additional field value cannot exceed 500 characters.',
+            'additional_field_value.not_regex' => 'Additional field value contains invalid characters.',
         ];
+    }
+
+    /**
+     * Prepare the data for validation.
+     *
+     * @return void
+     */
+    protected function prepareForValidation(): void
+    {
+        $data = $this->all();
+        
+        // Convert date from DD/MM/YYYY to Y-m-d format for database storage
+        if (isset($data['date']) && !empty($data['date'])) {
+            try {
+                $date = Carbon::createFromFormat('d/m/Y', $data['date']);
+                $data['date'] = $date->format('Y-m-d');
+            } catch (\Exception $e) {
+                // Keep original value for validation to catch the error
+            }
+        }
+        
+        // Normalize currency to uppercase
+        if (isset($data['currency'])) {
+            $data['currency'] = strtoupper($data['currency']);
+        }
+        
+        // Trim and clean text fields to prevent XSS and improve data quality
+        $textFields = ['merchant_name', 'merchant_description', 'merchant_address', 'notes', 'source_note', 'additional_field_value'];
+        foreach ($textFields as $field) {
+            if (isset($data[$field]) && is_string($data[$field])) {
+                $data[$field] = trim($data[$field]);
+                // Remove null bytes and normalize whitespace
+                $data[$field] = preg_replace('/\s+/', ' ', str_replace("\0", '', $data[$field]));
+                // Convert empty strings to null for optional fields
+                if ($data[$field] === '' && in_array($field, ['merchant_description', 'merchant_address', 'notes', 'source_note', 'additional_field_value'])) {
+                    $data[$field] = null;
+                }
+            }
+        }
+        
+        // Strip % sign from VAT percentage for internal processing
+        if (isset($data['vat_percentage']) && !empty($data['vat_percentage'])) {
+            $data['vat_percentage'] = str_replace('%', '', $data['vat_percentage']);
+        }
+        
+        // Ensure numeric fields are properly typed
+        $numericFields = ['amount', 'vat_amount'];
+        foreach ($numericFields as $field) {
+            if (isset($data[$field]) && $data[$field] !== null && $data[$field] !== '') {
+                $data[$field] = (float) $data[$field];
+            }
+        }
+        
+        // Ensure integer fields are properly typed
+        $integerFields = ['expense_type', 'transaction_category_id', 'tracking_code_id', 'project_id', 'file_store_id', 'expense_source_id', 'additional_field_id'];
+        foreach ($integerFields as $field) {
+            if (isset($data[$field]) && $data[$field] !== null && $data[$field] !== '') {
+                $data[$field] = (int) $data[$field];
+            }
+        }
+        
+        $this->replace($data);
     }
 
     /**
@@ -338,267 +666,17 @@ class UpdatePocketExpenseRequest extends FormRequest
             'amount' => 'amount',
             'merchant_address' => 'merchant address',
             'vat_amount' => 'VAT amount',
+            'vat_percentage' => 'VAT percentage',
             'notes' => 'notes',
             'status' => 'status',
-            'category_id' => 'category',
+            'transaction_category_id' => 'transaction category',
             'tracking_code_id' => 'tracking code',
             'project_id' => 'project',
+            'file_store_id' => 'file attachment',
             'expense_source_id' => 'expense source',
             'source_note' => 'source note',
-            'receipt_file' => 'receipt file',
+            'additional_field_id' => 'additional field',
+            'additional_field_value' => 'additional field value',
         ];
-    }
-
-    /**
-     * Prepare the data for validation.
-     *
-     * @return void
-     */
-    protected function prepareForValidation(): void
-    {
-        // Trim string fields to prevent whitespace issues
-        $trimFields = ['merchant_name', 'merchant_description', 'merchant_address', 'notes', 'source_note'];
-        $data = $this->all();
-        
-        foreach ($trimFields as $field) {
-            if (isset($data[$field]) && is_string($data[$field])) {
-                $data[$field] = trim($data[$field]);
-                // Convert empty strings to null for optional fields
-                if (in_array($field, ['merchant_description', 'merchant_address', 'notes', 'source_note'])) {
-                    $data[$field] = $data[$field] === '' ? null : $data[$field];
-                }
-            }
-        }
-        
-        // Normalize currency to uppercase
-        if (isset($data['currency'])) {
-            $data['currency'] = strtoupper(trim($data['currency']));
-        }
-        
-        // Ensure amount is properly formatted
-        if (isset($data['amount'])) {
-            $data['amount'] = number_format((float)$data['amount'], 2, '.', '');
-        }
-        
-        // Ensure VAT amount is properly formatted
-        if (isset($data['vat_amount']) && $data['vat_amount'] !== null) {
-            $data['vat_amount'] = number_format((float)$data['vat_amount'], 2, '.', '');
-        }
-        
-        // Convert date format if needed (from DD/MM/YYYY to YYYY-MM-DD)
-        if (isset($data['date']) && preg_match('/^(\d{2})\/(\d{2})\/(\d{4})$/', $data['date'], $matches)) {
-            $data['date'] = $matches[3] . '-' . $matches[2] . '-' . $matches[1];
-        }
-        
-        // Set updated_by_user_id for audit trail
-        $data['updated_by_user_id'] = $this->user()->id;
-        
-        $this->replace($data);
-    }
-
-    /**
-     * Configure the validator instance.
-     *
-     * @param  \Illuminate\Validation\Validator  $validator
-     * @return void
-     */
-    public function withValidator($validator): void
-    {
-        $validator->after(function ($validator) {
-            // Additional cross-field validation
-            $this->validateBusinessRules($validator);
-        });
-    }
-
-    /**
-     * Validate business rules that require multiple fields.
-     *
-     * @param  \Illuminate\Validation\Validator  $validator
-     * @return void
-     */
-    protected function validateBusinessRules($validator): void
-    {
-        // Rule: Only draft expenses can be edited (except for status changes by approvers)
-        if ($this->expense && !$this->expense->isDraft()) {
-            $allowedFields = ['status']; // Only status can be changed for non-draft expenses
-            $changedFields = array_keys($this->except(['updated_by_user_id']));
-            $disallowedChanges = array_diff($changedFields, $allowedFields);
-            
-            if (!empty($disallowedChanges) && !Gate::forUser($this->user())->allows('approve', $this->expense)) {
-                $validator->errors()->add('expense', 'Only draft expenses can be edited.');
-            }
-        }
-        
-        // Rule: Ensure user can only update their own expenses (unless they have management rights)
-        if ($this->expense && $this->expense->user_id !== $this->user()->id) {
-            if (!Gate::forUser($this->user())->allows('update', $this->expense)) {
-                $validator->errors()->add('expense', 'You can only update your own expenses.');
-            }
-        }
-        
-        // Rule: Ensure client_id matches (multi-tenancy)
-        if ($this->expense && $this->expense->client_id !== $this->user()->client_id) {
-            $validator->errors()->add('expense', 'Invalid expense access.');
-        }
-        
-        // Rule: VAT validation
-        $amount = $this->input('amount') ?? ($this->expense ? $this->expense->amount : 0);
-        $vatAmount = $this->input('vat_amount');
-        
-        if ($vatAmount !== null && $amount > 0) {
-            $vatPercentage = ($vatAmount / ($amount - $vatAmount)) * 100;
-            if ($vatPercentage > 100) {
-                $validator->errors()->add('vat_amount', 'VAT percentage cannot exceed 100%.');
-            }
-        }
-        
-        // Rule: Status transition validation
-        $newStatus = $this->input('status');
-        if ($newStatus && $this->expense && $newStatus !== $this->expense->status) {
-            $this->validateStatusTransition($validator, $this->expense->status, $newStatus);
-        }
-        
-        // Rule: Date validation against business constraints
-        $expenseDate = $this->input('date') ? Carbon::parse($this->input('date')) : null;
-        if ($expenseDate) {
-            // Cannot be weekend for certain expense types (business rule example)
-            $expenseType = $this->input('expense_type');
-            if ($expenseType && in_array($expenseType, [1, 2]) && $expenseDate->isWeekend()) {
-                // This is an example business rule - adjust as needed
-                $validator->errors()->add('date', 'Business expenses cannot be dated on weekends.');
-            }
-        }
-    }
-
-    /**
-     * Validate status transition rules.
-     *
-     * @param  \Illuminate\Validation\Validator  $validator
-     * @param  string  $currentStatus
-     * @param  string  $newStatus
-     * @return void
-     */
-    protected function validateStatusTransition($validator, string $currentStatus, string $newStatus): void
-    {
-        $validTransitions = [
-            PocketExpense::STATUS_DRAFT => [PocketExpense::STATUS_SUBMITTED],
-            PocketExpense::STATUS_SUBMITTED => [PocketExpense::STATUS_APPROVED, PocketExpense::STATUS_REJECTED, PocketExpense::STATUS_DRAFT],
-            PocketExpense::STATUS_APPROVED => [], // No transitions from approved
-            PocketExpense::STATUS_REJECTED => [PocketExpense::STATUS_DRAFT], // Can revert to draft for corrections
-        ];
-        
-        if (!isset($validTransitions[$currentStatus]) || 
-            !in_array($newStatus, $validTransitions[$currentStatus])) {
-            $validator->errors()->add('status', 'Invalid status transition from ' . $currentStatus . ' to ' . $newStatus . '.');
-        }
-        
-        // Additional authorization checks for specific transitions
-        if (in_array($newStatus, [PocketExpense::STATUS_APPROVED, PocketExpense::STATUS_REJECTED])) {
-            if (!Gate::forUser($this->user())->allows('approve', $this->expense)) {
-                $validator->errors()->add('status', 'You do not have permission to approve or reject expenses.');
-            }
-        }
-    }
-
-    /**
-     * Get the validated data with proper type casting.
-     *
-     * @return array
-     */
-    public function validated($key = null, $default = null)
-    {
-        $validated = parent::validated($key, $default);
-        
-        // Ensure numeric fields are properly cast
-        if (isset($validated['amount'])) {
-            $validated['amount'] = (float) $validated['amount'];
-        }
-        
-        if (isset($validated['vat_amount']) && $validated['vat_amount'] !== null) {
-            $validated['vat_amount'] = (float) $validated['vat_amount'];
-        }
-        
-        if (isset($validated['expense_type']) && $validated['expense_type'] !== null) {
-            $validated['expense_type'] = (int) $validated['expense_type'];
-        }
-        
-        // Remove fields that shouldn't be mass assigned
-        $protectedFields = ['id', 'uuid', 'create_time', 'deleted', 'delete_time'];
-        foreach ($protectedFields as $field) {
-            unset($validated[$field]);
-        }
-        
-        return $validated;
-    }
-
-    /**
-     * Get the expense model being updated.
-     *
-     * @return \App\Models\PocketExpense|null
-     */
-    public function getExpense(): ?PocketExpense
-    {
-        return $this->expense;
-    }
-
-    /**
-     * Check if the request is trying to submit the expense for approval.
-     *
-     * @return bool
-     */
-    public function isSubmittingForApproval(): bool
-    {
-        return $this->input('status') === PocketExpense::STATUS_SUBMITTED;
-    }
-
-    /**
-     * Check if the request is trying to approve the expense.
-     *
-     * @return bool
-     */
-    public function isApprovingExpense(): bool
-    {
-        return $this->input('status') === PocketExpense::STATUS_APPROVED;
-    }
-
-    /**
-     * Check if the request is trying to reject the expense.
-     *
-     * @return bool
-     */
-    public function isRejectingExpense(): bool
-    {
-        return $this->input('status') === PocketExpense::STATUS_REJECTED;
-    }
-
-    /**
-     * Check if the request contains file upload.
-     *
-     * @return bool
-     */
-    public function hasReceiptFile(): bool
-    {
-        return $this->hasFile('receipt_file') && $this->file('receipt_file')->isValid();
-    }
-
-    /**
-     * Get sanitized notes with potential security risks removed.
-     *
-     * @return string|null
-     */
-    public function getSanitizedNotes(): ?string
-    {
-        $notes = $this->input('notes');
-        
-        if ($notes === null) {
-            return null;
-        }
-        
-        // Remove potential XSS and SQL injection patterns
-        $notes = strip_tags($notes);
-        $notes = preg_replace('/[<>]/', '', $notes);
-        $notes = preg_replace('/\x00/', '', $notes); // Remove null bytes
-        
-        return trim($notes) ?: null;
     }
 }

@@ -6,26 +6,39 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 /**
  * PocketExpenseSourceClientConfig Model
  * 
- * Represents expense source configurations for clients with soft delete support.
- * Used for categorizing expense sources like "Company Credit Card", "Personal Cash", etc.
+ * Manages expense source configurations for clients. Each client can have
+ * up to 20 active expense sources (Cash, Corporate Card, Personal Card, etc.).
+ * Includes the global 'Other' source which is client-agnostic and cannot be deleted.
  * 
- * @property int $id
- * @property string $uuid
- * @property int|null $client_id
- * @property string $name
- * @property bool $is_default
- * @property bool $deleted
- * @property \Carbon\Carbon|null $delete_time
- * @property \Carbon\Carbon $create_time
- * @property \Carbon\Carbon|null $update_time
- * @property-read \App\Models\Client|null $client
- * @property-read \Illuminate\Database\Eloquent\Collection<int, \App\Models\PocketExpenseMetadata> $metadata
- * @property-read int|null $metadata_count
+ * Uses Volopa legacy patterns:
+ * - Soft delete with deleted flag and delete_time
+ * - Legacy timestamps: create_time, update_time
+ * - Multi-tenant scoping via client_id
+ * 
+ * Business Rules:
+ * - Maximum 20 active expense sources per client
+ * - Unique source names per client (excluding soft-deleted)
+ * - Global 'Other' record (client_id = NULL) is not deletable/editable
+ * - Three defaults auto-created: Cash, Corporate Card, Personal Card
+ * 
+ * @property int $id Primary key
+ * @property string|null $uuid External UUID reference
+ * @property int|null $client_id Client owner (NULL for global Other record)
+ * @property string $name Expense source name (max 180 chars)
+ * @property int $is_default Whether this is a default source for the client
+ * @property int $deleted Soft delete flag (0 = active, 1 = deleted)
+ * @property Carbon|null $delete_time Soft delete timestamp
+ * @property Carbon|null $create_time Record creation timestamp
+ * @property Carbon|null $update_time Record update timestamp
+ * 
+ * @property-read Client|null $client
+ * @property-read \Illuminate\Database\Eloquent\Collection<PocketExpense> $pocketExpenses
  */
 class PocketExpenseSourceClientConfig extends Model
 {
@@ -39,8 +52,15 @@ class PocketExpenseSourceClientConfig extends Model
     protected $table = 'pocket_expense_source_client_config';
 
     /**
-     * Indicates if the model should be timestamped using Volopa pattern.
-     * We override Laravel timestamps to use Volopa's create_time/update_time pattern.
+     * The primary key for the model.
+     *
+     * @var string
+     */
+    protected $primaryKey = 'id';
+
+    /**
+     * Indicates if the model should be timestamped.
+     * We use Volopa legacy timestamp pattern instead of Laravel's.
      *
      * @var bool
      */
@@ -49,7 +69,7 @@ class PocketExpenseSourceClientConfig extends Model
     /**
      * The attributes that are mass assignable.
      *
-     * @var array<int, string>
+     * @var array<string>
      */
     protected $fillable = [
         'uuid',
@@ -58,6 +78,8 @@ class PocketExpenseSourceClientConfig extends Model
         'is_default',
         'deleted',
         'delete_time',
+        'create_time',
+        'update_time',
     ];
 
     /**
@@ -67,11 +89,9 @@ class PocketExpenseSourceClientConfig extends Model
      */
     protected $casts = [
         'id' => 'integer',
-        'uuid' => 'string',
         'client_id' => 'integer',
-        'name' => 'string',
-        'is_default' => 'boolean',
-        'deleted' => 'boolean',
+        'is_default' => 'integer',
+        'deleted' => 'integer',
         'delete_time' => 'datetime',
         'create_time' => 'datetime',
         'update_time' => 'datetime',
@@ -80,7 +100,7 @@ class PocketExpenseSourceClientConfig extends Model
     /**
      * The attributes that should be hidden for serialization.
      *
-     * @var array<int, string>
+     * @var array<string>
      */
     protected $hidden = [
         'deleted',
@@ -88,19 +108,40 @@ class PocketExpenseSourceClientConfig extends Model
     ];
 
     /**
-     * The model's default values for attributes.
+     * The "booted" method of the model.
+     * Set up model event handlers for automatic UUID generation and timestamp management.
      *
-     * @var array<string, mixed>
+     * @return void
      */
-    protected $attributes = [
-        'is_default' => false,
-        'deleted' => false,
-    ];
+    protected static function booted(): void
+    {
+        // Generate UUID on creating (if not already set)
+        static::creating(function (self $model) {
+            if (empty($model->uuid) && $model->client_id !== null) {
+                $model->uuid = Str::uuid()->toString();
+            }
+            
+            // Set Volopa legacy timestamps
+            $now = Carbon::now();
+            if (empty($model->create_time)) {
+                $model->create_time = $now;
+            }
+            if (empty($model->update_time)) {
+                $model->update_time = $now;
+            }
+        });
+
+        // Update timestamp on updating
+        static::updating(function (self $model) {
+            $model->update_time = Carbon::now();
+        });
+    }
 
     /**
-     * Get the client that this source configuration belongs to.
+     * Get the client that owns this expense source.
+     * Returns null for the global 'Other' record.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo<\App\Models\Client, \App\Models\PocketExpenseSourceClientConfig>
+     * @return BelongsTo<Client, PocketExpenseSourceClientConfig>
      */
     public function client(): BelongsTo
     {
@@ -108,52 +149,52 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Get the metadata entries that reference this expense source.
+     * Get the pocket expenses that use this expense source.
+     * Relationship through pocket_expense_metadata where metadata_type = 'expense_source'.
      *
-     * @return \Illuminate\Database\Eloquent\Relations\HasMany<\App\Models\PocketExpenseMetadata>
+     * @return HasMany<PocketExpense>
      */
-    public function metadata(): HasMany
+    public function pocketExpenses(): HasMany
     {
-        return $this->hasMany(PocketExpenseMetadata::class, 'expense_source_id', 'id')
-                    ->where('deleted', false);
+        return $this->hasMany(PocketExpense::class, 'expense_source_id', 'id');
     }
 
     /**
-     * Scope a query to only include active (non-deleted) records.
+     * Scope a query to only include active (non-soft-deleted) sources.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeActive($query)
     {
-        return $query->where('deleted', false);
+        return $query->where('deleted', 0);
     }
 
     /**
-     * Scope a query to only include soft deleted records.
+     * Scope a query to only include soft-deleted sources.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeDeleted($query)
     {
-        return $query->where('deleted', true);
+        return $query->where('deleted', 1);
     }
 
     /**
-     * Scope a query to only include records for a specific client.
+     * Scope a query to only include sources for a specific client.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int|null $clientId
+     * @param int $clientId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeForClient($query, ?int $clientId)
+    public function scopeForClient($query, int $clientId)
     {
         return $query->where('client_id', $clientId);
     }
 
     /**
-     * Scope a query to only include global sources (no client_id).
+     * Scope a query to only include global sources (client_id is NULL).
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
@@ -171,11 +212,39 @@ class PocketExpenseSourceClientConfig extends Model
      */
     public function scopeDefault($query)
     {
-        return $query->where('is_default', true);
+        return $query->where('is_default', 1);
     }
 
     /**
-     * Scope a query to find source by name.
+     * Scope a query to only include non-default sources.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeNonDefault($query)
+    {
+        return $query->where('is_default', 0);
+    }
+
+    /**
+     * Scope a query to get sources available for a client.
+     * Includes client-specific sources and the global 'Other' source.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $clientId
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeAvailableForClient($query, int $clientId)
+    {
+        return $query->active()
+            ->where(function ($q) use ($clientId) {
+                $q->where('client_id', $clientId)
+                  ->orWhereNull('client_id'); // Include global 'Other' record
+            });
+    }
+
+    /**
+     * Scope a query by source name.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param string $name
@@ -187,288 +256,310 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Check if the source is currently active (not soft deleted).
+     * Determine if this is the global 'Other' expense source.
      *
      * @return bool
      */
-    public function isActive(): bool
+    public function isGlobalOther(): bool
     {
-        return $this->deleted === false;
+        return $this->client_id === null && $this->name === 'Other';
     }
 
     /**
-     * Check if the source is soft deleted.
-     *
-     * @return bool
-     */
-    public function isDeleted(): bool
-    {
-        return $this->deleted === true;
-    }
-
-    /**
-     * Check if this is a global source (not client-specific).
-     *
-     * @return bool
-     */
-    public function isGlobal(): bool
-    {
-        return is_null($this->client_id);
-    }
-
-    /**
-     * Check if this is the default source.
+     * Determine if this is a default expense source.
      *
      * @return bool
      */
     public function isDefault(): bool
     {
-        return $this->is_default === true;
+        return $this->is_default === 1;
     }
 
     /**
-     * Soft delete the source.
+     * Determine if this expense source is active (not soft deleted).
      *
      * @return bool
      */
+    public function isActive(): bool
+    {
+        return $this->deleted === 0;
+    }
+
+    /**
+     * Determine if this expense source is soft deleted.
+     *
+     * @return bool
+     */
+    public function isDeleted(): bool
+    {
+        return $this->deleted === 1;
+    }
+
+    /**
+     * Determine if this expense source can be deleted.
+     * Global 'Other' record cannot be deleted.
+     *
+     * @return bool
+     */
+    public function canBeDeleted(): bool
+    {
+        return !$this->isGlobalOther();
+    }
+
+    /**
+     * Determine if this expense source can be edited.
+     * Global 'Other' record cannot be edited.
+     *
+     * @return bool
+     */
+    public function canBeEdited(): bool
+    {
+        return !$this->isGlobalOther();
+    }
+
+    /**
+     * Soft delete this expense source.
+     * Cannot delete the global 'Other' record.
+     *
+     * @return bool
+     * @throws \RuntimeException If attempting to delete global 'Other' record
+     */
     public function softDelete(): bool
     {
-        $this->deleted = true;
-        $this->delete_time = now();
+        if ($this->isGlobalOther()) {
+            throw new \RuntimeException('Cannot delete the global Other expense source.');
+        }
+
+        $this->deleted = 1;
+        $this->delete_time = Carbon::now();
+        $this->update_time = Carbon::now();
+
         return $this->save();
     }
 
     /**
-     * Restore the soft deleted source.
+     * Restore this soft deleted expense source.
      *
      * @return bool
      */
     public function restore(): bool
     {
-        $this->deleted = false;
+        $this->deleted = 0;
         $this->delete_time = null;
+        $this->update_time = Carbon::now();
+
         return $this->save();
     }
 
     /**
-     * Set this source as the default for its client.
+     * Get the count of active expense sources for a specific client.
      *
-     * @return bool
-     */
-    public function setAsDefault(): bool
-    {
-        // First, unset any existing default for this client
-        static::forClient($this->client_id)
-              ->active()
-              ->where('id', '!=', $this->id)
-              ->update(['is_default' => false]);
-
-        $this->is_default = true;
-        return $this->save();
-    }
-
-    /**
-     * Remove default status from this source.
-     *
-     * @return bool
-     */
-    public function removeDefault(): bool
-    {
-        $this->is_default = false;
-        return $this->save();
-    }
-
-    /**
-     * Get the count of associated metadata entries.
-     *
+     * @param int $clientId
      * @return int
      */
-    public function getMetadataCountAttribute(): int
+    public static function getActiveCountForClient(int $clientId): int
     {
-        return $this->metadata()->count();
+        return static::active()
+            ->forClient($clientId)
+            ->count();
     }
 
     /**
-     * Check if this source can be safely deleted.
-     * Cannot delete if there are associated metadata entries.
+     * Check if a client has reached the maximum allowed expense sources (20).
      *
+     * @param int $clientId
      * @return bool
      */
-    public function canDelete(): bool
+    public static function hasReachedMaximumForClient(int $clientId): bool
     {
-        return $this->metadata()->count() === 0;
+        return static::getActiveCountForClient($clientId) >= 20;
     }
 
     /**
-     * Get all active sources for a specific client, including global sources.
+     * Get all active expense sources available for a client.
+     * Includes client-specific sources and the global 'Other' source.
      *
-     * @param int|null $clientId
-     * @return \Illuminate\Database\Eloquent\Collection
+     * @param int $clientId
+     * @return \Illuminate\Database\Eloquent\Collection<int, static>
      */
-    public static function getAvailableForClient(?int $clientId): \Illuminate\Database\Eloquent\Collection
+    public static function getAvailableForClient(int $clientId)
+    {
+        return static::availableForClient($clientId)
+            ->orderBy('is_default', 'desc')
+            ->orderBy('name', 'asc')
+            ->get();
+    }
+
+    /**
+     * Get all default expense sources for a client.
+     * Used for auto-creation of Cash, Corporate Card, Personal Card.
+     *
+     * @param int $clientId
+     * @return \Illuminate\Database\Eloquent\Collection<int, static>
+     */
+    public static function getDefaultsForClient(int $clientId)
     {
         return static::active()
-                     ->where(function ($query) use ($clientId) {
-                         $query->whereNull('client_id')  // Global sources
-                               ->orWhere('client_id', $clientId);  // Client-specific sources
-                     })
-                     ->orderBy('is_default', 'desc')
-                     ->orderBy('name', 'asc')
-                     ->get();
+            ->forClient($clientId)
+            ->default()
+            ->orderBy('name', 'asc')
+            ->get();
     }
 
     /**
-     * Get the default source for a specific client.
+     * Find an expense source by name for a specific client.
      *
-     * @param int|null $clientId
-     * @return \App\Models\PocketExpenseSourceClientConfig|null
+     * @param int $clientId
+     * @param string $name
+     * @return static|null
      */
-    public static function getDefaultForClient(?int $clientId): ?PocketExpenseSourceClientConfig
+    public static function findByNameForClient(int $clientId, string $name): ?self
     {
         return static::active()
-                     ->default()
-                     ->where(function ($query) use ($clientId) {
-                         $query->whereNull('client_id')  // Global default
-                               ->orWhere('client_id', $clientId);  // Client-specific default
-                     })
-                     ->orderBy('client_id', 'desc')  // Prefer client-specific over global
-                     ->first();
+            ->availableForClient($clientId)
+            ->byName($name)
+            ->first();
     }
 
     /**
-     * Find source by UUID.
+     * Find the global 'Other' expense source.
      *
-     * @param string $uuid
-     * @return \App\Models\PocketExpenseSourceClientConfig|null
+     * @return static|null
      */
-    public static function findByUuid(string $uuid): ?PocketExpenseSourceClientConfig
+    public static function findGlobalOther(): ?self
     {
-        return static::where('uuid', $uuid)->first();
+        return static::active()
+            ->global()
+            ->byName('Other')
+            ->first();
     }
 
     /**
-     * Find active source by name for a specific client.
+     * Create the three default expense sources for a client.
+     * Called when OOP feature is enabled for a client.
+     *
+     * @param int $clientId
+     * @return array<string, static>
+     */
+    public static function createDefaultsForClient(int $clientId): array
+    {
+        $defaults = [
+            'Cash' => [
+                'name' => 'Cash',
+                'is_default' => 1,
+            ],
+            'Corporate Card' => [
+                'name' => 'Corporate Card',
+                'is_default' => 1,
+            ],
+            'Personal Card' => [
+                'name' => 'Personal Card',
+                'is_default' => 1,
+            ],
+        ];
+
+        $created = [];
+        $now = Carbon::now();
+
+        foreach ($defaults as $key => $config) {
+            // Check if default already exists
+            $existing = static::active()
+                ->forClient($clientId)
+                ->byName($config['name'])
+                ->first();
+
+            if (!$existing) {
+                $created[$key] = static::create([
+                    'uuid' => Str::uuid()->toString(),
+                    'client_id' => $clientId,
+                    'name' => $config['name'],
+                    'is_default' => $config['is_default'],
+                    'deleted' => 0,
+                    'delete_time' => null,
+                    'create_time' => $now,
+                    'update_time' => $now,
+                ]);
+            } else {
+                $created[$key] = $existing;
+            }
+        }
+
+        return $created;
+    }
+
+    /**
+     * Validate that source name is unique for the client (excluding soft-deleted).
      *
      * @param string $name
-     * @param int|null $clientId
-     * @return \App\Models\PocketExpenseSourceClientConfig|null
+     * @param int $clientId
+     * @param int|null $excludeId ID to exclude from uniqueness check (for updates)
+     * @return bool
      */
-    public static function findByNameForClient(string $name, ?int $clientId): ?PocketExpenseSourceClientConfig
+    public static function isNameUniqueForClient(string $name, int $clientId, ?int $excludeId = null): bool
     {
-        return static::active()
-                     ->byName($name)
-                     ->where(function ($query) use ($clientId) {
-                         $query->whereNull('client_id')
-                               ->orWhere('client_id', $clientId);
-                     })
-                     ->orderBy('client_id', 'desc')  // Prefer client-specific over global
-                     ->first();
+        $query = static::active()
+            ->forClient($clientId)
+            ->byName($name);
+
+        if ($excludeId !== null) {
+            $query->where('id', '!=', $excludeId);
+        }
+
+        return $query->count() === 0;
     }
 
     /**
-     * Create a new source configuration.
+     * Get a display-friendly name for this expense source.
+     * Adds context for global sources.
      *
-     * @param array $attributes
-     * @return static
+     * @return string
      */
-    public static function createSource(array $attributes): static
+    public function getDisplayName(): string
     {
-        $attributes['uuid'] = $attributes['uuid'] ?? Str::uuid()->toString();
-        $attributes['create_time'] = now();
+        if ($this->isGlobalOther()) {
+            return $this->name . ' (Global)';
+        }
+
+        return $this->name;
+    }
+
+    /**
+     * Get an array representation suitable for API responses.
+     *
+     * @return array<string, mixed>
+     */
+    public function toApiArray(): array
+    {
+        return [
+            'id' => $this->id,
+            'uuid' => $this->uuid,
+            'name' => $this->name,
+            'display_name' => $this->getDisplayName(),
+            'is_default' => $this->isDefault(),
+            'is_global' => $this->isGlobalOther(),
+            'can_be_edited' => $this->canBeEdited(),
+            'can_be_deleted' => $this->canBeDeleted(),
+            'created_at' => $this->create_time?->toISOString(),
+            'updated_at' => $this->update_time?->toISOString(),
+        ];
+    }
+
+    /**
+     * Convert the model instance to an array.
+     *
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        $array = parent::toArray();
         
-        return static::create($attributes);
-    }
+        // Add computed attributes for API responses
+        $array['is_active'] = $this->isActive();
+        $array['is_global_other'] = $this->isGlobalOther();
+        $array['can_be_deleted'] = $this->canBeDeleted();
+        $array['can_be_edited'] = $this->canBeEdited();
+        $array['display_name'] = $this->getDisplayName();
 
-    /**
-     * Boot method for model events.
-     *
-     * @return void
-     */
-    protected static function boot()
-    {
-        parent::boot();
-
-        // Generate UUID on creation if not provided
-        static::creating(function (PocketExpenseSourceClientConfig $source) {
-            if (empty($source->uuid)) {
-                $source->uuid = Str::uuid()->toString();
-            }
-            
-            if (is_null($source->create_time)) {
-                $source->create_time = now();
-            }
-            
-            // Ensure defaults
-            if (is_null($source->deleted)) {
-                $source->deleted = false;
-            }
-            
-            if (is_null($source->is_default)) {
-                $source->is_default = false;
-            }
-        });
-
-        // Handle default source logic on updates
-        static::updating(function (PocketExpenseSourceClientConfig $source) {
-            // Set update_time (handled by database trigger, but set here for consistency)
-            $source->update_time = now();
-            
-            // If setting this as default, unset others for the same client
-            if ($source->isDirty('is_default') && $source->is_default === true) {
-                static::forClient($source->client_id)
-                      ->active()
-                      ->where('id', '!=', $source->id)
-                      ->update(['is_default' => false]);
-            }
-        });
-
-        // Prevent hard deletion if there are associated metadata entries
-        static::deleting(function (PocketExpenseSourceClientConfig $source) {
-            if (!$source->canDelete()) {
-                throw new \RuntimeException('Cannot delete expense source that has associated metadata entries. Use soft delete instead.');
-            }
-        });
-
-        // Log source configuration changes for audit purposes
-        static::updated(function (PocketExpenseSourceClientConfig $source) {
-            if ($source->isDirty(['name', 'is_default', 'deleted'])) {
-                \Log::info('Expense source configuration updated', [
-                    'source_id' => $source->id,
-                    'uuid' => $source->uuid,
-                    'client_id' => $source->client_id,
-                    'name' => $source->name,
-                    'is_default' => $source->is_default,
-                    'deleted' => $source->deleted,
-                    'changed_fields' => array_keys($source->getDirty()),
-                    'updated_at' => now(),
-                ]);
-            }
-        });
-
-        // Log soft deletion events
-        static::updated(function (PocketExpenseSourceClientConfig $source) {
-            if ($source->isDirty('deleted') && $source->deleted === true) {
-                \Log::info('Expense source soft deleted', [
-                    'source_id' => $source->id,
-                    'uuid' => $source->uuid,
-                    'client_id' => $source->client_id,
-                    'name' => $source->name,
-                    'deleted_at' => $source->delete_time,
-                ]);
-            }
-        });
-
-        // Log restoration events
-        static::updated(function (PocketExpenseSourceClientConfig $source) {
-            if ($source->isDirty('deleted') && $source->deleted === false) {
-                \Log::info('Expense source restored', [
-                    'source_id' => $source->id,
-                    'uuid' => $source->uuid,
-                    'client_id' => $source->client_id,
-                    'name' => $source->name,
-                    'restored_at' => now(),
-                ]);
-            }
-        });
+        return $array;
     }
 }

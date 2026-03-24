@@ -217,15 +217,29 @@ if __name__ == "__main__":
         │   │   └── volopa_oop_expenses.md
         │   └── task/
         │       └── volopa_oop_expenses.json
+        ├── database/
+        │   ├── factories/
+        │   │   ├── UserFeaturePermissionFactory.php
+        │   │   └── ...
+        │   └── migrations/
+        │       ├── 2024_01_01_000001_create_user_feature_permission_table.php
+        │       └── ...
         ├── app/
         │   ├── Http/
         │   │   ├── Controllers/
+        │   │   │   └── Api/
+        │   │   │       └── V1/
+        │   │   │           ├── PocketExpenseController.php
+        │   │   │           ├── UserFeaturePermissionController.php
+        │   │   │           └── ...
         │   │   ├── Requests/
         │   │   └── Resources/
         │   ├── Models/
         │   ├── Services/
         │   ├── Policies/
         │   └── ...
+        ├── routes/
+        │   └── api.php
         └── tests/
             └── Feature/
                 ├── PocketExpenseTest.php

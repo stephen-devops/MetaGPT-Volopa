@@ -2,534 +2,532 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Log;
 use Carbon\Carbon;
 use Exception;
+use InvalidArgumentException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 /**
- * FXConversionService
+ * FX Conversion Service
  * 
- * Service for currency conversion with commission calculation using Volopa's existing FX infrastructure.
- * Provides FX rate lookup, conversion calculations, and client-specific commission handling.
- * Integrates with platform's existing /wallet-ccy-value endpoint and FX services.
+ * Handles foreign exchange rate lookups, commission calculations, and currency conversions
+ * for the OOP Expense system. Provides real-time FX rates with platform-managed commissions
+ * and integrates with Volopa's wallet infrastructure for base currency determination.
  * 
- * @package App\Services
+ * Key features:
+ * - 30-day lookback window for FX rate retrieval
+ * - Commission application using platform-defined rates
+ * - Wallet base currency discovery via prepaid card relationships
+ * - Robust error handling with fallback mechanisms
+ * - Integration with platform FX infrastructure
  */
 class FXConversionService
 {
     /**
-     * Maximum lookback days for FX rate retrieval.
+     * Maximum number of days to look back for FX rates
      */
-    const MAX_LOOKBACK_DAYS = 30;
+    private const MAX_FX_LOOKBACK_DAYS = 30;
 
     /**
-     * Cache TTL for FX rates in seconds (1 hour).
+     * Default commission percentage if none found (0.5%)
      */
-    const FX_RATE_CACHE_TTL = 3600;
+    private const DEFAULT_COMMISSION_PERCENT = 0.5;
 
     /**
-     * Default commission rate as decimal (e.g., 0.02 = 2%).
+     * Default base currency fallback
      */
-    const DEFAULT_COMMISSION_RATE = 0.00;
+    private const DEFAULT_BASE_CURRENCY = 'GBP';
 
     /**
-     * Base URL for Volopa FX API endpoints.
-     *
-     * @var string
+     * Cache duration for wallet base currency (in seconds)
      */
-    private string $fxApiBaseUrl;
+    private const WALLET_CACHE_DURATION = 3600; // 1 hour
 
     /**
-     * API timeout in seconds.
-     *
-     * @var int
-     */
-    private int $apiTimeout;
-
-    /**
-     * Constructor.
-     *
-     * @param string $fxApiBaseUrl Base URL for FX API endpoints
-     * @param int $apiTimeout API timeout in seconds
-     */
-    public function __construct(
-        string $fxApiBaseUrl = '',
-        int $apiTimeout = 30
-    ) {
-        $this->fxApiBaseUrl = $fxApiBaseUrl ?: config('volopa.fx_api_base_url', 'https://api.volopa.com');
-        $this->apiTimeout = $apiTimeout;
-    }
-
-    /**
-     * Get the base currency information for a client's wallet.
+     * Get wallet base currency for a client
      * 
-     * Integrates with Volopa's existing /wallet-ccy-value endpoint to retrieve
-     * the client's base currency configuration and commission settings.
-     *
-     * @param int $clientId Client ID for wallet lookup
-     * @return array Array containing currency info and commission settings
-     * @throws \Exception When API call fails or client not found
+     * Looks up the client's wallet base currency through the prepaid card
+     * relationship chain. Uses caching to avoid repeated database queries.
+     * 
+     * @param int $clientId Client ID to lookup wallet for
+     * @return array Array containing currency code, symbol, and decimal places
+     * @throws InvalidArgumentException If client ID is invalid
      */
     public function getWalletBaseCurrency(int $clientId): array
     {
-        $cacheKey = "wallet_base_currency_{$clientId}";
-        
-        return Cache::remember($cacheKey, self::FX_RATE_CACHE_TTL, function () use ($clientId) {
-            try {
-                $response = Http::timeout($this->apiTimeout)
-                    ->withHeaders([
-                        'Accept' => 'application/json',
-                        'Content-Type' => 'application/json',
-                    ])
-                    ->get("{$this->fxApiBaseUrl}/wallet-ccy-value", [
-                        'client_id' => $clientId,
-                    ]);
+        if ($clientId <= 0) {
+            throw new InvalidArgumentException('Client ID must be a positive integer');
+        }
 
-                if (!$response->successful()) {
-                    Log::error('Failed to retrieve wallet base currency', [
-                        'client_id' => $clientId,
-                        'status' => $response->status(),
-                        'response' => $response->body(),
-                    ]);
-                    
-                    throw new Exception("Failed to retrieve wallet base currency for client {$clientId}");
-                }
+        try {
+            // Query the prepaid card join chain to get wallet base currency
+            $walletCurrency = DB::table('prepaid_cards')
+                ->join('wallets', 'prepaid_cards.wallet_id', '=', 'wallets.id')
+                ->join('currencies', 'wallets.base_currency_id', '=', 'currencies.id')
+                ->where('prepaid_cards.client_id', $clientId)
+                ->where('prepaid_cards.deleted', 0)
+                ->where('wallets.deleted', 0)
+                ->select([
+                    'currencies.currency_code',
+                    'currencies.currency_symbol',
+                    'currencies.decimal_places',
+                    'currencies.name as currency_name'
+                ])
+                ->first();
 
-                $data = $response->json();
-                
-                return [
-                    'base_currency' => $data['base_currency'] ?? 'USD',
-                    'commission_rate' => (float) ($data['fx_commission_rate'] ?? self::DEFAULT_COMMISSION_RATE),
+            if (!$walletCurrency) {
+                Log::warning("No wallet base currency found for client {$clientId}, using default", [
                     'client_id' => $clientId,
-                    'retrieved_at' => now()->toISOString(),
-                ];
-
-            } catch (Exception $e) {
-                Log::error('Error retrieving wallet base currency', [
-                    'client_id' => $clientId,
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString(),
+                    'default_currency' => self::DEFAULT_BASE_CURRENCY
                 ]);
-                
-                // Return fallback values for resilience
+
                 return [
-                    'base_currency' => 'USD',
-                    'commission_rate' => self::DEFAULT_COMMISSION_RATE,
-                    'client_id' => $clientId,
-                    'retrieved_at' => now()->toISOString(),
-                    'fallback' => true,
+                    'currency_code' => self::DEFAULT_BASE_CURRENCY,
+                    'currency_symbol' => '£',
+                    'decimal_places' => 2,
+                    'currency_name' => 'British Pound Sterling'
                 ];
             }
-        });
+
+            return [
+                'currency_code' => $walletCurrency->currency_code,
+                'currency_symbol' => $walletCurrency->currency_symbol,
+                'decimal_places' => $walletCurrency->decimal_places,
+                'currency_name' => $walletCurrency->currency_name
+            ];
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve wallet base currency', [
+                'client_id' => $clientId,
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            // Return default currency on error
+            return [
+                'currency_code' => self::DEFAULT_BASE_CURRENCY,
+                'currency_symbol' => '£',
+                'decimal_places' => 2,
+                'currency_name' => 'British Pound Sterling'
+            ];
+        }
     }
 
     /**
-     * Get FX rate for currency conversion on a specific date.
+     * Get FX rate between two currencies for a specific date
      * 
-     * Retrieves historical FX rates with maximum 30-day lookback constraint.
-     * Uses caching to optimize performance for repeated rate requests.
-     *
-     * @param string $fromCurrency 3-letter ISO source currency code
-     * @param string $toCurrency 3-letter ISO target currency code
-     * @param Carbon $date Date for historical rate lookup
-     * @return float|null FX rate or null if not available
-     * @throws \Exception When date is beyond lookback limit
+     * Looks up the exchange rate with a maximum 30-day lookback from the expense date.
+     * If no rate is found within the lookback period, returns null to indicate
+     * 'No FX Available' status.
+     * 
+     * @param string $fromCurrency 3-letter ISO currency code (source)
+     * @param string $toCurrency 3-letter ISO currency code (target)
+     * @param Carbon $date Date for which to lookup the FX rate
+     * @return float|null FX rate or null if no rate found within lookback period
+     * @throws InvalidArgumentException If currency codes are invalid
      */
     public function getFXRate(string $fromCurrency, string $toCurrency, Carbon $date): ?float
     {
-        // Validate currencies are 3-letter ISO codes
-        if (!preg_match('/^[A-Z]{3}$/', $fromCurrency) || !preg_match('/^[A-Z]{3}$/', $toCurrency)) {
-            throw new Exception('Currency codes must be 3-letter ISO format');
+        $fromCurrency = strtoupper(trim($fromCurrency));
+        $toCurrency = strtoupper(trim($toCurrency));
+
+        // Validate currency codes
+        if (!$this->isValidCurrencyCode($fromCurrency) || !$this->isValidCurrencyCode($toCurrency)) {
+            throw new InvalidArgumentException('Currency codes must be 3-letter ISO codes');
         }
 
-        // If same currency, rate is 1.0
+        // Same currency always returns rate of 1.0
         if ($fromCurrency === $toCurrency) {
             return 1.0;
         }
 
-        // Validate date is within lookback limit
-        $maxLookbackDate = now()->subDays(self::MAX_LOOKBACK_DAYS);
-        if ($date < $maxLookbackDate) {
-            throw new Exception("FX rate lookup limited to maximum {self::MAX_LOOKBACK_DAYS} days lookback from expense date");
-        }
+        try {
+            $lookbackDate = $date->copy()->subDays(self::MAX_FX_LOOKBACK_DAYS);
 
-        $dateString = $date->format('Y-m-d');
-        $cacheKey = "fx_rate_{$fromCurrency}_{$toCurrency}_{$dateString}";
-        
-        return Cache::remember($cacheKey, self::FX_RATE_CACHE_TTL, function () use ($fromCurrency, $toCurrency, $dateString) {
-            try {
-                $response = Http::timeout($this->apiTimeout)
-                    ->withHeaders([
-                        'Accept' => 'application/json',
-                        'Content-Type' => 'application/json',
-                    ])
-                    ->get("{$this->fxApiBaseUrl}/fx-rates", [
-                        'from' => $fromCurrency,
-                        'to' => $toCurrency,
-                        'date' => $dateString,
-                    ]);
+            // Query FX rates table with lookback window
+            $fxRate = DB::table('fx_rates')
+                ->where('from_currency', $fromCurrency)
+                ->where('to_currency', $toCurrency)
+                ->where('rate_date', '<=', $date->format('Y-m-d'))
+                ->where('rate_date', '>=', $lookbackDate->format('Y-m-d'))
+                ->where('is_active', 1)
+                ->orderBy('rate_date', 'desc')
+                ->first();
 
-                if (!$response->successful()) {
-                    Log::warning('Failed to retrieve FX rate', [
-                        'from_currency' => $fromCurrency,
-                        'to_currency' => $toCurrency,
-                        'date' => $dateString,
-                        'status' => $response->status(),
-                        'response' => $response->body(),
-                    ]);
-                    
-                    return null;
-                }
-
-                $data = $response->json();
-                $rate = (float) ($data['rate'] ?? 0.0);
-                
-                if ($rate <= 0) {
-                    Log::warning('Invalid FX rate received', [
-                        'from_currency' => $fromCurrency,
-                        'to_currency' => $toCurrency,
-                        'date' => $dateString,
-                        'rate' => $rate,
-                    ]);
-                    return null;
-                }
-
-                Log::info('FX rate retrieved successfully', [
+            if (!$fxRate) {
+                Log::info('No FX rate found within lookback period', [
                     'from_currency' => $fromCurrency,
                     'to_currency' => $toCurrency,
-                    'date' => $dateString,
-                    'rate' => $rate,
+                    'date' => $date->format('Y-m-d'),
+                    'lookback_days' => self::MAX_FX_LOOKBACK_DAYS
                 ]);
-
-                return $rate;
-
-            } catch (Exception $e) {
-                Log::error('Error retrieving FX rate', [
-                    'from_currency' => $fromCurrency,
-                    'to_currency' => $toCurrency,
-                    'date' => $dateString,
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString(),
-                ]);
-                
                 return null;
             }
-        });
+
+            $baseRate = (float) $fxRate->rate;
+
+            // Get commission percentage for this currency pair
+            $commissionPercent = $this->getCommissionPercent($fromCurrency, $toCurrency);
+
+            // Apply commission to the base rate
+            $adjustedRate = $this->applyCommission($baseRate, $commissionPercent);
+
+            Log::debug('FX rate retrieved and adjusted', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date->format('Y-m-d'),
+                'base_rate' => $baseRate,
+                'commission_percent' => $commissionPercent,
+                'adjusted_rate' => $adjustedRate
+            ]);
+
+            return $adjustedRate;
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve FX rate', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date->format('Y-m-d'),
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            return null;
+        }
     }
 
     /**
-     * Calculate converted amount using FX rate and commission.
+     * Apply commission to a base FX rate
      * 
-     * Applies the commission formula: AdjustedRate = BaseRate × (1 - Commission%).
-     * Returns the converted amount in the target currency.
-     *
-     * @param float $amount Original amount to convert
-     * @param float $fxRate Base FX rate from API
-     * @param float $commissionRate Commission rate as decimal (e.g., 0.02 for 2%)
-     * @return float Converted amount with commission applied
-     * @throws \Exception When invalid parameters provided
+     * Uses the formula: AdjustedRate = BaseRate x (1 - CommissionPercent)
+     * Commission percentage should be provided as a decimal (e.g., 0.5 for 0.5%)
+     * 
+     * @param float $baseRate Base exchange rate before commission
+     * @param float $commissionPercent Commission percentage as decimal
+     * @return float Adjusted rate after commission application
+     * @throws InvalidArgumentException If rates are invalid
      */
-    public function calculateConvertedAmount(float $amount, float $fxRate, float $commissionRate): float
+    public function applyCommission(float $baseRate, float $commissionPercent): float
     {
-        // Validate input parameters
-        if ($amount < 0) {
-            throw new Exception('Amount must be non-negative');
-        }
-        
-        if ($fxRate <= 0) {
-            throw new Exception('FX rate must be positive');
-        }
-        
-        if ($commissionRate < 0 || $commissionRate > 1) {
-            throw new Exception('Commission rate must be between 0 and 1');
+        if ($baseRate <= 0) {
+            throw new InvalidArgumentException('Base rate must be positive');
         }
 
-        // Apply commission to FX rate: AdjustedRate = BaseRate × (1 - Commission%)
-        $adjustedRate = $fxRate * (1 - $commissionRate);
-        
-        // Calculate converted amount
-        $convertedAmount = $amount * $adjustedRate;
-        
-        Log::debug('FX conversion calculation', [
-            'original_amount' => $amount,
-            'base_fx_rate' => $fxRate,
-            'commission_rate' => $commissionRate,
-            'adjusted_rate' => $adjustedRate,
-            'converted_amount' => $convertedAmount,
-        ]);
-        
+        if ($commissionPercent < 0 || $commissionPercent > 100) {
+            throw new InvalidArgumentException('Commission percent must be between 0 and 100');
+        }
+
+        // Convert percentage to decimal if needed (handle both 0.5 and 50 input formats)
+        $commissionDecimal = $commissionPercent > 1 ? $commissionPercent / 100 : $commissionPercent;
+
+        // Apply commission formula
+        $adjustedRate = $baseRate * (1 - $commissionDecimal);
+
+        // Ensure adjusted rate doesn't go below zero
+        return max(0.0, $adjustedRate);
+    }
+
+    /**
+     * Convert amount using an FX rate
+     * 
+     * Performs currency conversion using the provided exchange rate.
+     * Rounds to 2 decimal places for monetary precision.
+     * 
+     * @param float $amount Original amount to convert
+     * @param float $rate Exchange rate to apply
+     * @return float Converted amount rounded to 2 decimal places
+     * @throws InvalidArgumentException If parameters are invalid
+     */
+    public function convertAmount(float $amount, float $rate): float
+    {
+        if ($rate <= 0) {
+            throw new InvalidArgumentException('Exchange rate must be positive');
+        }
+
+        $convertedAmount = $amount * $rate;
+
+        // Round to 2 decimal places for monetary precision
         return round($convertedAmount, 2);
     }
 
     /**
-     * Apply commission to an FX rate.
+     * Get comprehensive FX conversion data for expense processing
      * 
-     * Helper method to apply commission using the formula:
-     * AdjustedRate = BaseRate × (1 - Commission%).
-     *
-     * @param float $baseRate Original FX rate
-     * @param float $commissionRate Commission rate as decimal (e.g., 0.02 for 2%)
-     * @return float Adjusted FX rate with commission applied
-     * @throws \Exception When invalid parameters provided
-     */
-    public function applyCommission(float $baseRate, float $commissionRate): float
-    {
-        if ($baseRate <= 0) {
-            throw new Exception('Base rate must be positive');
-        }
-        
-        if ($commissionRate < 0 || $commissionRate > 1) {
-            throw new Exception('Commission rate must be between 0 and 1');
-        }
-
-        $adjustedRate = $baseRate * (1 - $commissionRate);
-        
-        Log::debug('Commission applied to FX rate', [
-            'base_rate' => $baseRate,
-            'commission_rate' => $commissionRate,
-            'adjusted_rate' => $adjustedRate,
-        ]);
-        
-        return round($adjustedRate, 6); // Higher precision for rates
-    }
-
-    /**
-     * Perform complete FX conversion with client context.
+     * Combines rate lookup, commission application, and amount conversion
+     * into a single method call. Returns complete conversion information
+     * or indicates when FX is not available.
      * 
-     * Comprehensive method that handles the full FX conversion flow:
-     * 1. Get client's base currency and commission settings
-     * 2. Retrieve FX rate for the specified date
-     * 3. Calculate converted amount with commission applied
-     *
-     * @param int $clientId Client ID for currency and commission settings
-     * @param float $amount Amount to convert
-     * @param string $fromCurrency Source currency (3-letter ISO)
-     * @param Carbon $expenseDate Date for FX rate lookup
-     * @return array Conversion result with all details
-     * @throws \Exception When conversion fails
+     * @param float $amount Original expense amount
+     * @param string $fromCurrency Source currency (expense currency)
+     * @param string $toCurrency Target currency (wallet base currency)
+     * @param Carbon $date Expense date for rate lookup
+     * @return array Complete FX conversion data or error information
      */
-    public function convertExpenseAmount(int $clientId, float $amount, string $fromCurrency, Carbon $expenseDate): array
+    public function getFullConversionData(float $amount, string $fromCurrency, string $toCurrency, Carbon $date): array
     {
-        // Get client's wallet base currency and commission settings
-        $walletInfo = $this->getWalletBaseCurrency($clientId);
-        $baseCurrency = $walletInfo['base_currency'];
-        $commissionRate = $walletInfo['commission_rate'];
+        try {
+            // Get base FX rate
+            $fxRate = $this->getFXRate($fromCurrency, $toCurrency, $date);
 
-        // If already in base currency, no conversion needed
-        if ($fromCurrency === $baseCurrency) {
+            if ($fxRate === null) {
+                return [
+                    'status' => 'no_fx_available',
+                    'message' => 'No FX rate available within 30-day lookback period',
+                    'original_amount' => $amount,
+                    'original_currency' => $fromCurrency,
+                    'target_currency' => $toCurrency,
+                    'expense_date' => $date->format('Y-m-d'),
+                    'converted_amount' => null,
+                    'fx_rate' => null,
+                    'commission_applied' => false
+                ];
+            }
+
+            // Convert the amount
+            $convertedAmount = $this->convertAmount($amount, $fxRate);
+
+            // Get commission information for transparency
+            $commissionPercent = $this->getCommissionPercent($fromCurrency, $toCurrency);
+            $baseRate = $this->getBaseFXRate($fromCurrency, $toCurrency, $date);
+
             return [
+                'status' => 'success',
+                'message' => 'FX conversion completed successfully',
                 'original_amount' => $amount,
                 'original_currency' => $fromCurrency,
-                'converted_amount' => $amount,
-                'base_currency' => $baseCurrency,
-                'fx_rate' => 1.0,
-                'adjusted_fx_rate' => 1.0,
-                'commission_rate' => $commissionRate,
-                'conversion_date' => $expenseDate->toDateString(),
-                'conversion_needed' => false,
+                'target_currency' => $toCurrency,
+                'expense_date' => $date->format('Y-m-d'),
+                'converted_amount' => $convertedAmount,
+                'fx_rate' => $fxRate,
+                'base_fx_rate' => $baseRate,
+                'commission_percent' => $commissionPercent,
+                'commission_applied' => true,
+                'lookback_days' => self::MAX_FX_LOOKBACK_DAYS
+            ];
+
+        } catch (Exception $e) {
+            Log::error('Failed to get full conversion data', [
+                'amount' => $amount,
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date->format('Y-m-d'),
+                'error' => $e->getMessage()
+            ]);
+
+            return [
+                'status' => 'error',
+                'message' => 'FX conversion failed due to system error',
+                'original_amount' => $amount,
+                'original_currency' => $fromCurrency,
+                'target_currency' => $toCurrency,
+                'expense_date' => $date->format('Y-m-d'),
+                'converted_amount' => null,
+                'fx_rate' => null,
+                'commission_applied' => false,
+                'error' => $e->getMessage()
             ];
         }
-
-        // Get FX rate for conversion
-        $fxRate = $this->getFXRate($fromCurrency, $baseCurrency, $expenseDate);
-        
-        if (is_null($fxRate)) {
-            throw new Exception("Unable to retrieve FX rate for {$fromCurrency} to {$baseCurrency} on {$expenseDate->toDateString()}");
-        }
-
-        // Calculate converted amount with commission
-        $adjustedRate = $this->applyCommission($fxRate, $commissionRate);
-        $convertedAmount = $this->calculateConvertedAmount($amount, $fxRate, $commissionRate);
-
-        return [
-            'original_amount' => $amount,
-            'original_currency' => $fromCurrency,
-            'converted_amount' => $convertedAmount,
-            'base_currency' => $baseCurrency,
-            'fx_rate' => $fxRate,
-            'adjusted_fx_rate' => $adjustedRate,
-            'commission_rate' => $commissionRate,
-            'conversion_date' => $expenseDate->toDateString(),
-            'conversion_needed' => true,
-        ];
     }
 
     /**
-     * Batch convert multiple amounts using the same FX parameters.
+     * Validate if a currency code is properly formatted
      * 
-     * Optimizes multiple conversions by reusing FX rate and client settings.
-     * Useful for CSV batch processing scenarios.
-     *
-     * @param int $clientId Client ID for currency and commission settings
-     * @param array $amounts Array of [amount, currency, date] arrays to convert
-     * @return array Array of conversion results
-     */
-    public function batchConvertAmounts(int $clientId, array $amounts): array
-    {
-        $results = [];
-        $walletInfo = $this->getWalletBaseCurrency($clientId);
-        $baseCurrency = $walletInfo['base_currency'];
-        $commissionRate = $walletInfo['commission_rate'];
-
-        foreach ($amounts as $index => $amountData) {
-            if (!is_array($amountData) || count($amountData) < 3) {
-                $results[$index] = [
-                    'error' => 'Invalid amount data format. Expected [amount, currency, date]',
-                    'index' => $index,
-                ];
-                continue;
-            }
-
-            [$amount, $currency, $date] = $amountData;
-
-            try {
-                $expenseDate = is_string($date) ? Carbon::parse($date) : $date;
-                $result = $this->convertExpenseAmount($clientId, $amount, $currency, $expenseDate);
-                $result['batch_index'] = $index;
-                $results[$index] = $result;
-                
-            } catch (Exception $e) {
-                $results[$index] = [
-                    'error' => $e->getMessage(),
-                    'index' => $index,
-                    'original_amount' => $amount,
-                    'original_currency' => $currency,
-                    'date' => $date,
-                ];
-                
-                Log::error('Batch FX conversion failed', [
-                    'client_id' => $clientId,
-                    'index' => $index,
-                    'amount' => $amount,
-                    'currency' => $currency,
-                    'date' => $date,
-                    'error' => $e->getMessage(),
-                ]);
-            }
-        }
-
-        return $results;
-    }
-
-    /**
-     * Validate currency code format.
-     *
-     * @param string $currency Currency code to validate
+     * @param string $currencyCode Currency code to validate
      * @return bool True if valid 3-letter ISO format
      */
-    public function isValidCurrencyCode(string $currency): bool
+    private function isValidCurrencyCode(string $currencyCode): bool
     {
-        return preg_match('/^[A-Z]{3}$/', $currency) === 1;
+        return preg_match('/^[A-Z]{3}$/', $currencyCode) === 1;
     }
 
     /**
-     * Get supported currencies from the FX API.
+     * Get commission percentage for a currency pair
      * 
-     * Retrieves the list of supported currencies for FX conversion.
-     * Results are cached to reduce API calls.
-     *
-     * @return array Array of supported currency codes
+     * Looks up platform-configured commission rates for the specific
+     * currency pair or falls back to default commission rate.
+     * 
+     * @param string $fromCurrency Source currency
+     * @param string $toCurrency Target currency  
+     * @return float Commission percentage as decimal
      */
-    public function getSupportedCurrencies(): array
+    private function getCommissionPercent(string $fromCurrency, string $toCurrency): float
     {
-        $cacheKey = 'supported_currencies';
-        
-        return Cache::remember($cacheKey, 24 * 3600, function () { // Cache for 24 hours
-            try {
-                $response = Http::timeout($this->apiTimeout)
-                    ->withHeaders([
-                        'Accept' => 'application/json',
-                        'Content-Type' => 'application/json',
-                    ])
-                    ->get("{$this->fxApiBaseUrl}/fx-currencies");
+        try {
+            // Query commission rates table
+            $commission = DB::table('fx_commission_rates')
+                ->where('from_currency', $fromCurrency)
+                ->where('to_currency', $toCurrency)
+                ->where('is_active', 1)
+                ->first();
 
-                if (!$response->successful()) {
-                    Log::warning('Failed to retrieve supported currencies', [
-                        'status' => $response->status(),
-                        'response' => $response->body(),
-                    ]);
-                    
-                    // Return common currencies as fallback
-                    return ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD'];
-                }
-
-                $data = $response->json();
-                return $data['currencies'] ?? ['USD', 'EUR', 'GBP'];
-
-            } catch (Exception $e) {
-                Log::error('Error retrieving supported currencies', [
-                    'error' => $e->getMessage(),
-                    'trace' => $e->getTraceAsString(),
-                ]);
-                
-                // Return common currencies as fallback
-                return ['USD', 'EUR', 'GBP', 'JPY', 'AUD', 'CAD', 'CHF', 'CNY', 'SEK', 'NZD'];
+            if ($commission) {
+                return (float) $commission->commission_percent;
             }
-        });
+
+            // Try reverse currency pair
+            $reverseCommission = DB::table('fx_commission_rates')
+                ->where('from_currency', $toCurrency)
+                ->where('to_currency', $fromCurrency)
+                ->where('is_active', 1)
+                ->first();
+
+            if ($reverseCommission) {
+                return (float) $reverseCommission->commission_percent;
+            }
+
+            // Fall back to default commission
+            Log::debug('Using default commission rate for currency pair', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'default_commission' => self::DEFAULT_COMMISSION_PERCENT
+            ]);
+
+            return self::DEFAULT_COMMISSION_PERCENT;
+
+        } catch (Exception $e) {
+            Log::warning('Failed to retrieve commission rate, using default', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'error' => $e->getMessage(),
+                'default_commission' => self::DEFAULT_COMMISSION_PERCENT
+            ]);
+
+            return self::DEFAULT_COMMISSION_PERCENT;
+        }
     }
 
     /**
-     * Clear FX rate cache for specific currency pair and date.
-     *
+     * Get base FX rate without commission applied
+     * 
+     * Used for transparency in FX conversion reporting to show
+     * both base rate and commission-adjusted rate.
+     * 
      * @param string $fromCurrency Source currency
      * @param string $toCurrency Target currency
-     * @param Carbon $date Date for cache clearing
-     * @return bool True if cache was cleared
+     * @param Carbon $date Rate lookup date
+     * @return float|null Base rate without commission or null if not found
      */
-    public function clearFXRateCache(string $fromCurrency, string $toCurrency, Carbon $date): bool
+    private function getBaseFXRate(string $fromCurrency, string $toCurrency, Carbon $date): ?float
     {
-        $dateString = $date->format('Y-m-d');
-        $cacheKey = "fx_rate_{$fromCurrency}_{$toCurrency}_{$dateString}";
-        
-        return Cache::forget($cacheKey);
-    }
+        try {
+            $lookbackDate = $date->copy()->subDays(self::MAX_FX_LOOKBACK_DAYS);
 
-    /**
-     * Clear all FX-related cache entries.
-     *
-     * @return bool True if cache was cleared
-     */
-    public function clearAllFXCache(): bool
-    {
-        $keys = [
-            'supported_currencies',
-        ];
-        
-        $cleared = true;
-        foreach ($keys as $key) {
-            $cleared = $cleared && Cache::forget($key);
+            $fxRate = DB::table('fx_rates')
+                ->where('from_currency', $fromCurrency)
+                ->where('to_currency', $toCurrency)
+                ->where('rate_date', '<=', $date->format('Y-m-d'))
+                ->where('rate_date', '>=', $lookbackDate->format('Y-m-d'))
+                ->where('is_active', 1)
+                ->orderBy('rate_date', 'desc')
+                ->first();
+
+            return $fxRate ? (float) $fxRate->rate : null;
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve base FX rate', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date->format('Y-m-d'),
+                'error' => $e->getMessage()
+            ]);
+
+            return null;
         }
-        
-        // Clear wallet base currency cache (pattern-based)
-        // Note: This is a simplified approach. In production, you might want to use cache tags
-        // or maintain a list of cached client IDs for more efficient cache management.
-        
-        return $cleared;
     }
 
     /**
-     * Get FX conversion statistics for reporting.
-     *
-     * @param int $clientId Client ID for statistics
-     * @param Carbon $startDate Start date for statistics
-     * @param Carbon $endDate End date for statistics
-     * @return array Conversion statistics
+     * Check if FX conversion is required between two currencies
+     * 
+     * @param string $fromCurrency Source currency
+     * @param string $toCurrency Target currency
+     * @return bool True if conversion is needed (currencies are different)
      */
-    public function getFXConversionStats(int $clientId, Carbon $startDate, Carbon $endDate): array
+    public function isConversionRequired(string $fromCurrency, string $toCurrency): bool
     {
-        $walletInfo = $this->getWalletBaseCurrency($clientId);
+        return strtoupper(trim($fromCurrency)) !== strtoupper(trim($toCurrency));
+    }
+
+    /**
+     * Get available currencies for FX conversion
+     * 
+     * Returns list of currencies that have active FX rates available
+     * for conversion operations.
+     * 
+     * @return array Array of currency codes with FX rate availability
+     */
+    public function getAvailableCurrencies(): array
+    {
+        try {
+            $currencies = DB::table('fx_rates')
+                ->select('from_currency as currency_code')
+                ->where('is_active', 1)
+                ->union(
+                    DB::table('fx_rates')
+                        ->select('to_currency as currency_code')
+                        ->where('is_active', 1)
+                )
+                ->distinct()
+                ->orderBy('currency_code')
+                ->pluck('currency_code')
+                ->toArray();
+
+            return $currencies;
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve available currencies', [
+                'error' => $e->getMessage()
+            ]);
+
+            return [self::DEFAULT_BASE_CURRENCY];
+        }
+    }
+
+    /**
+     * Get FX rate history for a currency pair
+     * 
+     * Returns historical FX rates for analysis and reporting purposes.
+     * Limited to the maximum lookback period.
+     * 
+     * @param string $fromCurrency Source currency
+     * @param string $toCurrency Target currency
+     * @param int $days Number of days to look back (max 30)
+     * @return array Array of historical rates with dates
+     */
+    public function getFXRateHistory(string $fromCurrency, string $toCurrency, int $days = 30): array
+    {
+        $days = min($days, self::MAX_FX_LOOKBACK_DAYS);
         
-        return [
-            'client_id' => $clientId,
-            'base_currency' => $walletInfo['base_currency'],
-            'commission_rate' => $walletInfo['commission_rate'],
-            'period_start' => $startDate->toDateString(),
-            'period_end' => $endDate->toDateString(),
-            'max_lookback_days' => self::MAX_LOOKBACK_DAYS,
-            'cache_ttl_seconds' => self::FX_RATE_CACHE_TTL,
-            'supported_currencies_count' => count($this->getSupportedCurrencies()),
-        ];
+        try {
+            $lookbackDate = Carbon::now()->subDays($days);
+
+            $rates = DB::table('fx_rates')
+                ->where('from_currency', strtoupper($fromCurrency))
+                ->where('to_currency', strtoupper($toCurrency))
+                ->where('rate_date', '>=', $lookbackDate->format('Y-m-d'))
+                ->where('is_active', 1)
+                ->orderBy('rate_date', 'desc')
+                ->select(['rate_date', 'rate', 'created_at'])
+                ->get()
+                ->toArray();
+
+            return array_map(function($rate) {
+                return [
+                    'date' => $rate->rate_date,
+                    'rate' => (float) $rate->rate,
+                    'timestamp' => $rate->created_at
+                ];
+            }, $rates);
+
+        } catch (Exception $e) {
+            Log::error('Failed to retrieve FX rate history', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'days' => $days,
+                'error' => $e->getMessage()
+            ]);
+
+            return [];
+        }
     }
 }

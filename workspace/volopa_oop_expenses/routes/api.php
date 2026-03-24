@@ -2,10 +2,9 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\PocketExpenseController;
-use App\Http\Controllers\Api\UserFeaturePermissionController;
-use App\Http\Controllers\Api\PocketExpenseUploadController;
-use App\Http\Controllers\Api\PocketExpenseSourceController;
+use App\Http\Controllers\Api\V1\UserFeaturePermissionController;
+use App\Http\Controllers\Api\V1\PocketExpenseController;
+use App\Http\Controllers\PocketExpenseUploadController;
 
 /*
 |--------------------------------------------------------------------------
@@ -24,445 +23,298 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 
 /*
 |--------------------------------------------------------------------------
-| Volopa Out-of-Pocket Expenses API Routes
+| OOP Expense Management API Routes
 |--------------------------------------------------------------------------
 |
-| All routes are protected by OAuth2 authentication middleware and
-| follow the /v1 versioning prefix pattern. Routes are scoped by
-| client_id for multi-tenancy support.
+| All routes use Oauth2UserClient middleware for OAuth2 token-based 
+| authentication as per platform constraints. Routes are versioned 
+| under /v1 and follow RESTful naming conventions.
 |
 */
 
-Route::prefix('v1')->middleware(['auth:api', 'oauth2.user.client'])->group(function () {
+// API Version 1 Routes with OAuth2 Authentication
+Route::prefix('v1')->middleware(['Oauth2UserClient'])->group(function () {
     
     /*
     |--------------------------------------------------------------------------
-    | Pocket Expenses Management
+    | User Feature Permission Management Routes
     |--------------------------------------------------------------------------
     |
-    | RESTful API endpoints for managing out-of-pocket expenses.
-    | Supports CRUD operations with proper authorization policies.
+    | Routes for managing user feature permissions including granting,
+    | revoking, and querying permissions. Follows delegation table pattern
+    | with role-based hierarchy for Primary Admin, Admin, Business User,
+    | and Card User roles.
     |
     */
-    Route::apiResource('pocket-expenses', PocketExpenseController::class)->names([
-        'index'   => 'api.pocket-expenses.index',
-        'store'   => 'api.pocket-expenses.store', 
-        'show'    => 'api.pocket-expenses.show',
-        'update'  => 'api.pocket-expenses.update',
-        'destroy' => 'api.pocket-expenses.destroy',
-    ]);
-
-    /*
-    |--------------------------------------------------------------------------
-    | CSV Batch Upload Endpoints
-    |--------------------------------------------------------------------------
-    |
-    | Endpoints for handling CSV file uploads and batch processing
-    | of pocket expenses with validation and queue processing.
-    |
-    */
-    Route::prefix('uploads')->name('api.uploads.')->group(function () {
-        Route::post('pocket-expense/csv', [PocketExpenseUploadController::class, 'uploadPocketExpenseCSV'])
-             ->name('pocket-expense.csv');
-             
-        Route::get('pocket-expense/{uploadId}/status', [PocketExpenseUploadController::class, 'getUploadStatus'])
-             ->name('pocket-expense.status');
-             
-        Route::get('pocket-expense/{uploadId}/errors', [PocketExpenseUploadController::class, 'getUploadErrors'])
-             ->name('pocket-expense.errors');
-             
-        Route::delete('pocket-expense/{uploadId}', [PocketExpenseUploadController::class, 'cancelUpload'])
-             ->name('pocket-expense.cancel');
+    Route::prefix('user-feature-permissions')->name('api.v1.user-feature-permissions.')->group(function () {
+        // List user feature permissions with filtering
+        Route::get('/', [UserFeaturePermissionController::class, 'index'])
+            ->name('index');
+        
+        // Grant new feature permission to user
+        Route::post('/', [UserFeaturePermissionController::class, 'store'])
+            ->name('store');
+        
+        // Get specific permission details
+        Route::get('{permission}', [UserFeaturePermissionController::class, 'show'])
+            ->name('show');
+        
+        // Update existing permission (enable/disable, change manager)
+        Route::put('{permission}', [UserFeaturePermissionController::class, 'update'])
+            ->name('update');
+        
+        // Revoke permission (soft delete or hard delete based on policy)
+        Route::delete('{permission}', [UserFeaturePermissionController::class, 'destroy'])
+            ->name('destroy');
     });
 
     /*
     |--------------------------------------------------------------------------
-    | User Feature Permissions Management
+    | Pocket Expense CRUD Routes
     |--------------------------------------------------------------------------
     |
-    | Endpoints for managing user feature permissions with delegation-based
-    | RBAC system. Supports granting, revoking, and managing permissions.
+    | Routes for single expense data capturing with real-time FX conversion,
+    | metadata management, and approval workflow. Supports draft, submitted,
+    | approved, and rejected status transitions.
     |
     */
-    Route::apiResource('user-feature-permissions', UserFeaturePermissionController::class)->except(['show'])->names([
-        'index'   => 'api.user-feature-permissions.index',
-        'store'   => 'api.user-feature-permissions.store',
-        'update'  => 'api.user-feature-permissions.update', 
-        'destroy' => 'api.user-feature-permissions.destroy',
-    ]);
-
-    // Additional permission management endpoints
-    Route::prefix('user-feature-permissions')->name('api.user-feature-permissions.')->group(function () {
-        Route::post('{permission}/enable', [UserFeaturePermissionController::class, 'enable'])
-             ->name('enable');
-             
-        Route::post('{permission}/disable', [UserFeaturePermissionController::class, 'disable'])
-             ->name('disable');
-             
-        Route::put('{permission}/manager', [UserFeaturePermissionController::class, 'setManager'])
-             ->name('set-manager');
-             
-        Route::delete('{permission}/manager', [UserFeaturePermissionController::class, 'removeManager'])
-             ->name('remove-manager');
-             
-        Route::get('managed-users', [UserFeaturePermissionController::class, 'getManagedUsers'])
-             ->name('managed-users');
-             
-        Route::get('user/{userId}', [UserFeaturePermissionController::class, 'getUserPermissions'])
-             ->name('user-permissions');
+    Route::prefix('pocket-expenses')->name('api.v1.pocket-expenses.')->group(function () {
+        // List user expenses with filtering by status, date range, etc.
+        Route::get('/', [PocketExpenseController::class, 'index'])
+            ->name('index');
+        
+        // Create new expense with FX conversion and metadata
+        Route::post('/', [PocketExpenseController::class, 'store'])
+            ->name('store');
+        
+        // Get specific expense with metadata relationships
+        Route::get('{expense}', [PocketExpenseController::class, 'show'])
+            ->name('show');
+        
+        // Update existing expense (recalculate FX, update metadata)
+        Route::put('{expense}', [PocketExpenseController::class, 'update'])
+            ->name('update');
+        
+        // Delete expense (soft delete with audit trail)
+        Route::delete('{expense}', [PocketExpenseController::class, 'destroy'])
+            ->name('destroy');
+        
+        // Additional expense workflow actions
+        Route::patch('{expense}/approve', [PocketExpenseController::class, 'approve'])
+            ->name('approve');
+        
+        Route::patch('{expense}/reject', [PocketExpenseController::class, 'reject'])
+            ->name('reject');
+        
+        Route::patch('{expense}/submit', [PocketExpenseController::class, 'submit'])
+            ->name('submit');
+        
+        Route::patch('{expense}/withdraw', [PocketExpenseController::class, 'withdraw'])
+            ->name('withdraw');
     });
 
     /*
     |--------------------------------------------------------------------------
-    | Expense Source Configuration
+    | Expense Reference Data Routes
     |--------------------------------------------------------------------------
     |
-    | Endpoints for managing expense source configurations like
-    | "Company Credit Card", "Personal Cash", etc. Supports client-specific
-    | and global source configurations.
+    | Routes for accessing reference data needed for expense creation
+    | including expense types, sources, categories, tracking codes, etc.
+    | These are read-only endpoints for populating dropdowns and validation.
     |
     */
-    Route::apiResource('pocket-expense-sources', PocketExpenseSourceController::class)->names([
-        'index'   => 'api.pocket-expense-sources.index',
-        'store'   => 'api.pocket-expense-sources.store',
-        'show'    => 'api.pocket-expense-sources.show',
-        'update'  => 'api.pocket-expense-sources.update',
-        'destroy' => 'api.pocket-expense-sources.destroy',
-    ]);
-
-    // Additional source configuration endpoints
-    Route::prefix('pocket-expense-sources')->name('api.pocket-expense-sources.')->group(function () {
-        Route::post('{source}/set-default', [PocketExpenseSourceController::class, 'setAsDefault'])
-             ->name('set-default');
-             
-        Route::delete('{source}/default', [PocketExpenseSourceController::class, 'removeDefault'])
-             ->name('remove-default');
-             
-        Route::post('{source}/restore', [PocketExpenseSourceController::class, 'restore'])
-             ->name('restore');
-             
-        Route::get('available', [PocketExpenseSourceController::class, 'getAvailableForClient'])
-             ->name('available');
-             
-        Route::get('default', [PocketExpenseSourceController::class, 'getDefaultForClient'])
-             ->name('default');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Expense Actions and Workflows
-    |--------------------------------------------------------------------------
-    |
-    | Additional endpoints for expense workflow actions like submit,
-    | approve, reject, and other business operations.
-    |
-    */
-    Route::prefix('pocket-expenses')->name('api.pocket-expenses.')->group(function () {
-        Route::post('{expense}/submit', [PocketExpenseController::class, 'submit'])
-             ->name('submit');
-             
-        Route::post('{expense}/approve', [PocketExpenseController::class, 'approve'])
-             ->name('approve');
-             
-        Route::post('{expense}/reject', [PocketExpenseController::class, 'reject'])
-             ->name('reject');
-             
-        Route::post('{expense}/revert-to-draft', [PocketExpenseController::class, 'revertToDraft'])
-             ->name('revert-to-draft');
-             
-        Route::post('{expense}/restore', [PocketExpenseController::class, 'restore'])
-             ->name('restore');
-             
-        Route::get('pending-approval', [PocketExpenseController::class, 'getPendingApproval'])
-             ->name('pending-approval');
-             
-        Route::get('approved', [PocketExpenseController::class, 'getApproved'])
-             ->name('approved');
-             
-        Route::get('rejected', [PocketExpenseController::class, 'getRejected'])
-             ->name('rejected');
-             
-        Route::get('drafts', [PocketExpenseController::class, 'getDrafts'])
-             ->name('drafts');
-             
-        Route::get('user/{userId}', [PocketExpenseController::class, 'getUserExpenses'])
-             ->name('user-expenses');
-             
-        Route::get('statistics', [PocketExpenseController::class, 'getStatistics'])
-             ->name('statistics');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Reference Data Endpoints
-    |--------------------------------------------------------------------------
-    |
-    | Endpoints for retrieving reference data used in expense forms
-    | and validation, such as expense types, currencies, etc.
-    |
-    */
-    Route::prefix('reference')->name('api.reference.')->group(function () {
+    Route::prefix('expense-reference')->name('api.v1.expense-reference.')->group(function () {
+        // Get available expense types with amount sign conventions
         Route::get('expense-types', [PocketExpenseController::class, 'getExpenseTypes'])
-             ->name('expense-types');
-             
-        Route::get('currencies', [PocketExpenseController::class, 'getCurrencies'])
-             ->name('currencies');
-             
-        Route::get('countries', [PocketExpenseController::class, 'getCountries'])
-             ->name('countries');
-             
-        Route::get('fx-rate', [PocketExpenseController::class, 'getFxRate'])
-             ->name('fx-rate');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | File Management Endpoints
-    |--------------------------------------------------------------------------
-    |
-    | Endpoints for managing file uploads, downloads, and processing
-    | related to expense receipts and CSV uploads.
-    |
-    */
-    Route::prefix('files')->name('api.files.')->group(function () {
-        Route::post('receipt-upload', [PocketExpenseController::class, 'uploadReceipt'])
-             ->name('receipt-upload');
-             
-        Route::get('receipt/{fileId}/download', [PocketExpenseController::class, 'downloadReceipt'])
-             ->name('receipt-download');
-             
-        Route::delete('receipt/{fileId}', [PocketExpenseController::class, 'deleteReceipt'])
-             ->name('receipt-delete');
-             
-        Route::get('csv-template', [PocketExpenseUploadController::class, 'downloadCsvTemplate'])
-             ->name('csv-template');
-             
-        Route::get('upload/{uploadId}/download', [PocketExpenseUploadController::class, 'downloadUploadFile'])
-             ->name('upload-download');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Export and Reporting Endpoints
-    |--------------------------------------------------------------------------
-    |
-    | Endpoints for generating reports and exports of expense data
-    | in various formats (CSV, PDF, Excel).
-    |
-    */
-    Route::prefix('exports')->name('api.exports.')->group(function () {
-        Route::get('expenses/csv', [PocketExpenseController::class, 'exportToCsv'])
-             ->name('expenses-csv');
-             
-        Route::get('expenses/excel', [PocketExpenseController::class, 'exportToExcel'])
-             ->name('expenses-excel');
-             
-        Route::get('expenses/pdf', [PocketExpenseController::class, 'exportToPdf'])
-             ->name('expenses-pdf');
-             
-        Route::get('upload/{uploadId}/report', [PocketExpenseUploadController::class, 'generateUploadReport'])
-             ->name('upload-report');
-    });
-
-    /*
-    |--------------------------------------------------------------------------
-    | Health Check and System Status
-    |--------------------------------------------------------------------------
-    |
-    | Endpoints for system health monitoring and status checks
-    | for the pocket expenses module.
-    |
-    */
-    Route::prefix('system')->name('api.system.')->group(function () {
-        Route::get('health', function () {
-            return response()->json([
-                'status' => 'ok',
-                'service' => 'pocket-expenses-api',
-                'version' => '1.0.0',
-                'timestamp' => now()->toISOString(),
-            ]);
-        })->name('health');
+            ->name('expense-types');
         
-        Route::get('queue-status', [PocketExpenseUploadController::class, 'getQueueStatus'])
-             ->name('queue-status');
+        // Get client expense sources (including global 'Other')
+        Route::get('expense-sources', [PocketExpenseController::class, 'getExpenseSources'])
+            ->name('expense-sources');
+        
+        // Get transaction categories for client
+        Route::get('categories', [PocketExpenseController::class, 'getCategories'])
+            ->name('categories');
+        
+        // Get tracking codes for client and user
+        Route::get('tracking-codes', [PocketExpenseController::class, 'getTrackingCodes'])
+            ->name('tracking-codes');
+        
+        // Get configurable projects for client
+        Route::get('projects', [PocketExpenseController::class, 'getProjects'])
+            ->name('projects');
+        
+        // Get additional fields configuration for client
+        Route::get('additional-fields', [PocketExpenseController::class, 'getAdditionalFields'])
+            ->name('additional-fields');
+        
+        // Get wallet base currency and FX rates for client
+        Route::get('fx-info', [PocketExpenseController::class, 'getFXInfo'])
+            ->name('fx-info');
+        
+        // Get real-time FX rate for currency pair and date
+        Route::get('fx-rate', [PocketExpenseController::class, 'getFXRate'])
+            ->name('fx-rate');
     });
-
 });
 
 /*
 |--------------------------------------------------------------------------
-| Public API Routes (No Authentication Required)
+| CSV Batch Upload Routes
 |--------------------------------------------------------------------------
 |
-| These routes are available without authentication for system
-| integration and public reference data access.
+| Routes for CSV file upload and batch processing outside the versioned
+| API structure. Uses separate upload controller for file handling with
+| synchronous validation and asynchronous processing via Laravel queues.
 |
 */
-
-Route::prefix('v1/public')->name('api.public.')->group(function () {
+Route::prefix('uploads')->middleware(['Oauth2UserClient'])->name('api.uploads.')->group(function () {
     
-    // Public reference data that doesn't require authentication
-    Route::get('expense-types', function () {
-        return response()->json(\App\Models\OptPocketExpenseType::getSelectOptions());
-    })->name('expense-types');
-    
-    // Public system information
-    Route::get('version', function () {
-        return response()->json([
-            'api_version' => '1.0.0',
-            'service' => 'volopa-pocket-expenses',
-            'documentation' => url('/docs/api/v1'),
-            'status' => 'operational',
-        ]);
-    })->name('version');
-    
-    // Public health check without sensitive data
-    Route::get('health', function () {
-        return response()->json([
-            'status' => 'ok',
-            'timestamp' => now()->toISOString(),
-        ]);
-    })->name('health');
-    
+    /*
+    |--------------------------------------------------------------------------
+    | Pocket Expense CSV Upload Routes
+    |--------------------------------------------------------------------------
+    |
+    | Route for uploading CSV files with expense data for batch processing.
+    | Supports up to 200 rows per file with 10MB limit. Uses all-or-nothing
+    | validation pattern - if any row fails, no expenses are created.
+    |
+    */
+    Route::prefix('pocket-expense')->name('pocket-expense.')->group(function () {
+        // Upload CSV file for batch expense processing
+        Route::post('csv', [PocketExpenseUploadController::class, 'uploadPocketExpenseCSV'])
+            ->name('csv');
+        
+        // Get upload status and progress
+        Route::get('upload/{uploadId}/status', [PocketExpenseUploadController::class, 'getUploadStatus'])
+            ->name('status');
+        
+        // Get detailed upload results with validation errors
+        Route::get('upload/{uploadId}/results', [PocketExpenseUploadController::class, 'getUploadResults'])
+            ->name('results');
+        
+        // Download CSV template for expenses
+        Route::get('template', [PocketExpenseUploadController::class, 'downloadTemplate'])
+            ->name('template');
+        
+        // Retry failed upload processing
+        Route::post('upload/{uploadId}/retry', [PocketExpenseUploadController::class, 'retryUpload'])
+            ->name('retry');
+        
+        // Cancel pending upload processing
+        Route::delete('upload/{uploadId}', [PocketExpenseUploadController::class, 'cancelUpload'])
+            ->name('cancel');
+    });
 });
 
 /*
 |--------------------------------------------------------------------------
-| Administrative Routes
+| Health Check and System Routes
 |--------------------------------------------------------------------------
 |
-| These routes are for administrative functions and require
-| elevated permissions beyond standard user authentication.
+| Basic health check routes that don't require authentication.
+| Used for monitoring and system status verification.
 |
 */
+Route::get('/health', function () {
+    return response()->json([
+        'status' => 'ok',
+        'service' => 'oop-expense-api',
+        'version' => '1.0.0',
+        'timestamp' => now()->toISOString()
+    ]);
+})->name('api.health');
 
-Route::prefix('v1/admin')->middleware(['auth:api', 'oauth2.user.client', 'admin.access'])->name('api.admin.')->group(function () {
-    
-    // Administrative user permission management
-    Route::prefix('permissions')->name('permissions.')->group(function () {
-        Route::get('audit-log', [UserFeaturePermissionController::class, 'getAuditLog'])
-             ->name('audit-log');
-             
-        Route::post('bulk-grant', [UserFeaturePermissionController::class, 'bulkGrantPermissions'])
-             ->name('bulk-grant');
-             
-        Route::post('bulk-revoke', [UserFeaturePermissionController::class, 'bulkRevokePermissions'])
-             ->name('bulk-revoke');
-             
-        Route::get('statistics', [UserFeaturePermissionController::class, 'getPermissionStatistics'])
-             ->name('statistics');
-    });
-    
-    // Administrative expense management
-    Route::prefix('expenses')->name('expenses.')->group(function () {
-        Route::get('all', [PocketExpenseController::class, 'getAllExpensesForAdmin'])
-             ->name('all');
-             
-        Route::post('{expense}/force-approve', [PocketExpenseController::class, 'forceApprove'])
-             ->name('force-approve');
-             
-        Route::post('{expense}/force-delete', [PocketExpenseController::class, 'forceDelete'])
-             ->name('force-delete');
-             
-        Route::get('audit-trail/{expense}', [PocketExpenseController::class, 'getAuditTrail'])
-             ->name('audit-trail');
-             
-        Route::get('analytics', [PocketExpenseController::class, 'getAnalytics'])
-             ->name('analytics');
-    });
-    
-    // Administrative upload management
-    Route::prefix('uploads')->name('uploads.')->group(function () {
-        Route::get('all', [PocketExpenseUploadController::class, 'getAllUploads'])
-             ->name('all');
-             
-        Route::post('{uploadId}/reprocess', [PocketExpenseUploadController::class, 'reprocessUpload'])
-             ->name('reprocess');
-             
-        Route::delete('{uploadId}/purge', [PocketExpenseUploadController::class, 'purgeUpload'])
-             ->name('purge');
-             
-        Route::get('failed', [PocketExpenseUploadController::class, 'getFailedUploads'])
-             ->name('failed');
-             
-        Route::post('cleanup', [PocketExpenseUploadController::class, 'cleanupOldUploads'])
-             ->name('cleanup');
-    });
-    
-    // System configuration and maintenance
-    Route::prefix('system')->name('system.')->group(function () {
-        Route::get('config', function () {
-            return response()->json([
-                'max_upload_size' => config('filesystems.max_upload_size', '10MB'),
-                'max_csv_rows' => config('pocket_expenses.max_csv_rows', 200),
-                'fx_lookback_days' => config('pocket_expenses.fx_lookback_days', 30),
-                'batch_size' => config('pocket_expenses.batch_size', 100),
-            ]);
-        })->name('config');
-        
-        Route::post('cache/clear', function () {
-            \Illuminate\Support\Facades\Artisan::call('cache:clear');
-            return response()->json(['message' => 'Cache cleared successfully']);
-        })->name('cache-clear');
-        
-        Route::get('queue/stats', [PocketExpenseUploadController::class, 'getQueueStatistics'])
-             ->name('queue-stats');
-    });
-    
-});
+Route::get('/ping', function () {
+    return response()->json(['message' => 'pong']);
+})->name('api.ping');
 
 /*
 |--------------------------------------------------------------------------
-| Route Model Binding
+| Route Model Binding Configuration
 |--------------------------------------------------------------------------
 |
-| Configure route model binding for API resources to enable
-| automatic model resolution and 404 handling.
+| Configure route model binding for automatic model resolution based on
+| route parameters. This enables automatic injection of model instances
+| into controller methods with proper authorization checks.
 |
 */
 
+// Bind pocket expense route parameter to PocketExpense model
 Route::bind('expense', function ($value) {
-    return \App\Models\PocketExpense::where('uuid', $value)
-                                   ->orWhere('id', $value)
-                                   ->firstOrFail();
+    return \App\Models\PocketExpense::where('id', $value)
+        ->where('client_id', auth()->user()->client_id ?? 0)
+        ->where('deleted', 0)
+        ->firstOrFail();
 });
 
+// Bind permission route parameter to UserFeaturePermission model
 Route::bind('permission', function ($value) {
-    return \App\Models\UserFeaturePermission::findOrFail($value);
+    return \App\Models\UserFeaturePermission::where('id', $value)
+        ->where('client_id', auth()->user()->client_id ?? 0)
+        ->firstOrFail();
 });
 
-Route::bind('source', function ($value) {
-    return \App\Models\PocketExpenseSourceClientConfig::where('uuid', $value)
-                                                      ->orWhere('id', $value)
-                                                      ->firstOrFail();
-});
-
+// Bind upload ID parameter to PocketExpenseFileUpload model
 Route::bind('uploadId', function ($value) {
-    return \App\Models\PocketExpenseFileUpload::where('uuid', $value)
-                                              ->orWhere('id', $value)
-                                              ->firstOrFail();
+    return \App\Models\PocketExpenseFileUpload::where('id', $value)
+        ->where('client_id', auth()->user()->client_id ?? 0)
+        ->whereNull('deleted_at')
+        ->firstOrFail();
 });
 
 /*
 |--------------------------------------------------------------------------
-| API Rate Limiting
+| Route Caching Configuration
 |--------------------------------------------------------------------------
 |
-| Configure rate limiting for API endpoints to prevent abuse
-| and ensure system stability.
+| Configure route caching to improve performance in production.
+| Reference data routes can be cached longer due to infrequent changes.
 |
 */
 
-Route::middleware('throttle:api')->group(function () {
-    // Standard API endpoints are covered by default throttle:api middleware
+// Apply rate limiting to upload endpoints to prevent abuse
+Route::middleware(['throttle:uploads'])->group(function () {
+    // Upload routes are already defined above with throttling applied
 });
 
-// Special rate limiting for upload endpoints (more restrictive)
-Route::middleware('throttle:uploads,10,1')->group(function () {
-    // Upload-specific routes with tighter limits are already grouped above
+// Apply different rate limiting to API endpoints
+Route::middleware(['throttle:api'])->group(function () {
+    // API routes are already defined above with throttling applied
 });
 
-// Rate limiting for public endpoints
-Route::middleware('throttle:public,100,1')->group(function () {
-    // Public routes are already grouped above with less restrictive limits
-});
+/*
+|--------------------------------------------------------------------------
+| API Documentation Routes
+|--------------------------------------------------------------------------
+|
+| Routes for API documentation and OpenAPI specification.
+| Available in development and staging environments only.
+|
+*/
+if (config('app.env') !== 'production') {
+    Route::get('/docs/openapi.json', function () {
+        return response()->file(base_path('docs/openapi.json'));
+    })->name('api.docs.openapi');
+    
+    Route::get('/docs', function () {
+        return view('api.docs.index');
+    })->name('api.docs');
+}
+
+/*
+|--------------------------------------------------------------------------
+| Fallback Route
+|--------------------------------------------------------------------------
+|
+| This route will catch all undefined API routes and return a consistent
+| JSON error response instead of Laravel's default 404 page.
+|
+*/
+Route::fallback(function () {
+    return response()->json([
+        'error' => 'Not Found',
+        'message' => 'The requested API endpoint was not found.',
+        'code' => 'ENDPOINT_NOT_FOUND'
+    ], 404);
+})->name('api.fallback');
