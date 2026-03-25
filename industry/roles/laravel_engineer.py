@@ -15,9 +15,10 @@ from metagpt.actions.write_code_review import WriteCodeReview
 from metagpt.actions.project_management_an import TASK_LIST
 from metagpt.schema import CodingContext, Document
 from metagpt.logs import logger
-from metagpt.utils.common import get_markdown_code_block_type
+from metagpt.utils.common import any_to_name, get_markdown_code_block_type
 from metagpt.utils.project_repo import ProjectRepo
 
+from industry.actions.laravel_write_code import LaravelWriteCode
 from industry.utils.context_reader import ContextReader
 from industry.utils.check_plan_dispatcher import CheckPlanDispatcher
 from industry.utils.repo_verifier import RepoVerifier
@@ -149,6 +150,10 @@ class LaravelEngineer(Engineer):
         """
         super().__init__(**kwargs)
 
+        # Replace upstream WriteCode with anti-hallucination LaravelWriteCode
+        self.set_actions([LaravelWriteCode])
+        self.next_todo_action = any_to_name(LaravelWriteCode)
+
         # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
         self._update_constraints_from_context(ContextReader())
 
@@ -246,6 +251,32 @@ class LaravelEngineer(Engineer):
                 logger.info(f"LaravelEngineer: Created/updated .src_workspace file")
 
         return result
+
+    async def _new_code_actions(self):
+        """Override to use LaravelWriteCode instead of upstream WriteCode.
+
+        Calls the base implementation (which populates self.code_todos with
+        WriteCode instances), then replaces each with a LaravelWriteCode
+        carrying the same parameters. This ensures the anti-hallucination
+        LARAVEL_PROMPT_TEMPLATE is used for every code file.
+        """
+        await super()._new_code_actions()
+        self.code_todos = [
+            LaravelWriteCode(
+                i_context=todo.i_context,
+                repo=todo.repo,
+                input_args=todo.input_args,
+                context=todo.context,
+                llm=todo.llm,
+            )
+            for todo in self.code_todos
+        ]
+        if self.code_todos:
+            self.set_todo(self.code_todos[0])
+        logger.info(
+            f"LaravelEngineer: Replaced {len(self.code_todos)} WriteCode "
+            f"todos with LaravelWriteCode (anti-hallucination template)"
+        )
 
     async def _act_sp_with_cr(self, review=False) -> Set[str]:
         """Override to emit a CHECK PLAN before the code generation loop.
