@@ -6,9 +6,11 @@
 @Desc    : Laravel Architect role for Volopa OOP Expense system
 """
 
+from metagpt.actions.write_prd import WritePRD
 from metagpt.roles.architect import Architect
 
 from industry.actions.laravel_design_api import LaravelWriteDesign
+from industry.actions.laravel_write_prd import LaravelWritePRD
 from industry.utils.context_reader import ContextReader
 
 
@@ -48,6 +50,9 @@ class LaravelArchitect(Architect):
 
         # Use Laravel-specific WriteDesign
         self.set_actions([LaravelWriteDesign])
+
+        # Watch for both upstream WritePRD and custom LaravelWritePRD messages
+        self._watch({WritePRD, LaravelWritePRD})
 
         # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
         self._update_constraints_from_context(ContextReader())

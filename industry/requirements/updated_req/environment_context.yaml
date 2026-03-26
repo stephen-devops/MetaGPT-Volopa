@@ -61,7 +61,7 @@ constraints:
 
     dos:
       routing:
-        - "Add routes to routes/api.php, usually under /v1 and auth middleware"
+        - "Add routes to routes/api.php, usually under /v1 and OAuth2 middleware"
         - "Keep names consistent (api.v1.posts.favorite.store, etc.)"
 
       data_shape:

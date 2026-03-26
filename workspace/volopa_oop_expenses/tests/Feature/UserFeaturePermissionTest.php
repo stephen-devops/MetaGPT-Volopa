@@ -2,128 +2,128 @@
 
 namespace Tests\Feature;
 
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Foundation\Testing\WithFaker;
-use Tests\TestCase;
 use App\Models\User;
 use App\Models\Client;
 use App\Models\UserFeaturePermission;
-use Database\Factories\UserFactory;
-use Database\Factories\ClientFactory;
-use Database\Factories\UserFeaturePermissionFactory;
-use Illuminate\Http\Response;
-use Illuminate\Support\Facades\Auth;
-use Laravel\Sanctum\Sanctum;
+use App\Http\Resources\UserFeaturePermissionResource;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\WithFaker;
+use Tests\TestCase;
 
 /**
- * Feature tests for User Feature Permission management functionality.
+ * Feature tests for User Feature Permission API endpoints.
  * 
- * Tests cover:
- * - Permission granting and revocation
- * - Role-based access control (Primary Admin, Admin, Business User, Card User)
- * - Hierarchical permission management (Admin can only grant to managed users)
- * - Multi-tenancy (client-scoped permissions)
- * - API endpoints for permission CRUD operations
- * - Policy enforcement and authorization rules
- * - Edge cases and validation scenarios
+ * Tests the complete CRUD operations for user permission management
+ * including authorization, validation, and proper API responses.
  */
 class UserFeaturePermissionTest extends TestCase
 {
     use RefreshDatabase, WithFaker;
 
-    /**
-     * Test data setup for permission scenarios.
-     */
-    protected User $primaryAdmin;
-    protected User $admin;
-    protected User $businessUser;
-    protected User $cardUser;
-    protected User $anotherAdmin;
-    protected Client $client;
-    protected Client $anotherClient;
-    protected int $oopFeatureId = 16;
+    private User $primaryAdmin;
+    private User $admin;
+    private User $businessUser;
+    private User $cardUser;
+    private User $targetUser;
+    private Client $client;
+    private int $oopFeatureId = 16; // OOP Expense feature ID
 
     /**
-     * Set up test environment before each test.
+     * Set up test data before each test.
      */
     protected function setUp(): void
     {
         parent::setUp();
 
+        // Create test users with different roles
+        $this->primaryAdmin = User::factory()->create(['role' => 'primary_admin']);
+        $this->admin = User::factory()->create(['role' => 'admin']);
+        $this->businessUser = User::factory()->create(['role' => 'business_user']);
+        $this->cardUser = User::factory()->create(['role' => 'card_user']);
+        $this->targetUser = User::factory()->create(['role' => 'business_user']);
+
         // Create test client
-        $this->client = Client::factory()->create([
-            'name' => 'Test Client Corporation',
-            'deleted' => false,
-        ]);
+        $this->client = Client::factory()->create();
 
-        $this->anotherClient = Client::factory()->create([
-            'name' => 'Another Client Ltd',
-            'deleted' => false,
-        ]);
-
-        // Create users with different roles
-        $this->primaryAdmin = User::factory()->create([
-            'name' => 'Primary Admin User',
-            'username' => 'primary.admin@testclient.com',
-            'deleted' => false,
-        ]);
-
-        $this->admin = User::factory()->create([
-            'name' => 'Admin User',
-            'username' => 'admin@testclient.com',
-            'deleted' => false,
-        ]);
-
-        $this->businessUser = User::factory()->create([
-            'name' => 'Business User',
-            'username' => 'business@testclient.com',
-            'deleted' => false,
-        ]);
-
-        $this->cardUser = User::factory()->create([
-            'name' => 'Card User',
-            'username' => 'card@testclient.com',
-            'deleted' => false,
-        ]);
-
-        $this->anotherAdmin = User::factory()->create([
-            'name' => 'Another Admin',
-            'username' => 'another.admin@testclient.com',
-            'deleted' => false,
-        ]);
+        // TODO: Implement OAuth2 token authentication setup
+        // This should simulate the Oauth2UserClient middleware behavior
+        $this->actingAs($this->primaryAdmin);
     }
 
     /**
-     * Test Primary Admin can grant permissions to any user.
-     * Primary Admin has full access to all users by default.
+     * Test listing user permissions with proper pagination.
      */
-    public function test_primary_admin_can_grant_permission_to_any_user(): void
+    public function test_can_list_user_permissions(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
+        // Arrange: Create test permissions
+        UserFeaturePermission::factory()
+            ->count(3)
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
 
-        $payload = [
-            'user_id' => $this->businessUser->id,
+        // Act: Send GET request
+        $response = $this->getJson('/api/v1/user-feature-permissions');
+
+        // Assert: Check response structure and status
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'data' => [
+                '*' => [
+                    'id',
+                    'user_id',
+                    'client_id',
+                    'feature_id',
+                    'grantor_id',
+                    'manager_user_id',
+                    'is_enabled',
+                    'created_at',
+                    'updated_at'
+                ]
+            ],
+            'links',
+            'meta'
+        ]);
+
+        // Assert: Check data count
+        $response->assertJsonCount(3, 'data');
+    }
+
+    /**
+     * Test granting a new user permission.
+     */
+    public function test_primary_admin_can_grant_user_permission(): void
+    {
+        // Arrange: Permission data
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->admin->id,
         ];
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        $response->assertStatus(Response::HTTP_CREATED)
-                ->assertJson([
-                    'data' => [
-                        'user_id' => $this->businessUser->id,
-                        'client_id' => $this->client->id,
-                        'feature_id' => $this->oopFeatureId,
-                        'grantor_id' => $this->primaryAdmin->id,
-                        'manager_user_id' => $this->admin->id,
-                        'is_enabled' => true,
-                    ]
-                ]);
+        // Assert: Check successful creation
+        $response->assertStatus(201);
+        $response->assertJsonStructure([
+            'data' => [
+                'id',
+                'user_id',
+                'client_id',
+                'feature_id',
+                'grantor_id',
+                'manager_user_id',
+                'is_enabled',
+                'created_at',
+                'updated_at'
+            ]
+        ]);
 
+        // Assert: Check database state
         $this->assertDatabaseHas('user_feature_permission', [
-            'user_id' => $this->businessUser->id,
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'grantor_id' => $this->primaryAdmin->id,
@@ -133,898 +133,537 @@ class UserFeaturePermissionTest extends TestCase
     }
 
     /**
-     * Test Admin can only grant permissions to users they manage.
-     * Admin gets full access only to own expenses by default; needs explicit grant for others.
+     * Test admin can only grant permissions for users they manage.
      */
     public function test_admin_can_only_grant_to_managed_users(): void
     {
-        Sanctum::actingAs($this->admin);
+        // Arrange: Acting as admin (not primary admin)
+        $this->actingAs($this->admin);
 
-        // First, give admin permission to manage business user (simulating existing management relationship)
-        UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
+        // Create permission for admin to manage targetUser
+        UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
 
-        $payload = [
-            'user_id' => $this->cardUser->id,
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->admin->id,
         ];
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        $response->assertStatus(Response::HTTP_CREATED)
-                ->assertJson([
-                    'data' => [
-                        'user_id' => $this->cardUser->id,
-                        'client_id' => $this->client->id,
-                        'feature_id' => $this->oopFeatureId,
-                        'grantor_id' => $this->admin->id,
-                        'manager_user_id' => $this->admin->id,
-                        'is_enabled' => true,
-                    ]
-                ]);
+        // Assert: Check successful creation (admin can manage this user)
+        $response->assertStatus(201);
     }
 
     /**
-     * Test Admin cannot grant permissions to users they don't manage.
+     * Test admin cannot grant permissions to users they don't manage.
      */
-    public function test_admin_cannot_grant_to_non_managed_users(): void
+    public function test_admin_cannot_grant_to_unmanaged_users(): void
     {
-        Sanctum::actingAs($this->admin);
+        // Arrange: Acting as admin without management rights over targetUser
+        $this->actingAs($this->admin);
 
-        $payload = [
-            'user_id' => $this->cardUser->id,
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->anotherAdmin->id, // Admin trying to assign to another admin as manager
+            'manager_user_id' => $this->admin->id,
         ];
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        $response->assertStatus(Response::HTTP_FORBIDDEN)
-                ->assertJson([
-                    'message' => 'Admin can only grant access to their own managed users.'
-                ]);
-
-        $this->assertDatabaseMissing('user_feature_permission', [
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->admin->id,
-        ]);
+        // Assert: Check forbidden access
+        $response->assertStatus(403);
     }
 
     /**
-     * Test Business User and Card User cannot grant permissions.
-     * Business User and Card User cannot approve expenses even with management rights.
+     * Test business user cannot grant permissions.
      */
     public function test_business_user_cannot_grant_permissions(): void
     {
-        Sanctum::actingAs($this->businessUser);
+        // Arrange: Acting as business user
+        $this->actingAs($this->businessUser);
 
-        $payload = [
-            'user_id' => $this->cardUser->id,
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->businessUser->id,
         ];
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        $response->assertStatus(Response::HTTP_FORBIDDEN)
-                ->assertJson([
-                    'message' => 'This action is unauthorized.'
-                ]);
-
-        $this->assertDatabaseMissing('user_feature_permission', [
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-        ]);
+        // Assert: Check forbidden access
+        $response->assertStatus(403);
     }
 
     /**
-     * Test Card User cannot grant permissions.
+     * Test card user cannot grant permissions.
      */
     public function test_card_user_cannot_grant_permissions(): void
     {
-        Sanctum::actingAs($this->cardUser);
+        // Arrange: Acting as card user
+        $this->actingAs($this->cardUser);
 
-        $payload = [
-            'user_id' => $this->businessUser->id,
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->cardUser->id,
         ];
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        $response->assertStatus(Response::HTTP_FORBIDDEN)
-                ->assertJson([
-                    'message' => 'This action is unauthorized.'
-                ]);
+        // Assert: Check forbidden access
+        $response->assertStatus(403);
     }
 
     /**
-     * Test managing access can be given to any user irrespective of role.
+     * Test validation fails for duplicate user-client-feature combination.
      */
-    public function test_managing_access_can_be_given_to_any_role(): void
+    public function test_cannot_create_duplicate_permission(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
+        // Arrange: Create existing permission
+        UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->forFeature($this->oopFeatureId)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
 
-        // Test Business User can be assigned as manager
-        $payload = [
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->businessUser->id, // Business User as manager
-        ];
-
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
-
-        $response->assertStatus(Response::HTTP_CREATED)
-                ->assertJson([
-                    'data' => [
-                        'manager_user_id' => $this->businessUser->id,
-                    ]
-                ]);
-
-        // Test Card User can be assigned as manager
-        $payload2 = [
-            'user_id' => $this->admin->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->cardUser->id, // Card User as manager
-        ];
-
-        $response2 = $this->postJson('/api/v1/user-feature-permissions', $payload2);
-
-        $response2->assertStatus(Response::HTTP_CREATED)
-                ->assertJson([
-                    'data' => [
-                        'manager_user_id' => $this->cardUser->id,
-                    ]
-                ]);
-    }
-
-    /**
-     * Test permissions are client-scoped (multi-tenancy).
-     */
-    public function test_permissions_are_client_scoped(): void
-    {
-        Sanctum::actingAs($this->primaryAdmin);
-
-        // Create permission for first client
-        $payload1 = [
-            'user_id' => $this->businessUser->id,
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->admin->id,
         ];
 
-        $response1 = $this->postJson('/api/v1/user-feature-permissions', $payload1);
-        $response1->assertStatus(Response::HTTP_CREATED);
+        // Act: Send POST request for duplicate
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        // Create permission for second client (should be allowed - different client scope)
-        $payload2 = [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->anotherClient->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ];
-
-        $response2 = $this->postJson('/api/v1/user-feature-permissions', $payload2);
-        $response2->assertStatus(Response::HTTP_CREATED);
-
-        // Verify both permissions exist with different client_id
-        $this->assertDatabaseHas('user_feature_permission', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-        ]);
-
-        $this->assertDatabaseHas('user_feature_permission', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->anotherClient->id,
-            'feature_id' => $this->oopFeatureId,
-        ]);
+        // Assert: Check validation error
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['user_id']);
     }
 
     /**
-     * Test duplicate permissions are prevented by unique constraint.
+     * Test validation fails for required fields.
      */
-    public function test_duplicate_permissions_are_prevented(): void
+    public function test_validation_fails_for_missing_fields(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
+        // Act: Send POST request with missing fields
+        $response = $this->postJson('/api/v1/user-feature-permissions', []);
 
-        $payload = [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ];
-
-        // Create first permission
-        $response1 = $this->postJson('/api/v1/user-feature-permissions', $payload);
-        $response1->assertStatus(Response::HTTP_CREATED);
-
-        // Attempt to create duplicate permission
-        $response2 = $this->postJson('/api/v1/user-feature-permissions', $payload);
-        $response2->assertStatus(Response::HTTP_422)
-                 ->assertJsonValidationErrors(['user_id']);
-
-        // Verify only one permission exists
-        $this->assertDatabaseCount('user_feature_permission', 1);
+        // Assert: Check validation errors
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['user_id', 'client_id', 'feature_id', 'manager_user_id']);
     }
 
     /**
-     * Test listing user permissions with proper filtering.
+     * Test validation fails for non-existent user.
      */
-    public function test_list_user_permissions_with_filtering(): void
+    public function test_validation_fails_for_nonexistent_user(): void
     {
-        // Create test permissions
-        UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        UserFeaturePermission::factory()->create([
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => false, // Disabled permission
-        ]);
-
-        UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->anotherClient->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        Sanctum::actingAs($this->primaryAdmin);
-
-        // Test basic listing
-        $response = $this->getJson('/api/v1/user-feature-permissions');
-        $response->assertStatus(Response::HTTP_OK)
-                ->assertJsonStructure([
-                    'data' => [
-                        '*' => [
-                            'id',
-                            'user_id',
-                            'client_id',
-                            'feature_id',
-                            'grantor_id',
-                            'manager_user_id',
-                            'is_enabled',
-                            'created_at',
-                            'updated_at',
-                        ]
-                    ],
-                    'meta' => [
-                        'current_page',
-                        'total',
-                    ]
-                ]);
-
-        // Test filtering by client
-        $response = $this->getJson("/api/v1/user-feature-permissions?client_id={$this->client->id}");
-        $response->assertStatus(Response::HTTP_OK);
-        $permissions = $response->json('data');
-        
-        foreach ($permissions as $permission) {
-            $this->assertEquals($this->client->id, $permission['client_id']);
-        }
-
-        // Test filtering by user
-        $response = $this->getJson("/api/v1/user-feature-permissions?user_id={$this->businessUser->id}");
-        $response->assertStatus(Response::HTTP_OK);
-        $permissions = $response->json('data');
-        
-        foreach ($permissions as $permission) {
-            $this->assertEquals($this->businessUser->id, $permission['user_id']);
-        }
-
-        // Test filtering by enabled status
-        $response = $this->getJson('/api/v1/user-feature-permissions?is_enabled=true');
-        $response->assertStatus(Response::HTTP_OK);
-        $permissions = $response->json('data');
-        
-        foreach ($permissions as $permission) {
-            $this->assertTrue($permission['is_enabled']);
-        }
-    }
-
-    /**
-     * Test revoking permissions (soft delete by setting is_enabled = false).
-     */
-    public function test_revoke_permission(): void
-    {
-        $permission = UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        Sanctum::actingAs($this->primaryAdmin);
-
-        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
-
-        $response->assertStatus(Response::HTTP_NO_CONTENT);
-
-        // Verify permission is disabled (soft revoked)
-        $this->assertDatabaseHas('user_feature_permission', [
-            'id' => $permission->id,
-            'is_enabled' => false,
-        ]);
-    }
-
-    /**
-     * Test only authorized users can revoke permissions.
-     */
-    public function test_only_authorized_users_can_revoke_permissions(): void
-    {
-        $permission = UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        // Test Business User cannot revoke
-        Sanctum::actingAs($this->businessUser);
-        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
-        $response->assertStatus(Response::HTTP_FORBIDDEN);
-
-        // Test Card User cannot revoke
-        Sanctum::actingAs($this->cardUser);
-        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
-        $response->assertStatus(Response::HTTP_FORBIDDEN);
-
-        // Verify permission is still enabled
-        $this->assertDatabaseHas('user_feature_permission', [
-            'id' => $permission->id,
-            'is_enabled' => true,
-        ]);
-
-        // Test Primary Admin can revoke
-        Sanctum::actingAs($this->primaryAdmin);
-        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
-        $response->assertStatus(Response::HTTP_NO_CONTENT);
-
-        $this->assertDatabaseHas('user_feature_permission', [
-            'id' => $permission->id,
-            'is_enabled' => false,
-        ]);
-    }
-
-    /**
-     * Test validation of required fields.
-     */
-    public function test_validation_of_required_fields(): void
-    {
-        Sanctum::actingAs($this->primaryAdmin);
-
-        // Test missing user_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['user_id']);
-
-        // Test missing client_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['client_id']);
-
-        // Test missing feature_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['feature_id']);
-
-        // Test missing manager_user_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-        ]);
-
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['manager_user_id']);
-    }
-
-    /**
-     * Test validation of foreign key references.
-     */
-    public function test_validation_of_foreign_key_references(): void
-    {
-        Sanctum::actingAs($this->primaryAdmin);
-
-        // Test invalid user_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
+        // Arrange: Permission data with non-existent user
+        $permissionData = [
             'user_id' => 99999,
             'client_id' => $this->client->id,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->admin->id,
-        ]);
+        ];
 
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['user_id']);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        // Test invalid client_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => 99999,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['client_id']);
-
-        // Test invalid manager_user_id
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => 99999,
-        ]);
-
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY)
-                ->assertJsonValidationErrors(['manager_user_id']);
+        // Assert: Check validation error
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['user_id']);
     }
 
     /**
-     * Test proper JSON response format for permission resources.
+     * Test validation fails for non-existent client.
      */
-    public function test_permission_resource_response_format(): void
+    public function test_validation_fails_for_nonexistent_client(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
-
-        $payload = [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
+        // Arrange: Permission data with non-existent client
+        $permissionData = [
+            'user_id' => $this->targetUser->id,
+            'client_id' => 99999,
             'feature_id' => $this->oopFeatureId,
             'manager_user_id' => $this->admin->id,
         ];
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', $payload);
+        // Act: Send POST request
+        $response = $this->postJson('/api/v1/user-feature-permissions', $permissionData);
 
-        $response->assertStatus(Response::HTTP_CREATED)
-                ->assertJsonStructure([
-                    'data' => [
-                        'id',
-                        'user_id',
-                        'client_id',
-                        'feature_id',
-                        'grantor_id',
-                        'manager_user_id',
-                        'is_enabled',
-                        'created_at',
-                        'updated_at',
-                        // Resource should hide internal timestamps and sensitive fields
-                    ]
-                ])
-                ->assertJsonMissing([
-                    'deleted_at', // Should not expose internal fields
-                ]);
-
-        $responseData = $response->json('data');
-        
-        // Verify data types
-        $this->assertIsInt($responseData['id']);
-        $this->assertIsInt($responseData['user_id']);
-        $this->assertIsInt($responseData['client_id']);
-        $this->assertIsInt($responseData['feature_id']);
-        $this->assertIsInt($responseData['grantor_id']);
-        $this->assertIsInt($responseData['manager_user_id']);
-        $this->assertIsBool($responseData['is_enabled']);
-        $this->assertIsString($responseData['created_at']);
-        $this->assertIsString($responseData['updated_at']);
+        // Assert: Check validation error
+        $response->assertStatus(422);
+        $response->assertJsonValidationErrors(['client_id']);
     }
 
     /**
-     * Test authentication is required for all endpoints.
+     * Test getting specific permission details.
      */
-    public function test_authentication_required(): void
+    public function test_can_show_specific_permission(): void
     {
-        // Test permission listing without authentication
-        $response = $this->getJson('/api/v1/user-feature-permissions');
-        $response->assertStatus(Response::HTTP_UNAUTHORIZED);
+        // Arrange: Create test permission
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
 
-        // Test permission creation without authentication
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
+        // Act: Send GET request
+        $response = $this->getJson("/api/v1/user-feature-permissions/{$permission->id}");
+
+        // Assert: Check successful response
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'data' => [
+                'id',
+                'user_id',
+                'client_id',
+                'feature_id',
+                'grantor_id',
+                'manager_user_id',
+                'is_enabled',
+                'created_at',
+                'updated_at'
+            ]
         ]);
-        $response->assertStatus(Response::HTTP_UNAUTHORIZED);
 
-        // Test permission deletion without authentication
-        $permission = UserFeaturePermission::factory()->create();
+        // Assert: Check correct data
+        $response->assertJson([
+            'data' => [
+                'id' => $permission->id,
+                'user_id' => $this->targetUser->id,
+                'client_id' => $this->client->id,
+            ]
+        ]);
+    }
+
+    /**
+     * Test 404 error for non-existent permission.
+     */
+    public function test_returns_404_for_nonexistent_permission(): void
+    {
+        // Act: Send GET request for non-existent permission
+        $response = $this->getJson('/api/v1/user-feature-permissions/99999');
+
+        // Assert: Check 404 error
+        $response->assertStatus(404);
+    }
+
+    /**
+     * Test updating user permission.
+     */
+    public function test_can_update_user_permission(): void
+    {
+        // Arrange: Create test permission
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
+
+        $updateData = [
+            'is_enabled' => false,
+        ];
+
+        // Act: Send PUT request
+        $response = $this->putJson("/api/v1/user-feature-permissions/{$permission->id}", $updateData);
+
+        // Assert: Check successful update
+        $response->assertStatus(200);
+        $response->assertJson([
+            'data' => [
+                'id' => $permission->id,
+                'is_enabled' => false,
+            ]
+        ]);
+
+        // Assert: Check database state
+        $this->assertDatabaseHas('user_feature_permission', [
+            'id' => $permission->id,
+            'is_enabled' => false,
+        ]);
+    }
+
+    /**
+     * Test admin cannot update permissions they don't manage.
+     */
+    public function test_admin_cannot_update_unmanaged_permissions(): void
+    {
+        // Arrange: Acting as admin without management rights
+        $this->actingAs($this->admin);
+
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->primaryAdmin->id) // Managed by primary admin, not current admin
+            ->create();
+
+        $updateData = [
+            'is_enabled' => false,
+        ];
+
+        // Act: Send PUT request
+        $response = $this->putJson("/api/v1/user-feature-permissions/{$permission->id}", $updateData);
+
+        // Assert: Check forbidden access
+        $response->assertStatus(403);
+    }
+
+    /**
+     * Test deleting (revoking) user permission.
+     */
+    public function test_can_revoke_user_permission(): void
+    {
+        // Arrange: Create test permission
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
+
+        // Act: Send DELETE request
         $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
-        $response->assertStatus(Response::HTTP_UNAUTHORIZED);
+
+        // Assert: Check successful deletion
+        $response->assertStatus(204);
+
+        // Assert: Check database state (soft delete or hard delete based on implementation)
+        $this->assertDatabaseMissing('user_feature_permission', [
+            'id' => $permission->id,
+        ]);
     }
 
     /**
-     * Test pagination works correctly for permission listings.
+     * Test admin cannot revoke permissions they don't manage.
      */
-    public function test_permission_listing_pagination(): void
+    public function test_admin_cannot_revoke_unmanaged_permissions(): void
     {
-        // Create multiple permissions
-        UserFeaturePermission::factory()->count(25)->create([
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-        ]);
+        // Arrange: Acting as admin without management rights
+        $this->actingAs($this->admin);
 
-        Sanctum::actingAs($this->primaryAdmin);
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->primaryAdmin->id) // Managed by primary admin, not current admin
+            ->create();
 
-        $response = $this->getJson('/api/v1/user-feature-permissions');
+        // Act: Send DELETE request
+        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
 
-        $response->assertStatus(Response::HTTP_OK)
-                ->assertJsonStructure([
-                    'data' => [
-                        '*' => [
-                            'id',
-                            'user_id',
-                            'client_id',
-                            'feature_id',
-                            'grantor_id',
-                            'manager_user_id',
-                            'is_enabled',
-                        ]
-                    ],
-                    'meta' => [
-                        'current_page',
-                        'from',
-                        'last_page',
-                        'path',
-                        'per_page',
-                        'to',
-                        'total',
-                    ],
-                    'links' => [
-                        'first',
-                        'last',
-                        'prev',
-                        'next',
-                    ]
-                ]);
-
-        $meta = $response->json('meta');
-        $this->assertEquals(1, $meta['current_page']);
-        $this->assertEquals(25, $meta['total']);
-        $this->assertLessThanOrEqual(15, count($response->json('data'))); // Default pagination limit
+        // Assert: Check forbidden access
+        $response->assertStatus(403);
     }
 
     /**
-     * Test error handling for non-existent permission deletion.
+     * Test business user cannot revoke permissions.
      */
-    public function test_delete_non_existent_permission(): void
+    public function test_business_user_cannot_revoke_permissions(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
+        // Arrange: Acting as business user
+        $this->actingAs($this->businessUser);
 
-        $response = $this->deleteJson('/api/v1/user-feature-permissions/99999');
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
 
-        $response->assertStatus(Response::HTTP_NOT_FOUND)
-                ->assertJson([
-                    'message' => 'User feature permission not found.'
-                ]);
+        // Act: Send DELETE request
+        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
+
+        // Assert: Check forbidden access
+        $response->assertStatus(403);
     }
 
     /**
-     * Test that disabled permissions are not included in active permission queries.
+     * Test API returns proper error format for validation failures.
      */
-    public function test_disabled_permissions_filtering(): void
+    public function test_returns_proper_error_format(): void
     {
-        // Create enabled permission
-        $enabledPermission = UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
+        // Act: Send POST request with invalid data
+        $response = $this->postJson('/api/v1/user-feature-permissions', [
+            'user_id' => 'invalid',
+            'client_id' => 'invalid',
+            'feature_id' => 'invalid',
+            'manager_user_id' => 'invalid',
         ]);
 
-        // Create disabled permission
-        $disabledPermission = UserFeaturePermission::factory()->create([
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => false,
+        // Assert: Check error format
+        $response->assertStatus(422);
+        $response->assertJsonStructure([
+            'message',
+            'errors' => [
+                'user_id',
+                'client_id',
+                'feature_id',
+                'manager_user_id',
+            ]
+        ]);
+    }
+
+    /**
+     * Test client scoping - users from different clients cannot interfere.
+     */
+    public function test_client_scoping_prevents_cross_client_access(): void
+    {
+        // Arrange: Create another client and user
+        $anotherClient = Client::factory()->create();
+        $anotherUser = User::factory()->create(['role' => 'business_user']);
+
+        // Create permission for user in another client
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($anotherUser->id, $anotherClient->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
+
+        // Act: Try to access permission from wrong client context
+        $response = $this->getJson("/api/v1/user-feature-permissions/{$permission->id}");
+
+        // Assert: Check authorization (should depend on policy implementation)
+        // TODO: Implement proper client scoping validation in policy
+        $response->assertStatus(403);
+    }
+
+    /**
+     * Test pagination works correctly.
+     */
+    public function test_pagination_works_correctly(): void
+    {
+        // Arrange: Create many permissions
+        UserFeaturePermission::factory()
+            ->count(25)
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
+
+        // Act: Send GET request with pagination
+        $response = $this->getJson('/api/v1/user-feature-permissions?page=1');
+
+        // Assert: Check pagination structure
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'data',
+            'links' => [
+                'first',
+                'last',
+                'prev',
+                'next',
+            ],
+            'meta' => [
+                'current_page',
+                'from',
+                'last_page',
+                'per_page',
+                'to',
+                'total',
+            ]
         ]);
 
-        Sanctum::actingAs($this->primaryAdmin);
+        // Assert: Check data is limited per page
+        $this->assertLessThanOrEqual(15, count($response->json('data'))); // Assuming default per_page is 15
+    }
 
-        // Test filtering for active permissions only
-        $response = $this->getJson('/api/v1/user-feature-permissions?is_enabled=true');
+    /**
+     * Test filtering permissions by client.
+     */
+    public function test_can_filter_permissions_by_client(): void
+    {
+        // Arrange: Create permissions for different clients
+        $anotherClient = Client::factory()->create();
         
-        $response->assertStatus(Response::HTTP_OK);
+        UserFeaturePermission::factory()
+            ->count(2)
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
+
+        UserFeaturePermission::factory()
+            ->count(3)
+            ->forUserAndClient($this->targetUser->id, $anotherClient->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
+
+        // Act: Send GET request with client filter
+        $response = $this->getJson("/api/v1/user-feature-permissions?client_id={$this->client->id}");
+
+        // Assert: Check filtered results
+        $response->assertStatus(200);
+        $response->assertJsonCount(2, 'data');
+        
+        // Assert: All returned permissions belong to the specified client
         $permissions = $response->json('data');
-        
-        $enabledFound = false;
-        $disabledFound = false;
-        
         foreach ($permissions as $permission) {
-            if ($permission['id'] == $enabledPermission->id) {
-                $enabledFound = true;
-                $this->assertTrue($permission['is_enabled']);
-            }
-            if ($permission['id'] == $disabledPermission->id) {
-                $disabledFound = true;
-            }
-        }
-        
-        $this->assertTrue($enabledFound, 'Enabled permission should be found in active filter');
-        $this->assertFalse($disabledFound, 'Disabled permission should not be found in active filter');
-    }
-
-    /**
-     * Test Admin can view permissions they granted or manage.
-     */
-    public function test_admin_can_view_managed_permissions(): void
-    {
-        // Create permission granted by this admin
-        $grantedByAdmin = UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->admin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        // Create permission granted by Primary Admin but managed by this admin
-        $managedByAdmin = UserFeaturePermission::factory()->create([
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        // Create permission not related to this admin
-        $unrelatedPermission = UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->anotherClient->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->anotherAdmin->id,
-            'is_enabled' => true,
-        ]);
-
-        Sanctum::actingAs($this->admin);
-
-        $response = $this->getJson('/api/v1/user-feature-permissions');
-        $response->assertStatus(Response::HTTP_OK);
-        
-        $permissions = $response->json('data');
-        $permissionIds = array_column($permissions, 'id');
-        
-        // Admin should see permissions they granted or manage
-        $this->assertContains($grantedByAdmin->id, $permissionIds);
-        $this->assertContains($managedByAdmin->id, $permissionIds);
-        
-        // Admin should not see unrelated permissions (depends on policy implementation)
-        // This test verifies the policy correctly filters based on admin's management scope
-    }
-
-    /**
-     * Test comprehensive permission workflow scenario.
-     */
-    public function test_complete_permission_workflow(): void
-    {
-        Sanctum::actingAs($this->primaryAdmin);
-
-        // Step 1: Primary Admin grants OOP Expenses permission to Business User with Admin as manager
-        $grantResponse = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $grantResponse->assertStatus(Response::HTTP_CREATED);
-        $permissionId = $grantResponse->json('data.id');
-
-        // Step 2: Verify permission is active and properly recorded
-        $this->assertDatabaseHas('user_feature_permission', [
-            'id' => $permissionId,
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-
-        // Step 3: Admin (now with management rights) can grant permissions to Card User
-        Sanctum::actingAs($this->admin);
-        
-        $delegateResponse = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $delegateResponse->assertStatus(Response::HTTP_CREATED);
-
-        // Step 4: Primary Admin revokes the original permission
-        Sanctum::actingAs($this->primaryAdmin);
-        
-        $revokeResponse = $this->deleteJson("/api/v1/user-feature-permissions/{$permissionId}");
-        $revokeResponse->assertStatus(Response::HTTP_NO_CONTENT);
-
-        // Step 5: Verify permission is disabled but record remains for audit trail
-        $this->assertDatabaseHas('user_feature_permission', [
-            'id' => $permissionId,
-            'is_enabled' => false,
-        ]);
-
-        // Step 6: Verify delegation permission is still active
-        $this->assertDatabaseHas('user_feature_permission', [
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'grantor_id' => $this->admin->id,
-            'manager_user_id' => $this->admin->id,
-            'is_enabled' => true,
-        ]);
-    }
-
-    /**
-     * Test filtering permissions by feature_id.
-     */
-    public function test_filter_permissions_by_feature_id(): void
-    {
-        // Create permissions for different features
-        UserFeaturePermission::factory()->create([
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId, // OOP Expenses
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        UserFeaturePermission::factory()->create([
-            'user_id' => $this->cardUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => 17, // Different feature
-            'grantor_id' => $this->primaryAdmin->id,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        Sanctum::actingAs($this->primaryAdmin);
-
-        $response = $this->getJson("/api/v1/user-feature-permissions?feature_id={$this->oopFeatureId}");
-        
-        $response->assertStatus(Response::HTTP_OK);
-        $permissions = $response->json('data');
-        
-        foreach ($permissions as $permission) {
-            $this->assertEquals($this->oopFeatureId, $permission['feature_id']);
+            $this->assertEquals($this->client->id, $permission['client_id']);
         }
     }
 
     /**
-     * Test permission timestamps are properly maintained.
+     * Test unauthenticated request returns 401.
      */
-    public function test_permission_timestamps(): void
+    public function test_unauthenticated_request_returns_401(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
+        // Arrange: Clear authentication
+        // TODO: Implement proper OAuth2 token removal for testing
+        $this->app['auth']->forgetGuards();
 
-        $beforeCreate = now()->subSecond();
+        // Act: Send request without authentication
+        $response = $this->getJson('/api/v1/user-feature-permissions');
 
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
-        ]);
-
-        $afterCreate = now()->addSecond();
-
-        $response->assertStatus(Response::HTTP_CREATED);
-        $permission = $response->json('data');
-
-        $createdAt = \Carbon\Carbon::parse($permission['created_at']);
-        $updatedAt = \Carbon\Carbon::parse($permission['updated_at']);
-
-        $this->assertTrue($createdAt->between($beforeCreate, $afterCreate));
-        $this->assertTrue($updatedAt->between($beforeCreate, $afterCreate));
-        $this->assertEquals($createdAt->format('Y-m-d H:i:s'), $updatedAt->format('Y-m-d H:i:s'));
+        // Assert: Check unauthorized access
+        $response->assertStatus(401);
     }
 
     /**
-     * Test proper HTTP status codes for various scenarios.
+     * Test API Resource response format matches expected structure.
      */
-    public function test_proper_http_status_codes(): void
+    public function test_api_resource_response_format(): void
     {
-        Sanctum::actingAs($this->primaryAdmin);
+        // Arrange: Create test permission
+        $permission = UserFeaturePermission::factory()
+            ->forUserAndClient($this->targetUser->id, $this->client->id)
+            ->grantedBy($this->primaryAdmin->id, $this->admin->id)
+            ->create();
 
-        // 201 Created for successful permission grant
-        $response = $this->postJson('/api/v1/user-feature-permissions', [
-            'user_id' => $this->businessUser->id,
-            'client_id' => $this->client->id,
-            'feature_id' => $this->oopFeatureId,
-            'manager_user_id' => $this->admin->id,
+        // Act: Send GET request
+        $response = $this->getJson("/api/v1/user-feature-permissions/{$permission->id}");
+
+        // Assert: Check response matches UserFeaturePermissionResource structure
+        $response->assertStatus(200);
+        $response->assertJsonStructure([
+            'data' => [
+                'id',
+                'user_id',
+                'client_id',
+                'feature_id',
+                'grantor_id',
+                'manager_user_id',
+                'is_enabled',
+                'created_at',
+                'updated_at',
+                // TODO: Add relationships if they're included in the Resource
+                // 'user',
+                // 'client',
+                // 'grantor',
+                // 'manager',
+            ]
         ]);
-        $response->assertStatus(Response::HTTP_CREATED);
 
-        // 200 OK for successful listing
-        $response = $this->getJson('/api/v1/user-feature-permissions');
-        $response->assertStatus(Response::HTTP_OK);
-
-        // 204 No Content for successful deletion
-        $permission = UserFeaturePermission::factory()->create();
-        $response = $this->deleteJson("/api/v1/user-feature-permissions/{$permission->id}");
-        $response->assertStatus(Response::HTTP_NO_CONTENT);
-
-        // 404 Not Found for non-existent resource
-        $response = $this->deleteJson('/api/v1/user-feature-permissions/99999');
-        $response->assertStatus(Response::HTTP_NOT_FOUND);
-
-        // 422 Unprocessable Entity for validation errors
-        $response = $this->postJson('/api/v1/user-feature-permissions', []);
-        $response->assertStatus(Response::HTTP_UNPROCESSABLE_ENTITY);
-
-        // 401 Unauthorized for unauthenticated requests
-        $this->withoutMiddleware(); // Remove auth middleware temporarily
-        $response = $this->getJson('/api/v1/user-feature-permissions');
-        $response->assertStatus(Response::HTTP_UNAUTHORIZED);
-    }
-
-    /**
-     * Clean up after each test.
-     */
-    protected function tearDown(): void
-    {
-        // Clean up any created test data
-        UserFeaturePermission::query()->forceDelete();
-        User::query()->forceDelete();
-        Client::query()->forceDelete();
-
-        parent::tearDown();
+        // Assert: Check data types
+        $data = $response->json('data');
+        $this->assertIsInt($data['id']);
+        $this->assertIsInt($data['user_id']);
+        $this->assertIsInt($data['client_id']);
+        $this->assertIsInt($data['feature_id']);
+        $this->assertIsInt($data['grantor_id']);
+        $this->assertIsInt($data['manager_user_id']);
+        $this->assertIsBool($data['is_enabled']);
+        $this->assertIsString($data['created_at']);
+        $this->assertIsString($data['updated_at']);
     }
 }

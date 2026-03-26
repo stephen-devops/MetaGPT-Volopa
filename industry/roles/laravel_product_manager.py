@@ -6,7 +6,11 @@
 @Desc    : Laravel Product Manager role for Volopa OOP Expense system
 """
 
+from metagpt.actions.prepare_documents import PrepareDocuments
 from metagpt.roles.product_manager import ProductManager
+from metagpt.utils.common import any_to_name, any_to_str
+
+from industry.actions.laravel_write_prd import LaravelWritePRD
 from industry.utils.context_reader import ContextReader
 
 
@@ -40,6 +44,11 @@ class LaravelProductManager(ProductManager):
         - Tool access: RoleZero, Browser, Editor, SearchEnhancedQA
         """
         super().__init__(**kwargs)
+
+        # Replace upstream WritePRD with LaravelWritePRD (custom ActionNodes)
+        if self.use_fixed_sop:
+            self.set_actions([PrepareDocuments(send_to=any_to_str(self)), LaravelWritePRD])
+            self.todo_action = any_to_name(LaravelWritePRD)
 
         # Build constraints from YAML context (local var to avoid Pydantic serialization issues)
         self._update_constraints_from_context(ContextReader())

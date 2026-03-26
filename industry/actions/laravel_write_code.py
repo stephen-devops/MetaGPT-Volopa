@@ -88,11 +88,11 @@ ATTENTION: Use '##' to SPLIT SECTIONS, not '#'. Output format carefully referenc
 # Instruction: Based on the context, follow "Format example", write code.
 
 ## Code: {filename}. Write code with triple quote, based on the following attentions and context.
-1. Only One file: do your best to implement THIS ONLY ONE FILE.
+1. Only One file: do your best to implement THIS SINGLE FILE.
 2. BOUNDED CODE: Your code will be part of the entire project. Implement ONLY what is specified in the design.
 3. Set default value: If there is any setting, ALWAYS SET A DEFAULT VALUE, ALWAYS USE STRONG TYPE AND EXPLICIT VARIABLE. AVOID circular import.
-4. Follow design AS CEILING: YOU MUST FOLLOW "Data structures and interfaces" as the MAXIMUM boundary. Do not CREATE or CALL public methods that do not exist in your design.
-5. ONLY what is in the design: If a class/function is in the classDiagram for this file, implement it. If it is NOT in the classDiagram, do NOT create it. Adding beyond the design is an error, not thoroughness.
+4. Follow design: YOU MUST FOLLOW "Data structures and interfaces" as the MAXIMUM boundary. Do not CREATE or CALL public methods that do not exist in your design.
+5. ONLY what is in the design: If a class/function is in the classDiagram for this file, implement it. If it is NOT in the classDiagram, do NOT create it.
 6. Before using an external variable/module, make sure you import it first.
 7. When you do not know the real implementation, write a clean placeholder with a TODO comment explaining what should be implemented.
 

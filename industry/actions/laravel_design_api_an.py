@@ -24,34 +24,26 @@ from metagpt.actions.design_api_an import (
 SYSTEM_CONSTRAINTS = ActionNode(
     key="System constraints",
     expected_type=List[str],
-    instruction="Extract COMPLETE, CLEAN AND DETAILED constraints the system design must respect. "
-                "Derive them from the total YAML context files provided. "
-                "Covers these categories:\n"
-                "  - Business rules and limits\n"
-                "  - Routing and API conventions\n"
-                "  - Authentication and middleware identity\n"
-                "  - Data model details (column types, fields, seed data, relationships, foreign keys)\n"
-                "  - Validation rules, security, performance and authorization\n"
-                "  - Permissions, identity checks, tenancy and hierarchy\n"
-                "  - Timestamp patterns, conventions and variants\n"
-                "  - Exact default data records existing on feature activation\n"
-                "  - Coding standards, quality, sequence flows, dependencies, data types and data enumerations\n"
-                "  - Numeric standards, limits and thresholds or file-based constraints\n"
-                "  - Database engine, charset, collation, soft-delete variants per table, and schema-level conventions\n\n"
-                "Include both required practises and prohibited patterns derived from the input YAML context. "
-                "Each constraint must be a single, actionable statement.",
+    instruction=(
+        "Extract EVERY constraint from the input YAML context the system design must respect. "
+        "Derive constraints from both the project level and environment level context. "
+        "Walk through ALL types of constraint in both contexts: (file constraints, data table schema, "
+        "authorization and validation constraints, permission constraints, business rules, "
+        "data model designs, dos and donts, timestamp patterns, http status code semantics, task conventions, "
+        "rules, prohibitions, coding standards and qualities, data model details, design constraints, "
+        "data model keys, dependencies, default or seed data, relationships and data enumerations) "
+        "and extract all rules, data values, variants, schemas, specifications and prohibitions.\n\n"
+        "Preserve EXACT actual values, types, limits, specifics and hierarchies from the YAML. "
+        "Do NOT summarize, generalize, round, or paraphrase "
+        "- reproduce each constraint with the full fidelity of its input YAML source.\n\n"
+        "Each constraint must be a single, self-contained, actionable statement that a "
+        "developer can implement directly without referring back to the input context."
+    ),
     example=[
-        "Maximum number of rows per CSV file.",
-        "Lookup table seeded with exact records: 'Type A' (negative), 'Type B' (positive)",
-        "All-or-nothing: if any CSV row fails validation, no records are created.",
-        "Table X uses pattern A for timestamps; Table Y uses pattern B",
-        "Parameter Name max length per DB definition (e.g. VARCHAR 180)",
-        "Role hierarchy: highest role has full access by default",
-        "All API routes must use Oauth2 client middleware",
-        "Create ONE Migration and ONE Factory per new data table schema",
-        "Numeric columns use the exact DECIMAL precision specified per column in the schema",
-        "All new tables must use InnoDB engine, utf8mb4 charset and collation",
-        "Table X uses flag-based soft delete (deleted + delete_time); Table Y uses Laravel SoftDeletes (deleted_at)",
+        "Constraint preserving exact values, names, and rules from the YAML context.",
+        "This constraint with its full specifics as stated in the YAML context.",
+        "The ONLY specified auth middleware class names is applied for routes.",
+        "This data table schema MUST NOT use any columns it does not have."
     ],
 )
 

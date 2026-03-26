@@ -3,8 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\UserFeaturePermission;
-use App\Models\User;
-use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -27,11 +25,23 @@ class UserFeaturePermissionFactory extends Factory
     public function definition(): array
     {
         return [
-            'user_id' => User::factory(),
-            'client_id' => Client::factory(),
-            'feature_id' => 16, // Default to OOP Expenses feature as per system constraints
-            'grantor_id' => User::factory(),
-            'manager_user_id' => User::factory(),
+            'user_id' => function () {
+                // TODO: Create or reference existing user - depends on User model factory
+                return \App\Models\User::factory()->create()->id;
+            },
+            'client_id' => function () {
+                // TODO: Create or reference existing client - depends on Client model factory
+                return \App\Models\Client::factory()->create()->id;
+            },
+            'feature_id' => 16, // OOP Expense feature ID as per system constraints
+            'grantor_id' => function () {
+                // TODO: Create or reference existing grantor user - depends on User model factory
+                return \App\Models\User::factory()->create()->id;
+            },
+            'manager_user_id' => function () {
+                // TODO: Create or reference existing manager user - depends on User model factory
+                return \App\Models\User::factory()->create()->id;
+            },
             'is_enabled' => true,
             'created_at' => now(),
             'updated_at' => now(),
@@ -39,115 +49,65 @@ class UserFeaturePermissionFactory extends Factory
     }
 
     /**
-     * Create a permission with existing user and client IDs.
+     * Indicate that the permission is disabled.
      *
-     * @param int $userId
-     * @param int $clientId
-     * @param int $grantorId
-     * @param int $managerId
-     * @return static
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
      */
-    public function forUser(int $userId, int $clientId, int $grantorId, int $managerId): static
+    public function disabled(): Factory
     {
-        return $this->state(fn (array $attributes) => [
-            'user_id' => $userId,
-            'client_id' => $clientId,
-            'grantor_id' => $grantorId,
-            'manager_user_id' => $managerId,
-        ]);
+        return $this->state(function (array $attributes) {
+            return [
+                'is_enabled' => false,
+            ];
+        });
     }
 
     /**
-     * Create a permission for a specific feature.
+     * Create permission with specific feature ID.
      *
      * @param int $featureId
-     * @return static
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
      */
-    public function forFeature(int $featureId): static
+    public function forFeature(int $featureId): Factory
     {
-        return $this->state(fn (array $attributes) => [
-            'feature_id' => $featureId,
-        ]);
-    }
-
-    /**
-     * Create a disabled permission.
-     *
-     * @return static
-     */
-    public function disabled(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'is_enabled' => false,
-        ]);
-    }
-
-    /**
-     * Create a permission for OOP Expenses feature (feature_id = 16).
-     *
-     * @return static
-     */
-    public function forOopExpenses(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'feature_id' => 16,
-        ]);
-    }
-
-    /**
-     * Create multiple permissions for the same user-client combination with different features.
-     *
-     * @param int $userId
-     * @param int $clientId
-     * @param int $grantorId
-     * @param int $managerId
-     * @param array $featureIds
-     * @return static
-     */
-    public function multipleFeatures(int $userId, int $clientId, int $grantorId, int $managerId, array $featureIds = [16]): static
-    {
-        return $this->state(function (array $attributes) use ($userId, $clientId, $grantorId, $managerId, $featureIds) {
-            $featureId = $this->faker->randomElement($featureIds);
+        return $this->state(function (array $attributes) use ($featureId) {
             return [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-                'grantor_id' => $grantorId,
-                'manager_user_id' => $managerId,
                 'feature_id' => $featureId,
             ];
         });
     }
 
     /**
-     * Create a permission with the same user as both grantor and manager (self-granted).
+     * Create permission with specific user and client.
      *
      * @param int $userId
      * @param int $clientId
-     * @param int $adminId
-     * @return static
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
      */
-    public function selfGranted(int $userId, int $clientId, int $adminId): static
+    public function forUserAndClient(int $userId, int $clientId): Factory
     {
-        return $this->state(fn (array $attributes) => [
-            'user_id' => $userId,
-            'client_id' => $clientId,
-            'grantor_id' => $adminId,
-            'manager_user_id' => $adminId,
-        ]);
+        return $this->state(function (array $attributes) use ($userId, $clientId) {
+            return [
+                'user_id' => $userId,
+                'client_id' => $clientId,
+            ];
+        });
     }
 
     /**
-     * Create a permission with specific timestamps.
+     * Create permission with specific grantor and manager.
      *
-     * @param \Carbon\Carbon|string|null $createdAt
-     * @param \Carbon\Carbon|string|null $updatedAt
-     * @return static
+     * @param int $grantorId
+     * @param int $managerId
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
      */
-    public function withTimestamps($createdAt = null, $updatedAt = null): static
+    public function grantedBy(int $grantorId, int $managerId): Factory
     {
-        return $this->state(fn (array $attributes) => [
-            'created_at' => $createdAt ?? now()->subDays($this->faker->numberBetween(1, 30)),
-            'updated_at' => $updatedAt ?? now()->subDays($this->faker->numberBetween(0, 10)),
-        ]);
+        return $this->state(function (array $attributes) use ($grantorId, $managerId) {
+            return [
+                'grantor_id' => $grantorId,
+                'manager_user_id' => $managerId,
+            ];
+        });
     }
 }

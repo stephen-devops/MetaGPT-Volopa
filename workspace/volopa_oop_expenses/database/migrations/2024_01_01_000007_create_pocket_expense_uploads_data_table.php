@@ -12,40 +12,22 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('pocket_expense_uploads_data', function (Blueprint $table) {
-            $table->bigIncrements('id');
-            $table->unsignedBigInteger('upload_id')->comment('Foreign key to pocket_expense_file_uploads table');
-            $table->integer('line_number')->comment('Line number in the original CSV file (including header row)');
-            $table->enum('status', [
-                'pending',
-                'processing', 
-                'synced',
-                'failed'
-            ])->default('pending')->comment('Processing status of this individual CSV row');
-            $table->json('expense_data')->comment('JSON representation of the parsed CSV row data');
-            $table->text('error_message')->nullable()->comment('Error message if processing failed');
-            $table->timestamps(); // Laravel standard timestamps (created_at, updated_at)
+            $table->id();
+            $table->unsignedBigInteger('upload_id');
+            $table->integer('line_number');
+            $table->enum('status', ['pending', 'processed', 'failed'])->default('pending');
+            $table->json('expense_data')->nullable();
+            $table->timestamp('created_at')->useCurrent();
+            $table->timestamp('updated_at')->nullable()->useCurrentOnUpdate();
             
             // Foreign key constraints
             $table->foreign('upload_id')->references('id')->on('pocket_expense_file_uploads')->onDelete('cascade');
             
-            // Indexes for performance
-            $table->index(['upload_id'], 'idx_upload');
+            // Indexes for performance as specified in system constraints
             $table->index(['upload_id', 'status'], 'idx_upload_status');
-            $table->index(['upload_id', 'line_number'], 'idx_upload_line');
-            $table->index(['status'], 'idx_status');
-            $table->index(['line_number'], 'idx_line_number');
-            
-            // Composite indexes for common queries
-            $table->index(['upload_id', 'status', 'line_number'], 'idx_upload_status_line');
-            $table->index(['upload_id', 'created_at'], 'idx_upload_created');
-            
-            // Unique constraint to prevent duplicate line entries per upload
-            $table->unique(['upload_id', 'line_number'], 'unique_upload_line');
-            
-            // Table configuration
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
+            $table->index(['status'], 'idx_pending_sync');
+            $table->index(['upload_id', 'line_number']);
+            $table->index('line_number');
         });
     }
 

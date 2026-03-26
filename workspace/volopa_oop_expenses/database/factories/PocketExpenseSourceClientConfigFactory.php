@@ -3,7 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseSourceClientConfig;
-use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -26,23 +25,26 @@ class PocketExpenseSourceClientConfigFactory extends Factory
      */
     public function definition(): array
     {
-        $sourceName = $this->faker->randomElement([
+        $sourcesNames = [
             'Cash',
             'Corporate Card',
             'Personal Card',
             'Bank Transfer',
-            'Petty Cash',
-            'Company Credit Card',
-            'Employee Reimbursement',
-            'Travel Advance',
-            'Procurement Card',
-            'Digital Wallet'
-        ]);
+            'Credit Card',
+            'Debit Card',
+            'Mobile Payment',
+            'Online Banking',
+            'Check Payment',
+            'Wire Transfer'
+        ];
 
         return [
             'uuid' => Str::uuid()->toString(),
-            'client_id' => Client::factory(),
-            'name' => $sourceName,
+            'client_id' => function () {
+                // TODO: Create or reference existing client - depends on Client model factory
+                return \App\Models\Client::factory()->create()->id;
+            },
+            'name' => $this->faker->randomElement($sourcesNames),
             'is_default' => false,
             'deleted' => false,
             'delete_time' => null,
@@ -52,282 +54,136 @@ class PocketExpenseSourceClientConfigFactory extends Factory
     }
 
     /**
-     * Create an expense source for an existing client.
+     * Indicate that the expense source is marked as default.
+     *
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function default(): Factory
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'is_default' => true,
+            ];
+        });
+    }
+
+    /**
+     * Indicate that the expense source is soft deleted.
+     *
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function deleted(): Factory
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'deleted' => true,
+                'delete_time' => now(),
+            ];
+        });
+    }
+
+    /**
+     * Create expense source for specific client.
      *
      * @param int $clientId
-     * @return static
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
      */
-    public function forClient(int $clientId): static
+    public function forClient(int $clientId): Factory
     {
-        return $this->state(fn (array $attributes) => [
-            'client_id' => $clientId,
-        ]);
-    }
-
-    /**
-     * Create a global expense source (client_id = null).
-     * Used for sources like 'Other' that are available to all clients.
-     *
-     * @return static
-     */
-    public function global(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'client_id' => null,
-        ]);
-    }
-
-    /**
-     * Create a default expense source for a client.
-     *
-     * @return static
-     */
-    public function default(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'is_default' => true,
-        ]);
-    }
-
-    /**
-     * Create a soft-deleted expense source.
-     *
-     * @return static
-     */
-    public function deleted(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'deleted' => true,
-            'delete_time' => now()->subDays($this->faker->numberBetween(1, 30)),
-        ]);
-    }
-
-    /**
-     * Create an expense source with a specific name.
-     *
-     * @param string $name
-     * @return static
-     */
-    public function withName(string $name): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => $name,
-        ]);
-    }
-
-    /**
-     * Create the system default 'Cash' expense source.
-     *
-     * @return static
-     */
-    public function cash(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => 'Cash',
-            'is_default' => true,
-        ]);
-    }
-
-    /**
-     * Create the system default 'Corporate Card' expense source.
-     *
-     * @return static
-     */
-    public function corporateCard(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => 'Corporate Card',
-            'is_default' => false,
-        ]);
-    }
-
-    /**
-     * Create the system default 'Personal Card' expense source.
-     *
-     * @return static
-     */
-    public function personalCard(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => 'Personal Card',
-            'is_default' => false,
-        ]);
-    }
-
-    /**
-     * Create the global 'Other' expense source (cannot be deleted or edited).
-     * This matches the seeded data from the migration.
-     *
-     * @return static
-     */
-    public function other(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'client_id' => null,
-            'name' => 'Other',
-            'is_default' => false,
-            'deleted' => false,
-        ]);
-    }
-
-    /**
-     * Create the three default expense sources for a client as per system constraints.
-     * These are auto-created when OOP feature is enabled for a client.
-     *
-     * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Collection
-     */
-    public function createDefaultsForClient(int $clientId): \Illuminate\Database\Eloquent\Collection
-    {
-        return collect([
-            $this->forClient($clientId)->cash()->create(),
-            $this->forClient($clientId)->corporateCard()->create(),
-            $this->forClient($clientId)->personalCard()->create(),
-        ]);
-    }
-
-    /**
-     * Create an expense source with a specific UUID.
-     *
-     * @param string $uuid
-     * @return static
-     */
-    public function withUuid(string $uuid): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'uuid' => $uuid,
-        ]);
-    }
-
-    /**
-     * Create an expense source with specific timestamps.
-     *
-     * @param \Carbon\Carbon|string|null $createTime
-     * @param \Carbon\Carbon|string|null $updateTime
-     * @return static
-     */
-    public function withTimestamps($createTime = null, $updateTime = null): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'create_time' => $createTime ?? now()->subDays($this->faker->numberBetween(1, 30)),
-            'update_time' => $updateTime ?? now()->subDays($this->faker->numberBetween(0, 10)),
-        ]);
-    }
-
-    /**
-     * Create an active expense source (not deleted).
-     *
-     * @return static
-     */
-    public function active(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'deleted' => false,
-            'delete_time' => null,
-        ]);
-    }
-
-    /**
-     * Create multiple unique expense sources for the same client.
-     * Ensures names are unique per client as per system constraints.
-     *
-     * @param int $clientId
-     * @param int $count
-     * @return static
-     */
-    public function uniqueForClient(int $clientId, int $count = 3): static
-    {
-        $sourceNames = [
-            'Cash',
-            'Corporate Card',
-            'Personal Card',
-            'Bank Transfer',
-            'Petty Cash',
-            'Company Credit Card',
-            'Employee Reimbursement',
-            'Travel Advance',
-            'Procurement Card',
-            'Digital Wallet',
-            'Wire Transfer',
-            'Check Payment',
-            'Mobile Payment',
-            'Gift Card',
-            'Voucher'
-        ];
-
-        return $this->state(function (array $attributes) use ($clientId, $sourceNames) {
-            static $usedNames = [];
-            
-            if (!isset($usedNames[$clientId])) {
-                $usedNames[$clientId] = [];
-            }
-
-            $availableNames = array_diff($sourceNames, $usedNames[$clientId]);
-            
-            if (empty($availableNames)) {
-                // If we run out of predefined names, generate a unique one
-                $name = 'Source ' . $this->faker->unique()->word . ' ' . $this->faker->numberBetween(1000, 9999);
-            } else {
-                $name = $this->faker->randomElement($availableNames);
-                $usedNames[$clientId][] = $name;
-            }
-
+        return $this->state(function (array $attributes) use ($clientId) {
             return [
                 'client_id' => $clientId,
+            ];
+        });
+    }
+
+    /**
+     * Create expense source with specific name.
+     *
+     * @param string $name
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function withName(string $name): Factory
+    {
+        return $this->state(function (array $attributes) use ($name) {
+            return [
                 'name' => $name,
             ];
         });
     }
 
     /**
-     * Create an expense source with active status suitable for testing maximum limits.
-     * As per constraints, maximum 20 active expense sources per client.
+     * Create global 'Other' expense source (client_id = null).
      *
-     * @param int $clientId
-     * @return static
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
      */
-    public function activeForLimitTesting(int $clientId): static
+    public function globalOther(): Factory
     {
-        return $this->state(fn (array $attributes) => [
-            'client_id' => $clientId,
-            'name' => 'Test Source ' . $this->faker->unique()->numberBetween(1, 20),
-            'deleted' => false,
-            'delete_time' => null,
-            'is_default' => false,
-        ]);
-    }
-
-    /**
-     * Create an expense source that was recently soft-deleted for testing historical records.
-     *
-     * @param int $daysAgo
-     * @return static
-     */
-    public function recentlyDeleted(int $daysAgo = 7): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'deleted' => true,
-            'delete_time' => now()->subDays($daysAgo),
-            'update_time' => now()->subDays($daysAgo),
-        ]);
-    }
-
-    /**
-     * Create expense sources with a range of creation dates for testing historical data.
-     *
-     * @param int $minDaysAgo
-     * @param int $maxDaysAgo
-     * @return static
-     */
-    public function withRandomAge(int $minDaysAgo = 1, int $maxDaysAgo = 365): static
-    {
-        return $this->state(function (array $attributes) use ($minDaysAgo, $maxDaysAgo) {
-            $createdDaysAgo = $this->faker->numberBetween($minDaysAgo, $maxDaysAgo);
-            $updatedDaysAgo = $this->faker->numberBetween(0, $createdDaysAgo);
-            
+        return $this->state(function (array $attributes) {
             return [
-                'create_time' => now()->subDays($createdDaysAgo),
-                'update_time' => now()->subDays($updatedDaysAgo),
+                'client_id' => null,
+                'name' => 'Other',
+                'is_default' => false,
+            ];
+        });
+    }
+
+    /**
+     * Create Cash expense source (one of the 3 defaults).
+     *
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function cash(): Factory
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'name' => 'Cash',
+                'is_default' => true,
+            ];
+        });
+    }
+
+    /**
+     * Create Corporate Card expense source (one of the 3 defaults).
+     *
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function corporateCard(): Factory
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'name' => 'Corporate Card',
+                'is_default' => true,
+            ];
+        });
+    }
+
+    /**
+     * Create Personal Card expense source (one of the 3 defaults).
+     *
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function personalCard(): Factory
+    {
+        return $this->state(function (array $attributes) {
+            return [
+                'name' => 'Personal Card',
+                'is_default' => true,
+            ];
+        });
+    }
+
+    /**
+     * Create expense source with specific UUID.
+     *
+     * @param string $uuid
+     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     */
+    public function withUuid(string $uuid): Factory
+    {
+        return $this->state(function (array $attributes) use ($uuid) {
+            return [
+                'uuid' => $uuid,
             ];
         });
     }

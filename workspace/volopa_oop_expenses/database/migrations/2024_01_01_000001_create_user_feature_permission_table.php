@@ -12,14 +12,15 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('user_feature_permission', function (Blueprint $table) {
-            $table->bigIncrements('id');
-            $table->unsignedBigInteger('user_id')->comment('Target user receiving the permission');
-            $table->unsignedBigInteger('client_id')->comment('Client context for the permission');
-            $table->unsignedBigInteger('feature_id')->comment('Feature being granted access to (e.g., 16 for OOP Expenses)');
-            $table->unsignedBigInteger('grantor_id')->comment('User who granted this permission');
-            $table->unsignedBigInteger('manager_user_id')->comment('User who can manage the target user');
-            $table->boolean('is_enabled')->default(true)->comment('Whether the permission is currently active');
-            $table->timestamps();
+            $table->id();
+            $table->unsignedBigInteger('user_id');
+            $table->unsignedBigInteger('client_id');
+            $table->unsignedBigInteger('feature_id');
+            $table->unsignedBigInteger('grantor_id');
+            $table->unsignedBigInteger('manager_user_id');
+            $table->boolean('is_enabled')->default(true);
+            $table->timestamp('created_at')->useCurrent();
+            $table->timestamp('updated_at')->nullable()->useCurrentOnUpdate();
             
             // Foreign key constraints
             $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
@@ -27,19 +28,13 @@ return new class extends Migration
             $table->foreign('grantor_id')->references('id')->on('users')->onDelete('cascade');
             $table->foreign('manager_user_id')->references('id')->on('users')->onDelete('cascade');
             
-            // Unique constraint to prevent duplicate permissions
-            $table->unique(['user_id', 'client_id', 'feature_id'], 'unique_user_client_feature');
+            // Unique constraint as specified in design constraints
+            $table->unique(['user_id', 'client_id', 'feature_id'], 'unique_user_feature');
             
             // Indexes for performance
-            $table->index(['client_id', 'feature_id'], 'idx_client_feature');
-            $table->index(['grantor_id'], 'idx_grantor');
-            $table->index(['manager_user_id'], 'idx_manager');
-            $table->index(['is_enabled'], 'idx_enabled');
-            
-            // Table configuration
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
+            $table->index(['client_id', 'feature_id']);
+            $table->index(['manager_user_id', 'client_id']);
+            $table->index('grantor_id');
         });
     }
 

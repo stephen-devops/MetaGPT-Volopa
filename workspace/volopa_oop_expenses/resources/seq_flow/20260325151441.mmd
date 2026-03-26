@@ -1,0 +1,94 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant C as Client
+    participant MW as Oauth2UserClient
+    participant UPC as UserFeaturePermissionController
+    participant UPS as UserPermissionService
+    participant UFP as UserFeaturePermission
+    participant PEC as PocketExpenseController
+    participant PES as PocketExpenseService
+    participant FXS as PocketExpenseFXService
+    participant PE as PocketExpense
+    participant PEUC as PocketExpenseUploadController
+    participant CSV as PocketExpenseCSVValidator
+    participant PEFU as PocketExpenseFileUpload
+    participant Q as Queue
+    participant PEU as ProcessExpenseUpload
+    
+    Note over C,PEU: User Permission Management Flow
+    C->>MW: POST /api/v1/user-feature-permissions
+    MW->>UPC: grantPermission(request)
+    UPC->>UPS: grantPermission(userId, clientId, featureId, grantorId, managerId)
+    UPS->>UFP: create(permissionData)
+    UFP-->>UPS: UserFeaturePermission instance
+    UPS-->>UPC: UserFeaturePermission
+    UPC-->>MW: 201 UserFeaturePermissionResource
+    MW-->>C: 201 success response
+    
+    Note over C,PEU: Single Expense CRUD with FX Conversion Flow
+    C->>MW: POST /api/v1/pocket-expenses
+    MW->>PEC: store(StorePocketExpenseRequest)
+    PEC->>PES: create(validatedData)
+    PES->>FXS: convertExpenseAmount(expenseData)
+    FXS->>FXS: getWalletBaseCurrency(clientId)
+    FXS->>FXS: getFXRate(fromCurrency, toCurrency, date)
+    FXS->>FXS: calculateConversion(amount, rate, commission)
+    FXS-->>PES: conversionResult
+    PES->>PE: create(expenseWithFXData)
+    PE-->>PES: PocketExpense instance
+    PES-->>PEC: PocketExpense
+    PEC-->>MW: 201 PocketExpenseResource
+    MW-->>C: 201 expense created
+    
+    C->>MW: PUT /api/v1/pocket-expenses/{id}
+    MW->>PEC: update(UpdatePocketExpenseRequest, id)
+    PEC->>PES: update(id, validatedData)
+    PES->>PE: find(id)
+    PE-->>PES: existing PocketExpense
+    PES->>FXS: convertExpenseAmount(updatedData)
+    FXS-->>PES: newConversionResult
+    PES->>PE: update(updatedExpenseWithFX)
+    PE-->>PES: updated PocketExpense
+    PES-->>PEC: PocketExpense
+    PEC-->>MW: 200 PocketExpenseResource
+    MW-->>C: 200 expense updated
+    
+    Note over C,PEU: CSV Batch Upload Processing Flow
+    C->>MW: POST /api/uploads/pocket-expense/csv
+    MW->>PEUC: uploadPocketExpenseCSV(UploadPocketExpenseCSVRequest)
+    PEUC->>PEFU: create(uploadRecord with status='uploaded')
+    PEFU-->>PEUC: PocketExpenseFileUpload instance
+    PEUC->>CSV: validate(csvFile, targetUserId, clientId, adminId)
+    CSV->>CSV: preloadReferenceData(clientId)
+    CSV->>CSV: validateHeaders(csvHeaders)
+    loop For each CSV row
+        CSV->>CSV: validateRow(rowData, lineNumber)
+    end
+    CSV-->>PEUC: validationResult
+    PEUC->>PEFU: update(totalRecords, validRecords, errors, status)
+    PEFU-->>PEUC: updated upload record
+    
+    alt Validation Failed
+        PEUC-->>MW: 422 validation errors
+        MW-->>C: 422 structured error response
+    else Validation Passed
+        PEUC->>PEFU: bulkInsert to pocket_expense_uploads_data
+        PEUC->>PEFU: update(status='processing')
+        PEUC->>Q: dispatch ProcessExpenseUpload(uploadId)
+        Q-->>PEUC: job queued
+        PEUC-->>MW: 200 success with uploadId
+        MW-->>C: 200 upload queued for processing
+        
+        Note over Q,PEU: Background Processing
+        Q->>PEU: handle()
+        PEU->>PEU: syncExpensesToMainService(validatedRows)
+        loop Batch of 100 rows
+            PEU->>PES: create(batchExpenseData)
+            PES->>PE: bulkCreate(expenses)
+            PE-->>PES: created expenses
+            PES-->>PEU: batch success
+        end
+        PEU->>PEFU: update(status='completed', processed_at)
+        PEU->>PEU: notifyUser()
+    end
