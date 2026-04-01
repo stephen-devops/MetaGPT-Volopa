@@ -25,291 +25,344 @@ class PocketExpenseUploadsDataFactory extends Factory
      */
     public function definition(): array
     {
-        $sampleExpenseData = [
-            'date' => $this->faker->dateTimeBetween('-2 years', 'now')->format('d/m/Y'),
-            'expense_type' => $this->faker->randomElement(['ATM Withdrawal', 'Point of Sale', 'Fee & Charges', 'Refund from Merchant']),
-            'currency_code' => $this->faker->randomElement(['USD', 'EUR', 'GBP', 'CAD', 'AUD']),
-            'amount' => $this->faker->randomFloat(2, 1.00, 5000.00),
-            'currency_equivalent_amount' => $this->faker->optional(0.7)->randomFloat(2, 1.00, 5000.00),
-            'vat_percent' => $this->faker->optional(0.5)->randomFloat(1, 0, 100),
-            'merchant_name' => $this->faker->randomElement([
-                'Amazon', 'Walmart', 'McDonald\'s', 'Starbucks', 'Shell', 'BP',
-                'Target', 'Best Buy', 'Home Depot', 'CVS Pharmacy'
-            ]),
-            'description' => $this->faker->optional(0.6)->sentence(4),
-            'merchant_address' => $this->faker->optional(0.5)->address(),
-            'merchant_country' => $this->faker->optional(0.6)->country(),
-            'source' => $this->faker->randomElement(['Cash', 'Corporate Card', 'Personal Card', 'Other']),
-            'source_note' => $this->faker->optional(0.3)->sentence(3),
-            'notes' => $this->faker->optional(0.4)->sentence(8),
-        ];
-
         return [
-            'upload_id' => function () {
-                return PocketExpenseFileUpload::factory()->create()->id;
-            },
-            'line_number' => $this->faker->numberBetween(2, 201), // CSV line including header (starts from 2)
-            'status' => $this->faker->randomElement(['pending', 'processed', 'failed']),
-            'expense_data' => json_encode($sampleExpenseData),
+            'upload_id' => PocketExpenseFileUpload::factory(),
+            'line_number' => $this->faker->numberBetween(2, 201), // Line 1 is header, max 200 rows per constraint
+            'status' => $this->faker->randomElement(['pending', 'processing', 'synced', 'failed']),
+            'expense_data' => $this->generateExpenseData(),
             'created_at' => now(),
             'updated_at' => now(),
         ];
     }
 
     /**
-     * Indicate that the upload data is pending processing.
+     * Generate sample expense data JSON that matches CSV column schema.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return array
      */
-    public function pending(): Factory
+    private function generateExpenseData(): array
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'pending',
-            ];
-        });
+        return [
+            'Date' => $this->faker->dateTimeBetween('-3 years', 'now')->format('d/m/Y'),
+            'Expense Type' => $this->faker->randomElement(['ATM Withdrawal', 'Point of Sale', 'Fee & Charges', 'Refund from Merchant']),
+            'Currency Code' => $this->faker->randomElement(['USD', 'EUR', 'GBP', 'CAD', 'AUD']),
+            'Amount' => $this->faker->randomFloat(2, 10, 5000),
+            'Currency Equivalent Amount' => $this->faker->optional(0.3)->randomFloat(2, 10, 5000),
+            'VAT %' => $this->faker->optional(0.4)->numberBetween(0, 100),
+            'Merchant Name' => $this->faker->company,
+            'Description' => $this->faker->optional(0.7)->catchPhrase,
+            'Merchant Address' => $this->faker->optional(0.6)->address,
+            'Merchant Country' => $this->faker->optional(0.5)->country,
+            'Source' => $this->faker->optional(0.8)->randomElement(['Cash', 'Corporate Card', 'Personal Card', 'Other']),
+            'Source Note' => $this->faker->optional(0.2)->sentence,
+            'Notes' => $this->faker->optional(0.5)->sentence,
+        ];
     }
 
     /**
-     * Indicate that the upload data is processed.
+     * Indicate that the upload data is pending.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function processed(): Factory
+    public function pending(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'processed',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'pending',
+        ]);
     }
 
     /**
-     * Indicate that the upload data processing failed.
+     * Indicate that the upload data is processing.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function failed(): Factory
+    public function processing(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'failed',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'processing',
+        ]);
     }
 
     /**
-     * Create upload data for specific upload.
+     * Indicate that the upload data is synced.
+     *
+     * @return static
+     */
+    public function synced(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'synced',
+        ]);
+    }
+
+    /**
+     * Indicate that the upload data failed.
+     *
+     * @return static
+     */
+    public function failed(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'failed',
+        ]);
+    }
+
+    /**
+     * Create upload data for a specific upload.
      *
      * @param int $uploadId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function forUpload(int $uploadId): Factory
+    public function forUpload(int $uploadId): static
     {
-        return $this->state(function (array $attributes) use ($uploadId) {
-            return [
-                'upload_id' => $uploadId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'upload_id' => $uploadId,
+        ]);
     }
 
     /**
      * Create upload data with specific line number.
      *
      * @param int $lineNumber
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withLineNumber(int $lineNumber): Factory
+    public function withLineNumber(int $lineNumber): static
     {
-        return $this->state(function (array $attributes) use ($lineNumber) {
-            return [
-                'line_number' => $lineNumber,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'line_number' => $lineNumber,
+        ]);
     }
 
     /**
      * Create upload data with specific expense data.
      *
      * @param array $expenseData
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withExpenseData(array $expenseData): Factory
+    public function withExpenseData(array $expenseData): static
     {
-        return $this->state(function (array $attributes) use ($expenseData) {
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => $expenseData,
+        ]);
     }
 
     /**
-     * Create upload data with valid CSV structure as per system constraints.
+     * Create upload data with ATM Withdrawal expense type.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function validCSVData(): Factory
+    public function atmWithdrawal(): static
     {
-        return $this->state(function (array $attributes) {
-            $validExpenseData = [
-                'date' => $this->faker->dateTimeBetween('-2 years', 'now')->format('d/m/Y'), // DD/MM/YYYY format
-                'expense_type' => 'Point of Sale', // Valid expense type
-                'currency_code' => 'USD', // 3-letter ISO currency
-                'amount' => $this->faker->randomFloat(2, 10.00, 1000.00), // Valid amount
-                'currency_equivalent_amount' => null, // Optional field
-                'vat_percent' => $this->faker->numberBetween(0, 25), // Valid VAT percentage without % sign
-                'merchant_name' => substr($this->faker->company(), 0, 180), // Within VARCHAR(180) limit
-                'description' => $this->faker->optional(0.7)->sentence(4),
-                'merchant_address' => $this->faker->optional(0.6)->address(),
-                'merchant_country' => $this->faker->optional(0.6)->countryCode(),
-                'source' => 'Corporate Card', // Valid source
-                'source_note' => null, // Not required unless source is "Other"
-                'notes' => $this->faker->optional(0.5)->text(200), // Within reasonable limit
-            ];
-
-            return [
-                'expense_data' => json_encode($validExpenseData),
-                'status' => 'pending',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Expense Type' => 'ATM Withdrawal',
+                'Amount' => abs($attributes['expense_data']['Amount'] ?? $this->faker->randomFloat(2, 10, 5000)) * -1, // Negative for withdrawals
+            ]),
+        ]);
     }
 
     /**
-     * Create upload data with invalid CSV structure for testing validation.
+     * Create upload data with Refund expense type.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function invalidCSVData(): Factory
+    public function refund(): static
     {
-        return $this->state(function (array $attributes) {
-            $invalidExpenseData = [
-                'date' => '2020-01-01', // Invalid format and older than 3 years
-                'expense_type' => 'Invalid Type', // Invalid expense type
-                'currency_code' => 'INVALID', // Invalid currency code
-                'amount' => 'not_a_number', // Invalid amount
-                'currency_equivalent_amount' => null,
-                'vat_percent' => '150%', // Invalid VAT (over 100% and with % sign)
-                'merchant_name' => str_repeat('A', 200), // Exceeds VARCHAR(180) limit
-                'description' => $this->faker->sentence(4),
-                'merchant_address' => $this->faker->address(),
-                'merchant_country' => 'Invalid Country',
-                'source' => 'Invalid Source', // Invalid source
-                'source_note' => null,
-                'notes' => $this->faker->text(500),
-            ];
-
-            return [
-                'expense_data' => json_encode($invalidExpenseData),
-                'status' => 'failed',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Expense Type' => 'Refund from Merchant',
+                'Amount' => abs($attributes['expense_data']['Amount'] ?? $this->faker->randomFloat(2, 10, 5000)), // Positive for refunds
+            ]),
+        ]);
     }
 
     /**
-     * Create upload data where source is "Other" (requires source note).
+     * Create upload data with specific currency.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param string $currency
+     * @return static
      */
-    public function withSourceOther(): Factory
+    public function withCurrency(string $currency): static
     {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['source'] = 'Other';
-            $expenseData['source_note'] = $this->faker->sentence(5); // Required when source = Other
-
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Currency Code' => $currency,
+            ]),
+        ]);
     }
 
     /**
-     * Create upload data with refund expense type (positive amount).
+     * Create upload data with specific merchant.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param string $merchantName
+     * @return static
      */
-    public function refundExpense(): Factory
+    public function withMerchant(string $merchantName): static
     {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['expense_type'] = 'Refund from Merchant';
-            $expenseData['amount'] = abs($this->faker->randomFloat(2, 10.00, 1000.00)); // Positive for refund
-
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Merchant Name' => $merchantName,
+            ]),
+        ]);
     }
 
     /**
-     * Create upload data with negative expense type (negative amount).
+     * Create upload data with VAT information.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param float $vatPercentage
+     * @return static
      */
-    public function negativeExpense(): Factory
+    public function withVat(float $vatPercentage): static
     {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['expense_type'] = $this->faker->randomElement(['ATM Withdrawal', 'Point of Sale', 'Fee & Charges']);
-            $expenseData['amount'] = -abs($this->faker->randomFloat(2, 10.00, 1000.00)); // Negative for expense
-
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'VAT %' => $vatPercentage,
+            ]),
+        ]);
     }
 
     /**
-     * Create upload data within date constraint (not older than 3 years).
+     * Create upload data with 'Other' source requiring source note.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function recentDate(): Factory
+    public function withOtherSource(): static
     {
-        return $this->state(function (array $attributes) {
-            $expenseData = json_decode($attributes['expense_data'] ?? '{}', true);
-            $expenseData['date'] = $this->faker->dateTimeBetween('-3 years', 'now')->format('d/m/Y');
-
-            return [
-                'expense_data' => json_encode($expenseData),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Source' => 'Other',
+                'Source Note' => $this->faker->sentence,
+            ]),
+        ]);
     }
 
     /**
-     * Create upload data with specific status and upload ID.
+     * Create upload data with specific amount.
+     *
+     * @param float $amount
+     * @return static
+     */
+    public function withAmount(float $amount): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Amount' => $amount,
+            ]),
+        ]);
+    }
+
+    /**
+     * Create upload data with specific date.
+     *
+     * @param string $date Format: d/m/Y
+     * @return static
+     */
+    public function withDate(string $date): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => array_merge($attributes['expense_data'] ?? $this->generateExpenseData(), [
+                'Date' => $date,
+            ]),
+        ]);
+    }
+
+    /**
+     * Create upload data with minimal required fields only.
+     *
+     * @return static
+     */
+    public function minimal(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => [
+                'Date' => $this->faker->dateTimeBetween('-3 years', 'now')->format('d/m/Y'),
+                'Expense Type' => 'Point of Sale',
+                'Currency Code' => 'USD',
+                'Amount' => $this->faker->randomFloat(2, 10, 1000),
+                'Merchant Name' => $this->faker->company,
+                'VAT %' => '',
+                'Description' => '',
+                'Merchant Address' => '',
+                'Merchant Country' => '',
+                'Source' => '',
+                'Source Note' => '',
+                'Notes' => '',
+            ],
+        ]);
+    }
+
+    /**
+     * Create upload data with all optional fields populated.
+     *
+     * @return static
+     */
+    public function complete(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => [
+                'Date' => $this->faker->dateTimeBetween('-3 years', 'now')->format('d/m/Y'),
+                'Expense Type' => $this->faker->randomElement(['ATM Withdrawal', 'Point of Sale', 'Fee & Charges', 'Refund from Merchant']),
+                'Currency Code' => $this->faker->randomElement(['USD', 'EUR', 'GBP']),
+                'Amount' => $this->faker->randomFloat(2, 10, 5000),
+                'Currency Equivalent Amount' => $this->faker->randomFloat(2, 10, 5000),
+                'VAT %' => $this->faker->numberBetween(5, 25),
+                'Merchant Name' => $this->faker->company,
+                'Description' => $this->faker->catchPhrase,
+                'Merchant Address' => $this->faker->address,
+                'Merchant Country' => $this->faker->country,
+                'Source' => $this->faker->randomElement(['Cash', 'Corporate Card', 'Personal Card']),
+                'Source Note' => $this->faker->sentence,
+                'Notes' => $this->faker->sentence,
+            ],
+        ]);
+    }
+
+    /**
+     * Create upload data with validation errors (invalid data).
+     *
+     * @return static
+     */
+    public function invalidData(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_data' => [
+                'Date' => '2021-13-45', // Invalid date
+                'Expense Type' => 'Invalid Type', // Invalid expense type
+                'Currency Code' => 'INVALID', // Invalid currency code
+                'Amount' => 'not-a-number', // Invalid amount
+                'VAT %' => '150%', // Invalid VAT percentage
+                'Merchant Name' => '', // Missing required field
+                'Description' => '',
+                'Merchant Address' => '',
+                'Merchant Country' => '',
+                'Source' => 'Other',
+                'Source Note' => '', // Missing when source is Other
+                'Notes' => '',
+            ],
+        ]);
+    }
+
+    /**
+     * Create sequential upload data entries for batch testing.
      *
      * @param int $uploadId
-     * @param string $status
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function forUploadWithStatus(int $uploadId, string $status): Factory
-    {
-        return $this->state(function (array $attributes) use ($uploadId, $status) {
-            return [
-                'upload_id' => $uploadId,
-                'status' => $status,
-            ];
-        });
-    }
-
-    /**
-     * Create upload data simulating a CSV row sequence.
-     *
-     * @param int $uploadId
-     * @param int $startLine
+     * @param int $startLineNumber
      * @param int $count
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return \Illuminate\Database\Eloquent\Collection
      */
-    public function csvSequence(int $uploadId, int $startLine = 2, int $count = 1): Factory
+    public function createSequential(int $uploadId, int $startLineNumber, int $count): \Illuminate\Database\Eloquent\Collection
     {
-        return $this->state(function (array $attributes) use ($uploadId, $startLine, $count) {
-            static $sequenceCounter = 0;
-            
-            return [
-                'upload_id' => $uploadId,
-                'line_number' => $startLine + ($sequenceCounter++ % $count),
-            ];
-        });
+        $collection = collect();
+        
+        for ($i = 0; $i < $count; $i++) {
+            $collection->push(
+                $this->forUpload($uploadId)
+                     ->withLineNumber($startLineNumber + $i)
+                     ->pending()
+                     ->create()
+            );
+        }
+        
+        return $collection;
     }
 }

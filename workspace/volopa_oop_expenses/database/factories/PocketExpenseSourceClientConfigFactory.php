@@ -3,6 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseSourceClientConfig;
+use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -25,28 +26,26 @@ class PocketExpenseSourceClientConfigFactory extends Factory
      */
     public function definition(): array
     {
-        $sourcesNames = [
+        // Default source names that align with system constraints (3 defaults auto-created)
+        $defaultSources = [
             'Cash',
             'Corporate Card',
             'Personal Card',
-            'Bank Transfer',
+            'Online Banking',
             'Credit Card',
             'Debit Card',
-            'Mobile Payment',
-            'Online Banking',
-            'Check Payment',
-            'Wire Transfer'
+            'Company Account',
+            'Petty Cash',
+            'Travel Card',
+            'Expense Account'
         ];
 
         return [
             'uuid' => Str::uuid()->toString(),
-            'client_id' => function () {
-                // TODO: Create or reference existing client - depends on Client model factory
-                return \App\Models\Client::factory()->create()->id;
-            },
-            'name' => $this->faker->randomElement($sourcesNames),
-            'is_default' => false,
-            'deleted' => false,
+            'client_id' => Client::factory(),
+            'name' => $this->faker->randomElement($defaultSources),
+            'is_default' => $this->faker->boolean(20), // 20% chance of being default
+            'deleted' => 0,
             'delete_time' => null,
             'create_time' => now(),
             'update_time' => now(),
@@ -54,137 +53,133 @@ class PocketExpenseSourceClientConfigFactory extends Factory
     }
 
     /**
-     * Indicate that the expense source is marked as default.
+     * Indicate that the source is a default source.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function default(): Factory
+    public function default(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'is_default' => true,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'is_default' => true,
+        ]);
     }
 
     /**
-     * Indicate that the expense source is soft deleted.
+     * Indicate that the source is not a default source.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function deleted(): Factory
+    public function notDefault(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted' => true,
-                'delete_time' => now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'is_default' => false,
+        ]);
     }
 
     /**
-     * Create expense source for specific client.
+     * Indicate that the source is soft deleted.
+     *
+     * @return static
+     */
+    public function deleted(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'deleted' => 1,
+            'delete_time' => now(),
+        ]);
+    }
+
+    /**
+     * Create a Cash source.
+     *
+     * @return static
+     */
+    public function cash(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'name' => 'Cash',
+            'is_default' => true,
+        ]);
+    }
+
+    /**
+     * Create a Corporate Card source.
+     *
+     * @return static
+     */
+    public function corporateCard(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'name' => 'Corporate Card',
+            'is_default' => true,
+        ]);
+    }
+
+    /**
+     * Create a Personal Card source.
+     *
+     * @return static
+     */
+    public function personalCard(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'name' => 'Personal Card',
+            'is_default' => true,
+        ]);
+    }
+
+    /**
+     * Create the global 'Other' source with null client_id.
+     *
+     * @return static
+     */
+    public function globalOther(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'client_id' => null,
+            'name' => 'Other',
+            'is_default' => false,
+        ]);
+    }
+
+    /**
+     * Create a source for a specific client.
      *
      * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function forClient(int $clientId): Factory
+    public function forClient(int $clientId): static
     {
-        return $this->state(function (array $attributes) use ($clientId) {
-            return [
-                'client_id' => $clientId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'client_id' => $clientId,
+        ]);
     }
 
     /**
-     * Create expense source with specific name.
+     * Create a source with a specific name.
      *
      * @param string $name
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withName(string $name): Factory
+    public function withName(string $name): static
     {
-        return $this->state(function (array $attributes) use ($name) {
-            return [
-                'name' => $name,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'name' => $name,
+        ]);
     }
 
     /**
-     * Create global 'Other' expense source (client_id = null).
+     * Create the three default sources for a client as per system constraints.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param int $clientId
+     * @return array<static>
      */
-    public function globalOther(): Factory
+    public function createDefaultSources(int $clientId): array
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'client_id' => null,
-                'name' => 'Other',
-                'is_default' => false,
-            ];
-        });
-    }
-
-    /**
-     * Create Cash expense source (one of the 3 defaults).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function cash(): Factory
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'name' => 'Cash',
-                'is_default' => true,
-            ];
-        });
-    }
-
-    /**
-     * Create Corporate Card expense source (one of the 3 defaults).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function corporateCard(): Factory
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'name' => 'Corporate Card',
-                'is_default' => true,
-            ];
-        });
-    }
-
-    /**
-     * Create Personal Card expense source (one of the 3 defaults).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function personalCard(): Factory
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'name' => 'Personal Card',
-                'is_default' => true,
-            ];
-        });
-    }
-
-    /**
-     * Create expense source with specific UUID.
-     *
-     * @param string $uuid
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function withUuid(string $uuid): Factory
-    {
-        return $this->state(function (array $attributes) use ($uuid) {
-            return [
-                'uuid' => $uuid,
-            ];
-        });
+        return [
+            $this->forClient($clientId)->cash(),
+            $this->forClient($clientId)->corporateCard(),
+            $this->forClient($clientId)->personalCard(),
+        ];
     }
 }

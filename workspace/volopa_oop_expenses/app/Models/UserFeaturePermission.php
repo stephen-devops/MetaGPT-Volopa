@@ -5,22 +5,23 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Database\Factories\UserFeaturePermissionFactory;
 
 /**
- * User Feature Permission Model
+ * UserFeaturePermission Model
  * 
- * Manages user permissions for specific features within client contexts.
- * Implements RBAC with delegation capabilities.
+ * Manages user permissions for specific features within a client context.
+ * Supports delegation where an admin can grant permissions to their managed users.
  * 
  * @property int $id
  * @property int $user_id
  * @property int $client_id
  * @property int $feature_id
  * @property int $grantor_id
- * @property int $manager_user_id
+ * @property int|null $manager_user_id
  * @property bool $is_enabled
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property \DateTime $create_time
+ * @property \DateTime|null $update_time
  */
 class UserFeaturePermission extends Model
 {
@@ -32,6 +33,13 @@ class UserFeaturePermission extends Model
      * @var string
      */
     protected $table = 'user_feature_permission';
+
+    /**
+     * Disable Laravel's default timestamps as we use Volopa legacy pattern
+     *
+     * @var bool
+     */
+    public $timestamps = false;
 
     /**
      * The attributes that are mass assignable.
@@ -53,15 +61,14 @@ class UserFeaturePermission extends Model
      * @var array<string, string>
      */
     protected $casts = [
-        'id' => 'integer',
         'user_id' => 'integer',
         'client_id' => 'integer',
         'feature_id' => 'integer',
         'grantor_id' => 'integer',
         'manager_user_id' => 'integer',
         'is_enabled' => 'boolean',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
+        'create_time' => 'datetime',
+        'update_time' => 'datetime',
     ];
 
     /**
@@ -72,7 +79,7 @@ class UserFeaturePermission extends Model
     protected $hidden = [];
 
     /**
-     * Get the user that owns this permission.
+     * Get the user who owns this permission.
      */
     public function user(): BelongsTo
     {
@@ -80,11 +87,23 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the client context for this permission.
+     * Get the client this permission belongs to.
      */
     public function client(): BelongsTo
     {
         return $this->belongsTo(Client::class, 'client_id');
+    }
+
+    /**
+     * Get the feature this permission is for.
+     * 
+     * TODO: Replace with actual Feature model when features table structure is confirmed
+     */
+    public function feature(): BelongsTo
+    {
+        // TODO: Implement actual Feature model relationship
+        // For now, this is a placeholder based on the migration foreign key constraint
+        return $this->belongsTo(Feature::class, 'feature_id');
     }
 
     /**
@@ -96,11 +115,22 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Get the manager user for this permission.
+     * Get the user who manages the permission holder (optional delegation).
      */
     public function manager(): BelongsTo
     {
         return $this->belongsTo(User::class, 'manager_user_id');
+    }
+
+    /**
+     * Scope a query to only include enabled permissions.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeEnabled($query)
+    {
+        return $query->where('is_enabled', true);
     }
 
     /**
@@ -128,29 +158,6 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Scope a query to only include enabled permissions.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeEnabled($query)
-    {
-        return $query->where('is_enabled', true);
-    }
-
-    /**
-     * Scope a query to only include permissions managed by a specific user.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $managerId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeManagedBy($query, int $managerId)
-    {
-        return $query->where('manager_user_id', $managerId);
-    }
-
-    /**
      * Scope a query to only include permissions granted by a specific user.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
@@ -163,7 +170,29 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Check if this permission is currently active (enabled).
+     * Scope a query to only include permissions for users managed by a specific manager.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $managerId
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeManagedBy($query, int $managerId)
+    {
+        return $query->where('manager_user_id', $managerId);
+    }
+
+    /**
+     * Create a new factory instance for the model.
+     *
+     * @return \Database\Factories\UserFeaturePermissionFactory
+     */
+    protected static function newFactory()
+    {
+        return UserFeaturePermissionFactory::new();
+    }
+
+    /**
+     * Check if this permission is currently active.
      *
      * @return bool
      */
@@ -173,24 +202,46 @@ class UserFeaturePermission extends Model
     }
 
     /**
-     * Enable this permission.
+     * Check if this permission has a delegated manager.
      *
      * @return bool
      */
-    public function enable(): bool
+    public function hasDelegatedManager(): bool
     {
-        $this->is_enabled = true;
-        return $this->save();
+        return !is_null($this->manager_user_id);
     }
 
     /**
-     * Disable this permission.
+     * Get the display name for this permission.
      *
-     * @return bool
+     * @return string
      */
-    public function disable(): bool
+    public function getDisplayName(): string
     {
-        $this->is_enabled = false;
-        return $this->save();
+        // TODO: Implement feature name lookup when Feature model is available
+        return "Feature #{$this->feature_id} Permission for User #{$this->user_id}";
+    }
+
+    /**
+     * Boot the model.
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        // Set create_time on creation
+        static::creating(function ($model) {
+            if (is_null($model->create_time)) {
+                $model->create_time = now();
+            }
+            if (is_null($model->update_time)) {
+                $model->update_time = now();
+            }
+        });
+
+        // Update update_time on updating
+        static::updating(function ($model) {
+            $model->update_time = now();
+        });
     }
 }

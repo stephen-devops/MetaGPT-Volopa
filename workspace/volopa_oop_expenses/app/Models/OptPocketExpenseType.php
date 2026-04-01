@@ -5,18 +5,19 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Database\Factories\OptPocketExpenseTypeFactory;
 
 /**
- * Opt Pocket Expense Type Model
+ * OptPocketExpenseType Model
  * 
- * Manages expense type options with amount sign determination.
- * Used as a lookup table for expense type validation and amount sign logic.
+ * Lookup table for expense types with predefined options and amount signs.
+ * Determines whether an expense amount should be positive or negative based on type.
  * 
  * @property int $id
  * @property string $option
  * @property string $amount_sign
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property \DateTime $create_time
+ * @property \DateTime|null $update_time
  */
 class OptPocketExpenseType extends Model
 {
@@ -28,6 +29,13 @@ class OptPocketExpenseType extends Model
      * @var string
      */
     protected $table = 'opt_pocket_expense_type';
+
+    /**
+     * Disable Laravel's default timestamps as we use Volopa legacy pattern
+     *
+     * @var bool
+     */
+    public $timestamps = false;
 
     /**
      * The attributes that are mass assignable.
@@ -48,8 +56,8 @@ class OptPocketExpenseType extends Model
         'id' => 'integer',
         'option' => 'string',
         'amount_sign' => 'string',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
+        'create_time' => 'datetime',
+        'update_time' => 'datetime',
     ];
 
     /**
@@ -60,7 +68,7 @@ class OptPocketExpenseType extends Model
     protected $hidden = [];
 
     /**
-     * Get the expenses that belong to this expense type.
+     * Get all expenses that use this expense type.
      */
     public function expenses(): HasMany
     {
@@ -110,12 +118,57 @@ class OptPocketExpenseType extends Model
     }
 
     /**
-     * Get the amount sign for this expense type.
+     * Get the sign multiplier for amount calculation.
      *
-     * @return string
+     * @return int
      */
-    public function getAmountSign(): string
+    public function getSignMultiplier(): int
     {
-        return $this->amount_sign;
+        return $this->amount_sign === 'positive' ? 1 : -1;
+    }
+
+    /**
+     * Apply the correct sign to an amount based on this expense type.
+     *
+     * @param float $amount
+     * @return float
+     */
+    public function applySignToAmount(float $amount): float
+    {
+        $absoluteAmount = abs($amount);
+        return $this->amount_sign === 'positive' ? $absoluteAmount : -$absoluteAmount;
+    }
+
+    /**
+     * Create a new factory instance for the model.
+     *
+     * @return \Database\Factories\OptPocketExpenseTypeFactory
+     */
+    protected static function newFactory()
+    {
+        return OptPocketExpenseTypeFactory::new();
+    }
+
+    /**
+     * Boot the model.
+     */
+    protected static function boot()
+    {
+        parent::boot();
+
+        // Set create_time on creation
+        static::creating(function ($model) {
+            if (is_null($model->create_time)) {
+                $model->create_time = now();
+            }
+            if (is_null($model->update_time)) {
+                $model->update_time = now();
+            }
+        });
+
+        // Update update_time on updating
+        static::updating(function ($model) {
+            $model->update_time = now();
+        });
     }
 }

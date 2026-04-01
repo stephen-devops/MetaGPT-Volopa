@@ -3,9 +3,12 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpense;
+use App\Models\User;
+use App\Models\Client;
 use App\Models\OptPocketExpenseType;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 /**
  * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\PocketExpense>
@@ -26,249 +29,240 @@ class PocketExpenseFactory extends Factory
      */
     public function definition(): array
     {
-        $currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'SEK', 'NOK', 'DKK'];
-        $merchantNames = [
-            'Amazon', 'Walmart', 'McDonald\'s', 'Starbucks', 'Shell', 'BP',
-            'Target', 'Best Buy', 'Home Depot', 'CVS Pharmacy', 'Walgreens',
-            'Uber', 'Lyft', 'Airbnb', 'Hotel Booking', 'Restaurant ABC'
-        ];
-
+        // Generate a date within the last 3 years as per system constraints
+        $maxDate = now();
+        $minDate = now()->subYears(3);
+        
         return [
             'uuid' => Str::uuid()->toString(),
-            'user_id' => function () {
-                // TODO: Create or reference existing user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
-            },
-            'client_id' => function () {
-                // TODO: Create or reference existing client - depends on Client model factory
-                return \App\Models\Client::factory()->create()->id;
-            },
-            'date' => $this->faker->dateTimeBetween('-2 years', 'now')->format('Y-m-d'),
-            'merchant_name' => $this->faker->randomElement($merchantNames),
-            'merchant_description' => $this->faker->optional(0.7)->sentence(4),
-            'expense_type' => function () {
-                // TODO: Create or reference existing expense type - depends on OptPocketExpenseType model factory
-                return OptPocketExpenseType::factory()->create()->id;
-            },
-            'currency' => $this->faker->randomElement($currencies),
-            'amount' => $this->faker->randomFloat(2, 1.00, 5000.00),
-            'merchant_address' => $this->faker->optional(0.6)->address(),
-            'vat_amount' => $this->faker->optional(0.5)->randomFloat(2, 0.00, 100.00),
-            'notes' => $this->faker->optional(0.4)->sentence(8),
+            'user_id' => User::factory(),
+            'client_id' => Client::factory(),
+            'date' => $this->faker->dateTimeBetween($minDate, $maxDate)->format('Y-m-d'),
+            'merchant_name' => $this->faker->company,
+            'merchant_description' => $this->faker->optional(0.7)->catchPhrase,
+            'expense_type' => OptPocketExpenseType::factory(),
+            'currency' => $this->faker->randomElement(['USD', 'EUR', 'GBP', 'CAD', 'AUD']),
+            'amount' => $this->faker->randomFloat(2, 10, 5000),
+            'merchant_address' => $this->faker->optional(0.6)->address,
+            'vat_amount' => $this->faker->optional(0.4)->randomFloat(2, 1, 500),
+            'notes' => $this->faker->optional(0.5)->sentence,
             'status' => $this->faker->randomElement(['draft', 'submitted', 'approved', 'rejected']),
-            'created_by_user_id' => function () {
-                // TODO: Create or reference existing creator user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
-            },
-            'updated_by_user_id' => function () {
-                // TODO: Create or reference existing updater user - depends on User model factory
-                return $this->faker->optional(0.7)->passthrough(\App\Models\User::factory()->create()->id);
-            },
-            'approved_by_user_id' => function () {
-                // TODO: Create or reference existing approver user - depends on User model factory
-                return $this->faker->optional(0.3)->passthrough(\App\Models\User::factory()->create()->id);
-            },
+            'created_by_user_id' => User::factory(),
+            'updated_by_user_id' => $this->faker->optional(0.6)->passthrough(User::factory()),
+            'approved_by_user_id' => $this->faker->optional(0.3)->passthrough(User::factory()),
+            'deleted' => 0,
+            'delete_time' => null,
             'create_time' => now(),
             'update_time' => now(),
-            'deleted' => false,
-            'delete_time' => null,
         ];
     }
 
     /**
      * Indicate that the expense is in draft status.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function draft(): Factory
+    public function draft(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'draft',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'draft',
+            'approved_by_user_id' => null,
+        ]);
     }
 
     /**
      * Indicate that the expense is submitted.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function submitted(): Factory
+    public function submitted(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'submitted',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'submitted',
+            'approved_by_user_id' => null,
+        ]);
     }
 
     /**
      * Indicate that the expense is approved.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function approved(): Factory
+    public function approved(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'approved',
-                'approved_by_user_id' => function () {
-                    return \App\Models\User::factory()->create()->id;
-                },
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'approved',
+            'approved_by_user_id' => User::factory(),
+        ]);
     }
 
     /**
      * Indicate that the expense is rejected.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function rejected(): Factory
+    public function rejected(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'rejected',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'rejected',
+            'approved_by_user_id' => User::factory(),
+        ]);
     }
 
     /**
      * Indicate that the expense is soft deleted.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function deleted(): Factory
+    public function deleted(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted' => true,
-                'delete_time' => now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'deleted' => 1,
+            'delete_time' => now(),
+        ]);
     }
 
     /**
-     * Create expense for specific user and client.
+     * Create an expense for a specific user and client.
      *
      * @param int $userId
      * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function forUserAndClient(int $userId, int $clientId): Factory
+    public function forUser(int $userId, int $clientId): static
     {
-        return $this->state(function (array $attributes) use ($userId, $clientId) {
-            return [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+        ]);
     }
 
     /**
-     * Create expense with specific amount and currency.
+     * Create an expense with specific amount and currency.
      *
      * @param float $amount
      * @param string $currency
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withAmountAndCurrency(float $amount, string $currency): Factory
+    public function withAmount(float $amount, string $currency = 'USD'): static
     {
-        return $this->state(function (array $attributes) use ($amount, $currency) {
-            return [
-                'amount' => $amount,
-                'currency' => $currency,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount' => $amount,
+            'currency' => $currency,
+        ]);
     }
 
     /**
-     * Create expense with specific expense type.
+     * Create an expense with VAT amount.
+     *
+     * @param float|null $vatAmount
+     * @return static
+     */
+    public function withVat(float $vatAmount = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'vat_amount' => $vatAmount ?? $this->faker->randomFloat(2, 1, 100),
+        ]);
+    }
+
+    /**
+     * Create an expense without VAT.
+     *
+     * @return static
+     */
+    public function withoutVat(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'vat_amount' => null,
+        ]);
+    }
+
+    /**
+     * Create an expense with specific expense type.
      *
      * @param int $expenseTypeId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withExpenseType(int $expenseTypeId): Factory
+    public function withExpenseType(int $expenseTypeId): static
     {
-        return $this->state(function (array $attributes) use ($expenseTypeId) {
-            return [
-                'expense_type' => $expenseTypeId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'expense_type' => $expenseTypeId,
+        ]);
     }
 
     /**
-     * Create expense with specific date.
+     * Create an expense with a specific date.
      *
      * @param string $date
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withDate(string $date): Factory
+    public function withDate(string $date): static
     {
-        return $this->state(function (array $attributes) use ($date) {
-            return [
-                'date' => $date,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'date' => $date,
+        ]);
     }
 
     /**
-     * Create expense with specific merchant name.
+     * Create an expense from today.
+     *
+     * @return static
+     */
+    public function today(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'date' => now()->format('Y-m-d'),
+        ]);
+    }
+
+    /**
+     * Create an expense from recent dates (within last 30 days).
+     *
+     * @return static
+     */
+    public function recent(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'date' => $this->faker->dateTimeBetween('-30 days', 'now')->format('Y-m-d'),
+        ]);
+    }
+
+    /**
+     * Create an expense with specific merchant name.
      *
      * @param string $merchantName
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withMerchant(string $merchantName): Factory
+    public function withMerchant(string $merchantName): static
     {
-        return $this->state(function (array $attributes) use ($merchantName) {
-            return [
-                'merchant_name' => $merchantName,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'merchant_name' => $merchantName,
+        ]);
     }
 
     /**
-     * Create expense created by specific user.
+     * Create an expense with notes.
+     *
+     * @param string $notes
+     * @return static
+     */
+    public function withNotes(string $notes): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'notes' => $notes,
+        ]);
+    }
+
+    /**
+     * Create an expense created by a specific user.
      *
      * @param int $createdByUserId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function createdBy(int $createdByUserId): Factory
+    public function createdBy(int $createdByUserId): static
     {
-        return $this->state(function (array $attributes) use ($createdByUserId) {
-            return [
-                'created_by_user_id' => $createdByUserId,
-            ];
-        });
-    }
-
-    /**
-     * Create expense with VAT amount.
-     *
-     * @param float $vatAmount
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function withVAT(float $vatAmount): Factory
-    {
-        return $this->state(function (array $attributes) use ($vatAmount) {
-            return [
-                'vat_amount' => $vatAmount,
-            ];
-        });
-    }
-
-    /**
-     * Create expense within date range (not older than 3 years constraint).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function recentDate(): Factory
-    {
-        return $this->state(function (array $attributes) {
-            return [
-                'date' => $this->faker->dateTimeBetween('-3 years', 'now')->format('Y-m-d'),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'created_by_user_id' => $createdByUserId,
+        ]);
     }
 }

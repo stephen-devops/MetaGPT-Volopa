@@ -10,13 +10,14 @@ use App\Models\PocketExpenseSourceClientConfig;
 use App\Services\PocketExpenseSourceService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 /**
- * Pocket Expense Source Controller
+ * PocketExpenseSourceController
  * 
- * Handles CRUD operations for client expense source configurations.
- * Manages up to 20 active expense sources per client with unique names.
- * Protects global 'Other' record from deletion/editing.
+ * REST API controller for expense source configuration management.
+ * Handles CRUD operations for client-specific expense sources with proper authorization.
+ * Enforces system constraints: max 20 active sources per client, unique names, soft delete.
  */
 class PocketExpenseSourceController extends Controller
 {
@@ -25,343 +26,115 @@ class PocketExpenseSourceController extends Controller
      *
      * @var PocketExpenseSourceService
      */
-    protected PocketExpenseSourceService $expenseSourceService;
+    protected PocketExpenseSourceService $sourceService;
 
     /**
      * Create a new controller instance.
      *
-     * @param PocketExpenseSourceService $expenseSourceService
+     * @param PocketExpenseSourceService $sourceService
      */
-    public function __construct(PocketExpenseSourceService $expenseSourceService)
+    public function __construct(PocketExpenseSourceService $sourceService)
     {
-        $this->expenseSourceService = $expenseSourceService;
-        
-        // Apply OAuth2 middleware to all routes
-        $this->middleware('oauth2');
+        $this->sourceService = $sourceService;
     }
 
     /**
-     * Display a paginated listing of expense sources for the client.
-     * Returns active sources + global sources available to the client.
-     *
+     * Display a listing of expense sources.
+     * 
      * @param Request $request
-     * @return JsonResponse
+     * @return AnonymousResourceCollection
      */
-    public function index(Request $request): JsonResponse
+    public function index(Request $request): AnonymousResourceCollection
     {
-        try {
-            // TODO: Extract client_id from authenticated user context
-            $clientId = (int) $request->input('client_id');
-            
-            if (!$clientId) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Client ID is required',
-                ], 400);
-            }
+        // Authorization check
+        $this->authorize('viewAny', PocketExpenseSourceClientConfig::class);
 
-            // Get available expense sources for the client (active + global)
-            $sources = PocketExpenseSourceClientConfig::availableForClient($clientId)
-                ->orderBy('is_default', 'desc')
-                ->orderBy('name', 'asc')
-                ->paginate(20);
+        // Validate required client_id parameter
+        $request->validate([
+            'client_id' => 'required|integer|exists:clients,id'
+        ]);
 
-            return response()->json([
-                'success' => true,
-                'data' => PocketExpenseSourceResource::collection($sources),
-                'meta' => [
-                    'current_page' => $sources->currentPage(),
-                    'last_page' => $sources->lastPage(),
-                    'per_page' => $sources->perPage(),
-                    'total' => $sources->total(),
-                ],
-            ], 200);
+        $clientId = (int) $request->get('client_id');
 
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve expense sources',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
+        // Get sources for the client using service
+        $sources = $this->sourceService->getClientSources($clientId);
+
+        return PocketExpenseSourceResource::collection($sources);
     }
 
     /**
      * Store a newly created expense source.
-     * Enforces 20 active sources per client limit and unique name constraint.
-     *
+     * 
      * @param StorePocketExpenseSourceRequest $request
      * @return JsonResponse
      */
     public function store(StorePocketExpenseSourceRequest $request): JsonResponse
     {
-        try {
-            $validatedData = $request->validated();
+        // Authorization is handled in the FormRequest
 
-            // Create the expense source via service
-            $source = $this->expenseSourceService->create($validatedData);
+        // Create source using service
+        $source = $this->sourceService->createSource($request->validated());
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Expense source created successfully',
-                'data' => new PocketExpenseSourceResource($source),
-            ], 201);
-
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $e->errors(),
-            ], 422);
-            
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to create expense source',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
+        return response()->json([
+            'data' => new PocketExpenseSourceResource($source)
+        ], 201);
     }
 
     /**
      * Display the specified expense source.
-     *
+     * 
      * @param int $id
      * @return JsonResponse
      */
     public function show(int $id): JsonResponse
     {
-        try {
-            $source = $this->expenseSourceService->findById($id);
+        $source = PocketExpenseSourceClientConfig::findOrFail($id);
 
-            if (!$source) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Expense source not found',
-                ], 404);
-            }
+        // Authorization check
+        $this->authorize('view', $source);
 
-            return response()->json([
-                'success' => true,
-                'data' => new PocketExpenseSourceResource($source),
-            ], 200);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve expense source',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
+        return response()->json([
+            'data' => new PocketExpenseSourceResource($source)
+        ]);
     }
 
     /**
      * Update the specified expense source.
-     * Prevents editing of global 'Other' record.
-     *
+     * 
      * @param UpdatePocketExpenseSourceRequest $request
      * @param int $id
      * @return JsonResponse
      */
     public function update(UpdatePocketExpenseSourceRequest $request, int $id): JsonResponse
     {
-        try {
-            $validatedData = $request->validated();
+        // Authorization is handled in the FormRequest
 
-            // Update the expense source via service
-            $source = $this->expenseSourceService->update($id, $validatedData);
+        $source = PocketExpenseSourceClientConfig::findOrFail($id);
 
-            if (!$source) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Expense source not found',
-                ], 404);
-            }
+        // Update source using service
+        $updatedSource = $this->sourceService->updateSource($source, $request->validated());
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Expense source updated successfully',
-                'data' => new PocketExpenseSourceResource($source),
-            ], 200);
-
-        } catch (\Illuminate\Validation\ValidationException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Validation failed',
-                'errors' => $e->errors(),
-            ], 422);
-            
-        } catch (\InvalidArgumentException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 403);
-            
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to update expense source',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
+        return response()->json([
+            'data' => new PocketExpenseSourceResource($updatedSource)
+        ]);
     }
 
     /**
      * Remove the specified expense source (soft delete).
-     * Prevents deletion of global 'Other' record.
-     *
+     * 
      * @param int $id
      * @return JsonResponse
      */
     public function destroy(int $id): JsonResponse
     {
-        try {
-            $deleted = $this->expenseSourceService->delete($id);
+        $source = PocketExpenseSourceClientConfig::findOrFail($id);
 
-            if (!$deleted) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Expense source not found',
-                ], 404);
-            }
+        // Authorization check
+        $this->authorize('delete', $source);
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Expense source deleted successfully',
-            ], 204);
+        // Delete source using service
+        $this->sourceService->deleteSource($source);
 
-        } catch (\InvalidArgumentException $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], 403);
-            
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to delete expense source',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
-    }
-
-    /**
-     * Get the count of active expense sources for a client.
-     * Used to enforce the 20 active sources limit.
-     *
-     * @param Request $request
-     * @return JsonResponse
-     */
-    public function count(Request $request): JsonResponse
-    {
-        try {
-            // TODO: Extract client_id from authenticated user context
-            $clientId = (int) $request->input('client_id');
-            
-            if (!$clientId) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Client ID is required',
-                ], 400);
-            }
-
-            $count = PocketExpenseSourceClientConfig::forClient($clientId)
-                ->active()
-                ->count();
-
-            return response()->json([
-                'success' => true,
-                'data' => [
-                    'client_id' => $clientId,
-                    'active_sources_count' => $count,
-                    'max_allowed' => 20,
-                    'can_create_more' => $count < 20,
-                ],
-            ], 200);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to count expense sources',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
-    }
-
-    /**
-     * Get default expense sources for a client.
-     * Returns the 3 auto-created defaults: Cash, Corporate Card, Personal Card.
-     *
-     * @param Request $request
-     * @return JsonResponse
-     */
-    public function defaults(Request $request): JsonResponse
-    {
-        try {
-            // TODO: Extract client_id from authenticated user context
-            $clientId = (int) $request->input('client_id');
-            
-            if (!$clientId) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Client ID is required',
-                ], 400);
-            }
-
-            $defaultSources = PocketExpenseSourceClientConfig::forClient($clientId)
-                ->active()
-                ->default()
-                ->orderBy('name', 'asc')
-                ->get();
-
-            return response()->json([
-                'success' => true,
-                'data' => PocketExpenseSourceResource::collection($defaultSources),
-                'meta' => [
-                    'total' => $defaultSources->count(),
-                    'expected_defaults' => ['Cash', 'Corporate Card', 'Personal Card'],
-                ],
-            ], 200);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve default expense sources',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
-    }
-
-    /**
-     * Restore a soft-deleted expense source.
-     *
-     * @param int $id
-     * @return JsonResponse
-     */
-    public function restore(int $id): JsonResponse
-    {
-        try {
-            $source = $this->expenseSourceService->restore($id);
-
-            if (!$source) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Expense source not found or not deleted',
-                ], 404);
-            }
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Expense source restored successfully',
-                'data' => new PocketExpenseSourceResource($source),
-            ], 200);
-
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to restore expense source',
-                'error' => config('app.debug') ? $e->getMessage() : 'Internal server error',
-            ], 500);
-        }
+        return response()->json(null, 204);
     }
 }

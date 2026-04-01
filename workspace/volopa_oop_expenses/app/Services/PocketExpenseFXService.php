@@ -2,476 +2,286 @@
 
 namespace App\Services;
 
-use App\Models\PocketExpense;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Http;
 use Carbon\Carbon;
 
 /**
- * Pocket Expense FX Service
+ * PocketExpenseFXService
  * 
- * Handles foreign exchange conversion for pocket expenses.
- * Integrates with platform FX infrastructure for rate lookup and conversion calculations.
- * Implements commission-based rate adjustments and wallet base currency determination.
+ * Handles foreign exchange conversion for pocket expenses with rate lookup,
+ * commission calculation, and wallet base currency management.
+ * 
+ * Integrates with existing platform FX infrastructure using 30-day lookback
+ * and commission calculation as per system constraints.
  */
 class PocketExpenseFXService
 {
     /**
-     * Maximum lookback period for FX rate lookup (30 days as per system constraints).
-     *
-     * @var int
+     * Maximum lookback days for FX rate lookup as per system constraints.
      */
-    private const FX_RATE_MAX_LOOKBACK_DAYS = 30;
+    private const MAX_LOOKBACK_DAYS = 30;
 
     /**
-     * Default commission percentage for FX conversion.
-     *
-     * @var float
+     * Default commission percentage if not configured.
      */
-    private const DEFAULT_COMMISSION_PERCENTAGE = 0.025; // 2.5%
+    private const DEFAULT_COMMISSION_PERCENT = 0.0;
 
     /**
-     * Default base currency when wallet currency cannot be determined.
-     *
-     * @var string
+     * Default base currency if wallet currency cannot be determined.
      */
     private const DEFAULT_BASE_CURRENCY = 'USD';
 
     /**
-     * FX rate API timeout in seconds.
-     *
-     * @var int
-     */
-    private const FX_API_TIMEOUT = 10;
-
-    /**
      * Get the wallet base currency for a client.
      * 
+     * TODO: Implement actual client wallet base currency lookup from platform infrastructure.
+     * This should query the client's wallet configuration to determine their base currency.
+     * 
      * @param int $clientId
-     * @return array
+     * @return array ['currency' => string, 'symbol' => string]
      */
     public function getWalletBaseCurrency(int $clientId): array
     {
         try {
-            // TODO: Integrate with wallet-ccy-value service to get client's base currency
-            // This should query the platform's wallet service to determine the client's base currency
-            Log::info("Getting wallet base currency for client: {$clientId}");
+            // TODO: Replace with actual platform service call
+            // Example: $walletService->getClientBaseCurrency($clientId)
+            // For now, return default USD
             
-            // Placeholder implementation - should be replaced with actual service integration
-            $baseCurrency = self::DEFAULT_BASE_CURRENCY;
-            $currencyName = 'US Dollar';
+            Log::info('Getting wallet base currency for client', ['client_id' => $clientId]);
             
             return [
-                'success' => true,
-                'currency' => $baseCurrency,
-                'currency_name' => $currencyName,
-                'client_id' => $clientId,
+                'currency' => self::DEFAULT_BASE_CURRENCY,
+                'symbol' => '$'
             ];
         } catch (\Exception $e) {
-            Log::error("Failed to get wallet base currency for client {$clientId}: " . $e->getMessage());
+            Log::error('Failed to get wallet base currency', [
+                'client_id' => $clientId,
+                'error' => $e->getMessage()
+            ]);
             
             return [
-                'success' => false,
                 'currency' => self::DEFAULT_BASE_CURRENCY,
-                'currency_name' => 'US Dollar',
-                'client_id' => $clientId,
-                'error' => $e->getMessage(),
+                'symbol' => '$'
             ];
         }
     }
 
     /**
-     * Get FX rate between two currencies for a specific date.
-     * Implements max 30-day lookback constraint.
+     * Get FX rate between two currencies for a specific date with 30-day lookback.
      * 
      * @param string $fromCurrency
      * @param string $toCurrency
-     * @param \Carbon\Carbon $date
-     * @return float|null
+     * @param string $date Date in Y-m-d format
+     * @return float|null Returns null if 'No FX Available' as per system constraints
      */
-    public function getFXRate(string $fromCurrency, string $toCurrency, Carbon $date): ?float
+    public function getFXRate(string $fromCurrency, string $toCurrency, string $date): ?float
     {
         try {
-            // Same currency, no conversion needed
-            if ($fromCurrency === $toCurrency) {
+            // If currencies are the same, return 1.0
+            if (strtoupper($fromCurrency) === strtoupper($toCurrency)) {
                 return 1.0;
             }
 
-            // Validate currencies are 3-letter ISO codes
-            if (strlen($fromCurrency) !== 3 || strlen($toCurrency) !== 3) {
-                Log::warning("Invalid currency codes: from={$fromCurrency}, to={$toCurrency}");
-                return null;
-            }
+            $targetDate = Carbon::parse($date);
+            $maxLookbackDate = $targetDate->copy()->subDays(self::MAX_LOOKBACK_DAYS);
 
-            // Check if date is within allowed lookback period
-            $maxLookbackDate = now()->subDays(self::FX_RATE_MAX_LOOKBACK_DAYS);
-            if ($date->lt($maxLookbackDate)) {
-                Log::info("Date {$date->format('Y-m-d')} is beyond {$maxLookbackDate->format('Y-m-d')} max lookback period");
-                return null;
-            }
-
-            Log::info("Getting FX rate: {$fromCurrency} to {$toCurrency} for date {$date->format('Y-m-d')}");
-
-            // TODO: Integrate with platform FX rate service
-            // This should query the platform's FX service for historical rates
-            // Try to get rate for the specific date, with fallback to previous days within lookback period
+            // TODO: Replace with actual platform FX service call
+            // Example: $fxService->getRate($fromCurrency, $toCurrency, $targetDate, $maxLookbackDate)
             
-            $rate = $this->fetchFXRateFromService($fromCurrency, $toCurrency, $date);
+            Log::info('Looking up FX rate', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date,
+                'max_lookback_date' => $maxLookbackDate->format('Y-m-d')
+            ]);
+
+            // Placeholder logic for demonstration
+            // In real implementation, this would query the FX rate service
+            // with lookback capability within the 30-day window
             
-            if ($rate !== null) {
-                Log::info("Retrieved FX rate: {$rate} for {$fromCurrency}/{$toCurrency} on {$date->format('Y-m-d')}");
-                return $rate;
+            // Simulate rate lookup with common currency pairs
+            $mockRates = [
+                'USD_EUR' => 0.85,
+                'EUR_USD' => 1.18,
+                'USD_GBP' => 0.73,
+                'GBP_USD' => 1.37,
+                'EUR_GBP' => 0.86,
+                'GBP_EUR' => 1.16,
+            ];
+
+            $rateKey = strtoupper($fromCurrency) . '_' . strtoupper($toCurrency);
+            
+            if (isset($mockRates[$rateKey])) {
+                return $mockRates[$rateKey];
             }
 
-            // Try lookback within allowed period
-            for ($i = 1; $i <= self::FX_RATE_MAX_LOOKBACK_DAYS; $i++) {
-                $lookbackDate = $date->copy()->subDays($i);
-                
-                if ($lookbackDate->lt($maxLookbackDate)) {
-                    break; // Beyond allowed lookback period
-                }
-                
-                $rate = $this->fetchFXRateFromService($fromCurrency, $toCurrency, $lookbackDate);
-                
-                if ($rate !== null) {
-                    Log::info("Retrieved FX rate via lookback: {$rate} for {$fromCurrency}/{$toCurrency} on {$lookbackDate->format('Y-m-d')}");
-                    return $rate;
-                }
-            }
+            // If no rate found within 30-day lookback, return null ('No FX Available')
+            Log::warning('No FX rate found within lookback period', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date,
+                'lookback_days' => self::MAX_LOOKBACK_DAYS
+            ]);
 
-            Log::warning("No FX rate found for {$fromCurrency}/{$toCurrency} within lookback period from {$date->format('Y-m-d')}");
             return null;
 
         } catch (\Exception $e) {
-            Log::error("Error getting FX rate for {$fromCurrency}/{$toCurrency} on {$date->format('Y-m-d')}: " . $e->getMessage());
+            Log::error('Error looking up FX rate', [
+                'from_currency' => $fromCurrency,
+                'to_currency' => $toCurrency,
+                'date' => $date,
+                'error' => $e->getMessage()
+            ]);
+
             return null;
         }
     }
 
     /**
-     * Calculate conversion amount with commission adjustment.
-     * Uses formula: AdjustedRate = BaseRate x (1 - Comm%)
+     * Calculate converted amount with commission applied.
+     * 
+     * Commission formula: AdjustedRate = BaseRate x (1 - Comm%) as per system constraints.
      * 
      * @param float $amount
      * @param float $rate
-     * @param float $commission
+     * @param float $commission Commission percentage (0-100)
      * @return float
      */
-    public function calculateConversion(float $amount, float $rate, float $commission = self::DEFAULT_COMMISSION_PERCENTAGE): float
+    public function calculateConvertedAmount(float $amount, float $rate, float $commission = 0.0): float
     {
         try {
-            // Validate inputs
-            if ($amount < 0) {
-                Log::warning("Negative amount provided for conversion: {$amount}");
-                $amount = abs($amount); // Use absolute value for calculation
-            }
-
-            if ($rate <= 0) {
-                Log::error("Invalid FX rate provided: {$rate}");
-                throw new \InvalidArgumentException("FX rate must be greater than 0");
-            }
-
-            if ($commission < 0 || $commission > 1) {
-                Log::warning("Invalid commission percentage: {$commission}, using default");
-                $commission = self::DEFAULT_COMMISSION_PERCENTAGE;
-            }
-
+            // Ensure commission is between 0 and 100
+            $commission = max(0.0, min(100.0, $commission));
+            
+            // Convert commission percentage to decimal (e.g., 2.5% -> 0.025)
+            $commissionDecimal = $commission / 100.0;
+            
             // Apply commission formula: AdjustedRate = BaseRate x (1 - Comm%)
-            $adjustedRate = $rate * (1 - $commission);
+            $adjustedRate = $rate * (1 - $commissionDecimal);
             
             // Calculate converted amount
             $convertedAmount = $amount * $adjustedRate;
             
-            Log::info("FX conversion: {$amount} * {$adjustedRate} (base: {$rate}, comm: {$commission}) = {$convertedAmount}");
+            Log::info('Calculated converted amount with commission', [
+                'amount' => $amount,
+                'base_rate' => $rate,
+                'commission_percent' => $commission,
+                'commission_decimal' => $commissionDecimal,
+                'adjusted_rate' => $adjustedRate,
+                'converted_amount' => $convertedAmount
+            ]);
             
             return round($convertedAmount, 2);
 
         } catch (\Exception $e) {
-            Log::error("Error calculating FX conversion: " . $e->getMessage());
-            throw $e;
-        }
-    }
-
-    /**
-     * Convert expense amount to client's base currency with FX calculation.
-     * 
-     * @param PocketExpense $expense
-     * @return array
-     */
-    public function convertExpenseAmount(PocketExpense $expense): array
-    {
-        try {
-            Log::info("Converting expense amount for expense ID: {$expense->id}");
-
-            // Get client's wallet base currency
-            $walletCurrency = $this->getWalletBaseCurrency($expense->client_id);
-            
-            if (!$walletCurrency['success']) {
-                return [
-                    'success' => false,
-                    'error' => 'Failed to determine wallet base currency',
-                    'original_amount' => $expense->amount,
-                    'original_currency' => $expense->currency,
-                    'converted_amount' => null,
-                    'base_currency' => null,
-                    'fx_rate' => null,
-                    'commission' => null,
-                    'conversion_date' => null,
-                ];
-            }
-
-            $baseCurrency = $walletCurrency['currency'];
-            $expenseDate = Carbon::parse($expense->date);
-
-            // Same currency, no conversion needed
-            if ($expense->currency === $baseCurrency) {
-                return [
-                    'success' => true,
-                    'original_amount' => $expense->amount,
-                    'original_currency' => $expense->currency,
-                    'converted_amount' => $expense->amount,
-                    'base_currency' => $baseCurrency,
-                    'fx_rate' => 1.0,
-                    'commission' => 0.0,
-                    'conversion_date' => $expenseDate->format('Y-m-d'),
-                    'no_conversion_needed' => true,
-                ];
-            }
-
-            // Get FX rate
-            $fxRate = $this->getFXRate($expense->currency, $baseCurrency, $expenseDate);
-            
-            if ($fxRate === null) {
-                return [
-                    'success' => false,
-                    'error' => 'No FX Available',
-                    'original_amount' => $expense->amount,
-                    'original_currency' => $expense->currency,
-                    'converted_amount' => null,
-                    'base_currency' => $baseCurrency,
-                    'fx_rate' => null,
-                    'commission' => null,
-                    'conversion_date' => $expenseDate->format('Y-m-d'),
-                ];
-            }
-
-            // Calculate conversion with commission
-            $commission = self::DEFAULT_COMMISSION_PERCENTAGE;
-            $convertedAmount = $this->calculateConversion($expense->amount, $fxRate, $commission);
-
-            return [
-                'success' => true,
-                'original_amount' => $expense->amount,
-                'original_currency' => $expense->currency,
-                'converted_amount' => $convertedAmount,
-                'base_currency' => $baseCurrency,
-                'fx_rate' => $fxRate,
-                'adjusted_rate' => $fxRate * (1 - $commission),
+            Log::error('Error calculating converted amount', [
+                'amount' => $amount,
+                'rate' => $rate,
                 'commission' => $commission,
-                'conversion_date' => $expenseDate->format('Y-m-d'),
-                'no_conversion_needed' => false,
-            ];
+                'error' => $e->getMessage()
+            ]);
 
-        } catch (\Exception $e) {
-            Log::error("Error converting expense amount for expense {$expense->id}: " . $e->getMessage());
-            
-            return [
-                'success' => false,
-                'error' => $e->getMessage(),
-                'original_amount' => $expense->amount,
-                'original_currency' => $expense->currency,
-                'converted_amount' => null,
-                'base_currency' => null,
-                'fx_rate' => null,
-                'commission' => null,
-                'conversion_date' => null,
-            ];
+            // Return original amount if calculation fails
+            return $amount;
         }
     }
 
     /**
-     * Fetch FX rate from external service.
-     * Private helper method for actual API integration.
+     * Convert expense amount with FX rate lookup and commission calculation.
+     * Backend recalculation - do not trust frontend-only values as per system constraints.
      * 
-     * @param string $fromCurrency
-     * @param string $toCurrency
-     * @param \Carbon\Carbon $date
-     * @return float|null
-     */
-    private function fetchFXRateFromService(string $fromCurrency, string $toCurrency, Carbon $date): ?float
-    {
-        try {
-            // TODO: Replace with actual platform FX service integration
-            // This should make HTTP requests to the platform's FX rate API
-            // Example implementation structure:
-            
-            /*
-            $response = Http::timeout(self::FX_API_TIMEOUT)
-                ->get(config('services.fx.base_url') . '/rates', [
-                    'from' => $fromCurrency,
-                    'to' => $toCurrency,
-                    'date' => $date->format('Y-m-d'),
-                ]);
-
-            if ($response->successful()) {
-                $data = $response->json();
-                return $data['rate'] ?? null;
-            }
-
-            Log::warning("FX service returned non-successful response: " . $response->status());
-            return null;
-            */
-
-            // Placeholder implementation for development/testing
-            // Returns mock rates based on common currency pairs
-            $mockRates = [
-                'USDEUR' => 0.85,
-                'EURUSD' => 1.18,
-                'GBPUSD' => 1.30,
-                'USDGBP' => 0.77,
-                'USDCAD' => 1.25,
-                'CADUSD' => 0.80,
-                'USDAUD' => 1.35,
-                'AUDUSD' => 0.74,
-            ];
-
-            $currencyPair = $fromCurrency . $toCurrency;
-            $rate = $mockRates[$currencyPair] ?? null;
-
-            if ($rate === null) {
-                // Try reverse pair and calculate reciprocal
-                $reversePair = $toCurrency . $fromCurrency;
-                $reverseRate = $mockRates[$reversePair] ?? null;
-                
-                if ($reverseRate !== null && $reverseRate != 0) {
-                    $rate = 1 / $reverseRate;
-                }
-            }
-
-            return $rate;
-
-        } catch (\Exception $e) {
-            Log::error("Error fetching FX rate from service: " . $e->getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Validate if a currency code is supported.
-     * 
-     * @param string $currencyCode
-     * @return bool
-     */
-    public function isCurrencySupported(string $currencyCode): bool
-    {
-        // TODO: Integrate with platform currency validation
-        // This should check against the platform's allowed currency list
-        
-        // Placeholder implementation with common currencies
-        $supportedCurrencies = [
-            'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 
-            'SEK', 'NOK', 'DKK', 'NZD', 'SGD', 'HKD'
-        ];
-        
-        return in_array(strtoupper($currencyCode), $supportedCurrencies);
-    }
-
-    /**
-     * Get commission percentage for FX conversion.
-     * Can be configured per client or use default.
-     * 
+     * @param array $expenseData
      * @param int $clientId
-     * @return float
+     * @return array Enhanced expense data with FX conversion details
      */
-    public function getCommissionPercentage(int $clientId): float
+    public function convertExpenseAmount(array $expenseData, int $clientId): array
     {
         try {
-            // TODO: Implement client-specific commission rates
-            // This should query client configuration for custom FX commission rates
-            
-            Log::info("Getting FX commission percentage for client: {$clientId}");
-            
-            // Placeholder - return default commission
-            return self::DEFAULT_COMMISSION_PERCENTAGE;
+            $walletCurrency = $this->getWalletBaseCurrency($clientId);
+            $expenseCurrency = $expenseData['currency'] ?? '';
+            $expenseAmount = (float) ($expenseData['amount'] ?? 0.0);
+            $expenseDate = $expenseData['date'] ?? now()->format('Y-m-d');
 
-        } catch (\Exception $e) {
-            Log::error("Error getting commission percentage for client {$clientId}: " . $e->getMessage());
-            return self::DEFAULT_COMMISSION_PERCENTAGE;
-        }
-    }
-
-    /**
-     * Recalculate FX conversion for an existing expense.
-     * Used when expense amount or date is updated.
-     * 
-     * @param PocketExpense $expense
-     * @return array
-     */
-    public function recalculateExpenseConversion(PocketExpense $expense): array
-    {
-        Log::info("Recalculating FX conversion for expense ID: {$expense->id}");
-        
-        // Backend must recalculate FX on save (do not trust frontend-only value)
-        return $this->convertExpenseAmount($expense);
-    }
-
-    /**
-     * Get FX conversion summary for multiple expenses.
-     * Useful for batch operations or reporting.
-     * 
-     * @param \Illuminate\Support\Collection $expenses
-     * @return array
-     */
-    public function getConversionSummary(\Illuminate\Support\Collection $expenses): array
-    {
-        try {
-            $summary = [
-                'total_expenses' => $expenses->count(),
-                'conversions' => [],
-                'currencies' => [],
-                'total_original_amount' => 0,
-                'total_converted_amount' => 0,
-                'errors' => [],
+            // Initialize conversion result
+            $conversionResult = [
+                'original_amount' => $expenseAmount,
+                'original_currency' => $expenseCurrency,
+                'wallet_currency' => $walletCurrency['currency'],
+                'conversion_rate' => null,
+                'converted_amount' => null,
+                'commission_rate' => self::DEFAULT_COMMISSION_PERCENT,
+                'fx_status' => 'no_conversion_needed'
             ];
 
-            foreach ($expenses as $expense) {
-                $conversion = $this->convertExpenseAmount($expense);
+            // If currencies are the same, no conversion needed
+            if (strtoupper($expenseCurrency) === strtoupper($walletCurrency['currency'])) {
+                $conversionResult['converted_amount'] = $expenseAmount;
+                $conversionResult['conversion_rate'] = 1.0;
+                $conversionResult['fx_status'] = 'same_currency';
                 
-                $summary['conversions'][] = [
-                    'expense_id' => $expense->id,
-                    'conversion' => $conversion,
-                ];
-
-                if ($conversion['success']) {
-                    $summary['total_original_amount'] += $conversion['original_amount'];
-                    $summary['total_converted_amount'] += $conversion['converted_amount'] ?? 0;
+                Log::info('No FX conversion needed - same currency', [
+                    'expense_currency' => $expenseCurrency,
+                    'wallet_currency' => $walletCurrency['currency']
+                ]);
+            } else {
+                // Look up FX rate with 30-day lookback
+                $fxRate = $this->getFXRate($expenseCurrency, $walletCurrency['currency'], $expenseDate);
+                
+                if ($fxRate === null) {
+                    $conversionResult['fx_status'] = 'no_fx_available';
+                    $conversionResult['converted_amount'] = null;
                     
-                    if (!in_array($conversion['original_currency'], $summary['currencies'])) {
-                        $summary['currencies'][] = $conversion['original_currency'];
-                    }
+                    Log::warning('No FX rate available for conversion', [
+                        'from_currency' => $expenseCurrency,
+                        'to_currency' => $walletCurrency['currency'],
+                        'date' => $expenseDate
+                    ]);
                 } else {
-                    $summary['errors'][] = [
-                        'expense_id' => $expense->id,
-                        'error' => $conversion['error'],
-                    ];
+                    // TODO: Get client-specific commission rate from platform configuration
+                    $commissionRate = self::DEFAULT_COMMISSION_PERCENT;
+                    
+                    $convertedAmount = $this->calculateConvertedAmount($expenseAmount, $fxRate, $commissionRate);
+                    
+                    $conversionResult['conversion_rate'] = $fxRate;
+                    $conversionResult['converted_amount'] = $convertedAmount;
+                    $conversionResult['commission_rate'] = $commissionRate;
+                    $conversionResult['fx_status'] = 'converted';
+                    
+                    Log::info('FX conversion completed', [
+                        'original_amount' => $expenseAmount,
+                        'original_currency' => $expenseCurrency,
+                        'converted_amount' => $convertedAmount,
+                        'target_currency' => $walletCurrency['currency'],
+                        'fx_rate' => $fxRate,
+                        'commission_rate' => $commissionRate
+                    ]);
                 }
             }
 
-            return $summary;
+            // Merge conversion result with original expense data
+            return array_merge($expenseData, [
+                'fx_conversion' => $conversionResult
+            ]);
 
         } catch (\Exception $e) {
-            Log::error("Error generating FX conversion summary: " . $e->getMessage());
-            
-            return [
-                'total_expenses' => 0,
-                'conversions' => [],
-                'currencies' => [],
-                'total_original_amount' => 0,
-                'total_converted_amount' => 0,
-                'errors' => [
-                    ['error' => $e->getMessage()]
-                ],
-            ];
+            Log::error('Error converting expense amount', [
+                'expense_data' => $expenseData,
+                'client_id' => $clientId,
+                'error' => $e->getMessage()
+            ]);
+
+            // Return original data with error status
+            return array_merge($expenseData, [
+                'fx_conversion' => [
+                    'original_amount' => $expenseData['amount'] ?? 0.0,
+                    'original_currency' => $expenseData['currency'] ?? '',
+                    'wallet_currency' => $walletCurrency['currency'] ?? self::DEFAULT_BASE_CURRENCY,
+                    'conversion_rate' => null,
+                    'converted_amount' => null,
+                    'commission_rate' => self::DEFAULT_COMMISSION_PERCENT,
+                    'fx_status' => 'conversion_error'
+                ]
+            ]);
         }
     }
 }

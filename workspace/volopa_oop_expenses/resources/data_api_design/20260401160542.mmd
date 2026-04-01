@@ -1,0 +1,229 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+classDiagram
+    class UserFeaturePermission {
+        +int id
+        +int user_id
+        +int client_id
+        +int feature_id
+        +int grantor_id
+        +int manager_user_id
+        +bool is_enabled
+        +timestamp created_at
+        +timestamp updated_at
+        +user() BelongsTo
+        +client() BelongsTo
+        +feature() BelongsTo
+        +grantor() BelongsTo
+        +manager() BelongsTo
+    }
+    class OptPocketExpenseType {
+        +int id
+        +string option
+        +enum amount_sign
+        +expenses() HasMany
+    }
+    class PocketExpenseSourceClientConfig {
+        +int id
+        +string uuid
+        +int client_id
+        +string name
+        +bool is_default
+        +bool deleted
+        +datetime delete_time
+        +datetime create_time
+        +datetime update_time
+        +client() BelongsTo
+        +expenses() HasMany
+    }
+    class PocketExpense {
+        +int id
+        +string uuid
+        +int user_id
+        +int client_id
+        +date date
+        +string merchant_name
+        +string merchant_description
+        +int expense_type
+        +string currency
+        +decimal amount
+        +string merchant_address
+        +decimal vat_amount
+        +text notes
+        +enum status
+        +int created_by_user_id
+        +int updated_by_user_id
+        +int approved_by_user_id
+        +datetime create_time
+        +datetime update_time
+        +bool deleted
+        +datetime delete_time
+        +user() BelongsTo
+        +client() BelongsTo
+        +expenseType() BelongsTo
+        +createdBy() BelongsTo
+        +updatedBy() BelongsTo
+        +approvedBy() BelongsTo
+        +metadata() HasMany
+    }
+    class PocketExpenseMetadata {
+        +int id
+        +int pocket_expense_id
+        +enum metadata_type
+        +int transaction_category_id
+        +int tracking_code_id
+        +int project_id
+        +int file_store_id
+        +int expense_source_id
+        +int additional_field_id
+        +int user_id
+        +json details_json
+        +datetime create_time
+        +datetime update_time
+        +bool deleted
+        +datetime delete_time
+        +pocketExpense() BelongsTo
+        +transactionCategory() BelongsTo
+        +trackingCode() BelongsTo
+        +project() BelongsTo
+        +fileStore() BelongsTo
+        +expenseSource() BelongsTo
+        +additionalField() BelongsTo
+        +user() BelongsTo
+    }
+    class PocketExpenseFileUpload {
+        +int id
+        +string uuid
+        +int user_id
+        +int client_id
+        +int created_by_user_id
+        +string file_name
+        +string file_path
+        +int total_records
+        +int valid_records
+        +json validation_errors
+        +enum status
+        +timestamp uploaded_at
+        +timestamp validated_at
+        +timestamp processed_at
+        +timestamp created_at
+        +timestamp updated_at
+        +timestamp deleted_at
+        +user() BelongsTo
+        +client() BelongsTo
+        +createdBy() BelongsTo
+        +uploadsData() HasMany
+    }
+    class PocketExpenseUploadsData {
+        +int id
+        +int upload_id
+        +int line_number
+        +enum status
+        +json expense_data
+        +timestamp created_at
+        +timestamp updated_at
+        +upload() BelongsTo
+    }
+    class UserFeaturePermissionController {
+        +index(Request request) JsonResponse
+        +store(StoreUserFeaturePermissionRequest request) JsonResponse
+        +show(int id) JsonResponse
+        +update(UpdateUserFeaturePermissionRequest request, int id) JsonResponse
+        +destroy(int id) JsonResponse
+    }
+    class PocketExpenseController {
+        +index(Request request) JsonResponse
+        +store(StorePocketExpenseRequest request) JsonResponse
+        +show(int id) JsonResponse
+        +update(UpdatePocketExpenseRequest request, int id) JsonResponse
+        +destroy(int id) JsonResponse
+    }
+    class PocketExpenseSourceController {
+        +index(Request request) JsonResponse
+        +store(StorePocketExpenseSourceRequest request) JsonResponse
+        +show(int id) JsonResponse
+        +update(UpdatePocketExpenseSourceRequest request, int id) JsonResponse
+        +destroy(int id) JsonResponse
+    }
+    class PocketExpenseUploadController {
+        +uploadPocketExpenseCSV(UploadPocketExpenseCSVRequest request) JsonResponse
+    }
+    class UserFeaturePermissionService {
+        +createPermission(array data) UserFeaturePermission
+        +updatePermission(UserFeaturePermission permission, array data) UserFeaturePermission
+        +revokePermission(UserFeaturePermission permission) bool
+        +getUserManagedUsers(int userId, int clientId) Collection
+        +canUserManageTarget(int userId, int targetUserId, int clientId) bool
+    }
+    class PocketExpenseService {
+        +createExpense(array data) PocketExpense
+        +updateExpense(PocketExpense expense, array data) PocketExpense
+        +deleteExpense(PocketExpense expense) bool
+        +getUserExpenses(int userId, int clientId) Collection
+        +approveExpense(PocketExpense expense, int approverId) PocketExpense
+    }
+    class PocketExpenseSourceService {
+        +createSource(array data) PocketExpenseSourceClientConfig
+        +updateSource(PocketExpenseSourceClientConfig source, array data) PocketExpenseSourceClientConfig
+        +deleteSource(PocketExpenseSourceClientConfig source) bool
+        +getClientSources(int clientId) Collection
+        +seedDefaultSources(int clientId) void
+    }
+    class PocketExpenseCSVValidator {
+        +validate(string filePath, int targetUserId, int clientId, int adminId) array
+        +validateHeaders(array headers) bool
+        +validateRow(array row, int lineNumber) array
+        +preloadReferenceData(int clientId) void
+    }
+    class PocketExpenseFXService {
+        +getWalletBaseCurrency(int clientId) array
+        +getFXRate(string fromCurrency, string toCurrency, string date) float
+        +calculateConvertedAmount(float amount, float rate, float commission) float
+        +convertExpenseAmount(array expenseData, int clientId) array
+    }
+    class ProcessExpenseUpload {
+        +int uploadId
+        +handle() void
+        +syncExpenseBatch(array expenses) void
+        +updateUploadStatus(string status) void
+    }
+    class UserFeaturePermissionPolicy {
+        +viewAny(User user) bool
+        +view(User user, UserFeaturePermission permission) bool
+        +create(User user) bool
+        +update(User user, UserFeaturePermission permission) bool
+        +delete(User user, UserFeaturePermission permission) bool
+    }
+    class PocketExpensePolicy {
+        +viewAny(User user) bool
+        +view(User user, PocketExpense expense) bool
+        +create(User user) bool
+        +update(User user, PocketExpense expense) bool
+        +delete(User user, PocketExpense expense) bool
+        +approve(User user, PocketExpense expense) bool
+    }
+    class PocketExpenseSourcePolicy {
+        +viewAny(User user) bool
+        +view(User user, PocketExpenseSourceClientConfig source) bool
+        +create(User user) bool
+        +update(User user, PocketExpenseSourceClientConfig source) bool
+        +delete(User user, PocketExpenseSourceClientConfig source) bool
+    }
+    UserFeaturePermissionController --> UserFeaturePermissionService
+    UserFeaturePermissionController --> UserFeaturePermissionPolicy
+    PocketExpenseController --> PocketExpenseService
+    PocketExpenseController --> PocketExpensePolicy
+    PocketExpenseController --> PocketExpenseFXService
+    PocketExpenseSourceController --> PocketExpenseSourceService
+    PocketExpenseSourceController --> PocketExpenseSourcePolicy
+    PocketExpenseUploadController --> PocketExpenseCSVValidator
+    PocketExpenseUploadController --> ProcessExpenseUpload
+    UserFeaturePermission --> User
+    UserFeaturePermission --> Client
+    PocketExpense --> User
+    PocketExpense --> Client
+    PocketExpense --> OptPocketExpenseType
+    PocketExpenseMetadata --> PocketExpense
+    PocketExpenseFileUpload --> User
+    PocketExpenseFileUpload --> Client
+    PocketExpenseUploadsData --> PocketExpenseFileUpload

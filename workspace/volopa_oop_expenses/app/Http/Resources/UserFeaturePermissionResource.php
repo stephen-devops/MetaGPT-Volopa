@@ -6,10 +6,10 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 /**
- * User Feature Permission Resource
+ * UserFeaturePermissionResource
  * 
- * API Resource for transforming UserFeaturePermission model instances into JSON responses.
- * Shapes the response data and hides internal fields for API consumption.
+ * API resource transformer for UserFeaturePermission model.
+ * Shapes the response data for user feature permission endpoints.
  * 
  * @property \App\Models\UserFeaturePermission $resource
  */
@@ -24,48 +24,61 @@ class UserFeaturePermissionResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'id' => $this->resource->id,
-            'user_id' => $this->resource->user_id,
-            'client_id' => $this->resource->client_id,
-            'feature_id' => $this->resource->feature_id,
-            'grantor_id' => $this->resource->grantor_id,
-            'manager_user_id' => $this->resource->manager_user_id,
-            'is_enabled' => $this->resource->is_enabled,
-            'created_at' => $this->resource->created_at?->toISOString(),
-            'updated_at' => $this->resource->updated_at?->toISOString(),
+            'id' => $this->id,
+            'user_id' => $this->user_id,
+            'client_id' => $this->client_id,
+            'feature_id' => $this->feature_id,
+            'grantor_id' => $this->grantor_id,
+            'manager_user_id' => $this->manager_user_id,
+            'is_enabled' => $this->is_enabled,
+            'created_at' => $this->create_time?->toISOString(),
+            'updated_at' => $this->update_time?->toISOString(),
             
-            // Relationships - only include when loaded to avoid N+1 queries
+            // Relationship data (conditionally loaded to prevent N+1 queries)
             'user' => $this->whenLoaded('user', function () {
                 return [
-                    'id' => $this->resource->user->id,
-                    'name' => $this->resource->user->name ?? null,
-                ];
-            }),
-            'client' => $this->whenLoaded('client', function () {
-                return [
-                    'id' => $this->resource->client->id,
-                    'name' => $this->resource->client->name ?? null,
-                ];
-            }),
-            'grantor' => $this->whenLoaded('grantor', function () {
-                return [
-                    'id' => $this->resource->grantor->id,
-                    'name' => $this->resource->grantor->name ?? null,
-                ];
-            }),
-            'manager' => $this->whenLoaded('manager', function () {
-                return [
-                    'id' => $this->resource->manager->id,
-                    'name' => $this->resource->manager->name ?? null,
+                    'id' => $this->user->id,
+                    'name' => $this->user->name ?? null,
                 ];
             }),
             
-            // Computed attributes for convenience
-            'status' => $this->resource->is_enabled ? 'enabled' : 'disabled',
-            'can_manage' => $this->resource->isActive(),
+            'client' => $this->whenLoaded('client', function () {
+                return [
+                    'id' => $this->client->id,
+                    'name' => $this->client->name ?? null,
+                ];
+            }),
+            
+            'grantor' => $this->whenLoaded('grantor', function () {
+                return [
+                    'id' => $this->grantor->id,
+                    'name' => $this->grantor->name ?? null,
+                ];
+            }),
+            
+            'manager' => $this->whenLoaded('manager', function () {
+                return $this->manager ? [
+                    'id' => $this->manager->id,
+                    'name' => $this->manager->name ?? null,
+                ] : null;
+            }),
+            
+            // TODO: Add feature relationship data when Feature model is implemented
+            'feature' => $this->when($this->relationLoaded('feature'), function () {
+                // TODO: Replace with actual Feature model data structure
+                return [
+                    'id' => $this->feature_id,
+                    'name' => 'Feature #' . $this->feature_id, // Placeholder
+                ];
+            }),
+            
+            // Computed attributes for client convenience
+            'status' => $this->is_enabled ? 'enabled' : 'disabled',
+            'has_manager' => !is_null($this->manager_user_id),
+            'display_name' => $this->getDisplayName(),
         ];
     }
-
+    
     /**
      * Get additional data that should be returned with the resource array.
      *
@@ -76,8 +89,8 @@ class UserFeaturePermissionResource extends JsonResource
     {
         return [
             'meta' => [
+                'type' => 'user_feature_permission',
                 'version' => '1.0',
-                'resource_type' => 'user_feature_permission',
             ],
         ];
     }

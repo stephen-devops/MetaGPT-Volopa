@@ -7,14 +7,15 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Database\Factories\PocketExpenseFileUploadFactory;
 use Illuminate\Support\Str;
 
 /**
- * Pocket Expense File Upload Model
+ * PocketExpenseFileUpload Model
  * 
  * Manages CSV file uploads for batch expense processing.
  * Tracks upload status, validation results, and processing progress.
- * Uses Laravel SoftDeletes pattern for this table.
+ * Supports soft deletes and comprehensive error tracking.
  * 
  * @property int $id
  * @property string $uuid
@@ -27,16 +28,17 @@ use Illuminate\Support\Str;
  * @property int $valid_records
  * @property array|null $validation_errors
  * @property string $status
- * @property \Illuminate\Support\Carbon $uploaded_at
- * @property \Illuminate\Support\Carbon|null $validated_at
- * @property \Illuminate\Support\Carbon|null $processed_at
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
- * @property \Illuminate\Support\Carbon|null $deleted_at
+ * @property \Carbon\Carbon|null $uploaded_at
+ * @property \Carbon\Carbon|null $validated_at
+ * @property \Carbon\Carbon|null $processed_at
+ * @property \Carbon\Carbon|null $created_at
+ * @property \Carbon\Carbon|null $updated_at
+ * @property \Carbon\Carbon|null $deleted_at
  */
 class PocketExpenseFileUpload extends Model
 {
-    use HasFactory, SoftDeletes;
+    use HasFactory;
+    use SoftDeletes;
 
     /**
      * The table associated with the model.
@@ -44,20 +46,6 @@ class PocketExpenseFileUpload extends Model
      * @var string
      */
     protected $table = 'pocket_expense_file_uploads';
-
-    /**
-     * The primary key associated with the table.
-     *
-     * @var string
-     */
-    protected $primaryKey = 'id';
-
-    /**
-     * Indicates if the model should be timestamped.
-     *
-     * @var bool
-     */
-    public $timestamps = true;
 
     /**
      * The attributes that are mass assignable.
@@ -87,16 +75,12 @@ class PocketExpenseFileUpload extends Model
      */
     protected $casts = [
         'id' => 'integer',
-        'uuid' => 'string',
         'user_id' => 'integer',
         'client_id' => 'integer',
         'created_by_user_id' => 'integer',
-        'file_name' => 'string',
-        'file_path' => 'string',
         'total_records' => 'integer',
         'valid_records' => 'integer',
         'validation_errors' => 'array',
-        'status' => 'string',
         'uploaded_at' => 'datetime',
         'validated_at' => 'datetime',
         'processed_at' => 'datetime',
@@ -113,36 +97,18 @@ class PocketExpenseFileUpload extends Model
     protected $hidden = [];
 
     /**
-     * The model's default values for attributes.
-     *
-     * @var array<string, mixed>
+     * Available status values as per system constraints.
      */
-    protected $attributes = [
-        'status' => 'uploaded',
-        'total_records' => 0,
-        'valid_records' => 0,
-    ];
+    public const STATUS_UPLOADED = 'uploaded';
+    public const STATUS_VALIDATION_FAILED = 'validation_failed';
+    public const STATUS_VALIDATION_PASSED = 'validation_passed';
+    public const STATUS_PROCESSING = 'processing';
+    public const STATUS_COMPLETED = 'completed';
+    public const STATUS_FAILED = 'failed';
+    public const STATUS_SYNC_FAILED = 'sync_failed';
 
     /**
-     * Boot the model.
-     * Auto-generate UUID on creation and set uploaded_at timestamp.
-     */
-    protected static function boot(): void
-    {
-        parent::boot();
-
-        static::creating(function ($model) {
-            if (empty($model->uuid)) {
-                $model->uuid = Str::uuid()->toString();
-            }
-            if (empty($model->uploaded_at)) {
-                $model->uploaded_at = now();
-            }
-        });
-    }
-
-    /**
-     * Get the user that owns this upload.
+     * Get the user for whom the expenses are being uploaded (target user).
      */
     public function user(): BelongsTo
     {
@@ -150,7 +116,7 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get the client context for this upload.
+     * Get the client this upload belongs to.
      */
     public function client(): BelongsTo
     {
@@ -158,7 +124,7 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get the user who created this upload.
+     * Get the admin user who created this upload.
      */
     public function createdBy(): BelongsTo
     {
@@ -166,7 +132,7 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get the upload data rows associated with this upload.
+     * Get all upload data records for this upload.
      */
     public function uploadsData(): HasMany
     {
@@ -186,18 +152,6 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Scope a query to only include uploads for a specific user.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $userId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeForUser($query, int $userId)
-    {
-        return $query->where('user_id', $userId);
-    }
-
-    /**
      * Scope a query to only include uploads with a specific status.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
@@ -210,124 +164,103 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Scope a query to only include uploads that are uploaded.
+     * Scope a query to only include uploads for a specific user.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $userId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeUploaded($query)
+    public function scopeForUser($query, int $userId)
     {
-        return $query->where('status', 'uploaded');
+        return $query->where('user_id', $userId);
     }
 
     /**
-     * Scope a query to only include uploads that are validating.
+     * Scope a query to only include uploads created by a specific admin.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $adminId
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeValidating($query)
+    public function scopeCreatedBy($query, int $adminId)
     {
-        return $query->where('status', 'validating');
+        return $query->where('created_by_user_id', $adminId);
     }
 
     /**
-     * Scope a query to only include uploads that are processing.
+     * Scope a query to only include recent uploads (within specified days).
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $days
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeProcessing($query)
+    public function scopeRecent($query, int $days = 7)
     {
-        return $query->where('status', 'processing');
+        return $query->where('created_at', '>=', now()->subDays($days));
     }
 
     /**
-     * Scope a query to only include uploads that are completed.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeCompleted($query)
-    {
-        return $query->where('status', 'completed');
-    }
-
-    /**
-     * Scope a query to only include uploads that have failed.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeFailed($query)
-    {
-        return $query->where('status', 'failed');
-    }
-
-    /**
-     * Scope a query to include uploads created by a specific user.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @param int $createdByUserId
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeCreatedBy($query, int $createdByUserId)
-    {
-        return $query->where('created_by_user_id', $createdByUserId);
-    }
-
-    /**
-     * Check if this upload is in uploaded status.
+     * Check if the upload is currently uploaded status.
      *
      * @return bool
      */
     public function isUploaded(): bool
     {
-        return $this->status === 'uploaded';
+        return $this->status === self::STATUS_UPLOADED;
     }
 
     /**
-     * Check if this upload is in validating status.
+     * Check if the upload validation failed.
      *
      * @return bool
      */
-    public function isValidating(): bool
+    public function isValidationFailed(): bool
     {
-        return $this->status === 'validating';
+        return $this->status === self::STATUS_VALIDATION_FAILED;
     }
 
     /**
-     * Check if this upload is in processing status.
+     * Check if the upload validation passed.
+     *
+     * @return bool
+     */
+    public function isValidationPassed(): bool
+    {
+        return $this->status === self::STATUS_VALIDATION_PASSED;
+    }
+
+    /**
+     * Check if the upload is currently processing.
      *
      * @return bool
      */
     public function isProcessing(): bool
     {
-        return $this->status === 'processing';
+        return $this->status === self::STATUS_PROCESSING;
     }
 
     /**
-     * Check if this upload is completed.
+     * Check if the upload is completed.
      *
      * @return bool
      */
     public function isCompleted(): bool
     {
-        return $this->status === 'completed';
+        return $this->status === self::STATUS_COMPLETED;
     }
 
     /**
-     * Check if this upload has failed.
+     * Check if the upload failed.
      *
      * @return bool
      */
     public function isFailed(): bool
     {
-        return $this->status === 'failed';
+        return in_array($this->status, [self::STATUS_FAILED, self::STATUS_SYNC_FAILED]);
     }
 
     /**
-     * Check if this upload has validation errors.
+     * Check if the upload has validation errors.
      *
      * @return bool
      */
@@ -337,17 +270,37 @@ class PocketExpenseFileUpload extends Model
     }
 
     /**
-     * Get the number of validation errors.
+     * Get the count of validation errors.
      *
      * @return int
      */
-    public function getErrorCount(): int
+    public function getValidationErrorCount(): int
     {
-        return is_array($this->validation_errors) ? count($this->validation_errors) : 0;
+        if (!$this->hasValidationErrors()) {
+            return 0;
+        }
+
+        return isset($this->validation_errors['errors']) 
+            ? count($this->validation_errors['errors']) 
+            : 0;
     }
 
     /**
-     * Get the success rate of this upload (valid_records / total_records).
+     * Get validation errors in a formatted array.
+     *
+     * @return array
+     */
+    public function getFormattedValidationErrors(): array
+    {
+        if (!$this->hasValidationErrors()) {
+            return [];
+        }
+
+        return $this->validation_errors['errors'] ?? [];
+    }
+
+    /**
+     * Get the success rate of the upload.
      *
      * @return float
      */
@@ -356,186 +309,244 @@ class PocketExpenseFileUpload extends Model
         if ($this->total_records === 0) {
             return 0.0;
         }
-        
+
         return round(($this->valid_records / $this->total_records) * 100, 2);
     }
 
     /**
-     * Update the upload status and related timestamps.
-     *
-     * @param string $status
-     * @return bool
-     */
-    public function updateStatus(string $status): bool
-    {
-        $this->status = $status;
-        
-        // Update appropriate timestamp based on status
-        switch ($status) {
-            case 'validating':
-                // No specific timestamp for validating
-                break;
-            case 'processing':
-                if (is_null($this->validated_at)) {
-                    $this->validated_at = now();
-                }
-                break;
-            case 'completed':
-            case 'failed':
-                if (is_null($this->validated_at)) {
-                    $this->validated_at = now();
-                }
-                if (is_null($this->processed_at)) {
-                    $this->processed_at = now();
-                }
-                break;
-        }
-        
-        return $this->save();
-    }
-
-    /**
-     * Set validation results for this upload.
-     *
-     * @param int $totalRecords
-     * @param int $validRecords
-     * @param array|null $errors
-     * @return bool
-     */
-    public function setValidationResults(int $totalRecords, int $validRecords, ?array $errors = null): bool
-    {
-        $this->total_records = $totalRecords;
-        $this->valid_records = $validRecords;
-        $this->validation_errors = $errors;
-        $this->validated_at = now();
-        
-        // Update status based on validation results
-        if (!empty($errors)) {
-            $this->status = 'failed';
-        } else {
-            $this->status = 'processing';
-        }
-        
-        return $this->save();
-    }
-
-    /**
-     * Mark this upload as completed.
-     *
-     * @return bool
-     */
-    public function markAsCompleted(): bool
-    {
-        return $this->updateStatus('completed');
-    }
-
-    /**
-     * Mark this upload as failed with optional error message.
-     *
-     * @param array|null $errors
-     * @return bool
-     */
-    public function markAsFailed(?array $errors = null): bool
-    {
-        if (!is_null($errors)) {
-            $this->validation_errors = $errors;
-        }
-        
-        return $this->updateStatus('failed');
-    }
-
-    /**
-     * Get the display status with proper formatting.
+     * Get the file size in a human-readable format.
      *
      * @return string
      */
-    public function getDisplayStatus(): string
+    public function getHumanFileSize(): string
     {
-        return ucfirst($this->status);
-    }
-
-    /**
-     * Get the file size if available from file path.
-     *
-     * @return int|null File size in bytes, null if file doesn't exist
-     */
-    public function getFileSize(): ?int
-    {
-        if (file_exists($this->file_path)) {
-            return filesize($this->file_path);
+        if (!file_exists($this->file_path)) {
+            return 'File not found';
         }
-        
-        return null;
-    }
 
-    /**
-     * Get the formatted file size with units.
-     *
-     * @return string
-     */
-    public function getFormattedFileSize(): string
-    {
-        $size = $this->getFileSize();
-        
-        if (is_null($size)) {
-            return 'Unknown';
-        }
-        
+        $size = filesize($this->file_path);
         $units = ['B', 'KB', 'MB', 'GB'];
-        $unitIndex = 0;
         
-        while ($size >= 1024 && $unitIndex < count($units) - 1) {
+        for ($i = 0; $size > 1024 && $i < count($units) - 1; $i++) {
             $size /= 1024;
-            $unitIndex++;
         }
         
-        return round($size, 2) . ' ' . $units[$unitIndex];
+        return round($size, 2) . ' ' . $units[$i];
     }
 
     /**
-     * Get the processing duration in seconds.
+     * Mark the upload as validation failed with errors.
      *
-     * @return int|null Duration in seconds, null if not processed
+     * @param array $validationErrors
+     * @return bool
      */
-    public function getProcessingDuration(): ?int
+    public function markValidationFailed(array $validationErrors): bool
     {
-        if (is_null($this->processed_at) || is_null($this->uploaded_at)) {
-            return null;
-        }
-        
-        return $this->processed_at->diffInSeconds($this->uploaded_at);
+        $this->status = self::STATUS_VALIDATION_FAILED;
+        $this->validation_errors = $validationErrors;
+        $this->validated_at = now();
+        $this->valid_records = 0;
+
+        return $this->save();
     }
 
     /**
-     * Check if this upload can be reprocessed.
+     * Mark the upload as validation passed.
+     *
+     * @param int $validRecordCount
+     * @return bool
+     */
+    public function markValidationPassed(int $validRecordCount): bool
+    {
+        $this->status = self::STATUS_VALIDATION_PASSED;
+        $this->validation_errors = null;
+        $this->validated_at = now();
+        $this->valid_records = $validRecordCount;
+
+        return $this->save();
+    }
+
+    /**
+     * Mark the upload as processing.
      *
      * @return bool
      */
-    public function canReprocess(): bool
+    public function markProcessing(): bool
     {
-        return in_array($this->status, ['failed', 'completed']);
+        $this->status = self::STATUS_PROCESSING;
+        
+        return $this->save();
     }
 
     /**
-     * Get the upload progress as percentage.
+     * Mark the upload as completed.
      *
-     * @return int
+     * @return bool
      */
-    public function getProgressPercentage(): int
+    public function markCompleted(): bool
     {
-        switch ($this->status) {
-            case 'uploaded':
-                return 10;
-            case 'validating':
-                return 30;
-            case 'processing':
-                return 70;
-            case 'completed':
-                return 100;
-            case 'failed':
-                return 0;
-            default:
-                return 0;
-        }
+        $this->status = self::STATUS_COMPLETED;
+        $this->processed_at = now();
+
+        return $this->save();
+    }
+
+    /**
+     * Mark the upload as failed.
+     *
+     * @param string $errorMessage
+     * @return bool
+     */
+    public function markFailed(string $errorMessage): bool
+    {
+        $this->status = self::STATUS_FAILED;
+        $this->validation_errors = [
+            'processing_error' => $errorMessage,
+            'failed_at' => now()->toISOString()
+        ];
+        $this->processed_at = now();
+
+        return $this->save();
+    }
+
+    /**
+     * Mark the upload as sync failed.
+     *
+     * @param string $errorMessage
+     * @return bool
+     */
+    public function markSyncFailed(string $errorMessage): bool
+    {
+        $this->status = self::STATUS_SYNC_FAILED;
+        $this->validation_errors = [
+            'sync_error' => $errorMessage,
+            'failed_at' => now()->toISOString()
+        ];
+        $this->processed_at = now();
+
+        return $this->save();
+    }
+
+    /**
+     * Get the display name for this upload.
+     *
+     * @return string
+     */
+    public function getDisplayName(): string
+    {
+        $statusLabel = ucfirst(str_replace('_', ' ', $this->status));
+        return "{$this->file_name} ({$statusLabel})";
+    }
+
+    /**
+     * Get a summary of this upload.
+     *
+     * @return array
+     */
+    public function getSummary(): array
+    {
+        return [
+            'id' => $this->id,
+            'uuid' => $this->uuid,
+            'file_name' => $this->file_name,
+            'status' => $this->status,
+            'total_records' => $this->total_records,
+            'valid_records' => $this->valid_records,
+            'error_count' => $this->getValidationErrorCount(),
+            'success_rate' => $this->getSuccessRate(),
+            'uploaded_at' => $this->uploaded_at?->toISOString(),
+            'validated_at' => $this->validated_at?->toISOString(),
+            'processed_at' => $this->processed_at?->toISOString(),
+        ];
+    }
+
+    /**
+     * Create a new factory instance for the model.
+     *
+     * @return PocketExpenseFileUploadFactory
+     */
+    protected static function newFactory(): PocketExpenseFileUploadFactory
+    {
+        return PocketExpenseFileUploadFactory::new();
+    }
+
+    /**
+     * Boot the model.
+     */
+    protected static function boot(): void
+    {
+        parent::boot();
+
+        // Set UUID and uploaded_at on creation
+        static::creating(function ($model) {
+            if (empty($model->uuid)) {
+                $model->uuid = Str::uuid()->toString();
+            }
+            
+            if (is_null($model->uploaded_at)) {
+                $model->uploaded_at = now();
+            }
+            
+            // Set default status if not provided
+            if (empty($model->status)) {
+                $model->status = self::STATUS_UPLOADED;
+            }
+            
+            // Initialize counters if not provided
+            if (is_null($model->total_records)) {
+                $model->total_records = 0;
+            }
+            
+            if (is_null($model->valid_records)) {
+                $model->valid_records = 0;
+            }
+        });
+    }
+
+    /**
+     * Get all available status options.
+     *
+     * @return array
+     */
+    public static function getAvailableStatuses(): array
+    {
+        return [
+            self::STATUS_UPLOADED,
+            self::STATUS_VALIDATION_FAILED,
+            self::STATUS_VALIDATION_PASSED,
+            self::STATUS_PROCESSING,
+            self::STATUS_COMPLETED,
+            self::STATUS_FAILED,
+            self::STATUS_SYNC_FAILED,
+        ];
+    }
+
+    /**
+     * Get status display labels.
+     *
+     * @return array
+     */
+    public static function getStatusLabels(): array
+    {
+        return [
+            self::STATUS_UPLOADED => 'Uploaded',
+            self::STATUS_VALIDATION_FAILED => 'Validation Failed',
+            self::STATUS_VALIDATION_PASSED => 'Validation Passed',
+            self::STATUS_PROCESSING => 'Processing',
+            self::STATUS_COMPLETED => 'Completed',
+            self::STATUS_FAILED => 'Failed',
+            self::STATUS_SYNC_FAILED => 'Sync Failed',
+        ];
+    }
+
+    /**
+     * Get the status label for this upload.
+     *
+     * @return string
+     */
+    public function getStatusLabel(): string
+    {
+        $labels = self::getStatusLabels();
+        return $labels[$this->status] ?? 'Unknown';
     }
 }

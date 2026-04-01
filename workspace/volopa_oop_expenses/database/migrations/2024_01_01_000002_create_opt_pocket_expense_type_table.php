@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
@@ -13,17 +14,49 @@ return new class extends Migration
     {
         Schema::create('opt_pocket_expense_type', function (Blueprint $table) {
             $table->id();
-            $table->string('option', 255)->unique();
+            $table->string('option', 100);
             $table->enum('amount_sign', ['positive', 'negative'])->default('negative');
-            $table->timestamp('created_at')->useCurrent();
-            $table->timestamp('updated_at')->nullable()->useCurrentOnUpdate();
             
-            // Index for performance on option lookup
-            $table->index('option');
+            // Volopa legacy timestamp pattern
+            $table->dateTime('create_time')->default(DB::raw('CURRENT_TIMESTAMP'));
+            $table->dateTime('update_time')->nullable()->default(DB::raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+            
+            // Unique constraint on option to prevent duplicates
+            $table->unique('option');
+            
+            // Table settings
+            $table->engine = 'InnoDB';
+            $table->charset = 'utf8mb4';
+            $table->collation = 'utf8mb4_unicode_ci';
         });
         
-        // Seed default expense types as specified in constraints
-        $this->seedDefaultExpenseTypes();
+        // Insert seed data as per system constraints
+        DB::table('opt_pocket_expense_type')->insert([
+            [
+                'option' => 'ATM Withdrawal',
+                'amount_sign' => 'negative',
+                'create_time' => now(),
+                'update_time' => now()
+            ],
+            [
+                'option' => 'Point of Sale',
+                'amount_sign' => 'negative',
+                'create_time' => now(),
+                'update_time' => now()
+            ],
+            [
+                'option' => 'Fee & Charges',
+                'amount_sign' => 'negative',
+                'create_time' => now(),
+                'update_time' => now()
+            ],
+            [
+                'option' => 'Refund from Merchant',
+                'amount_sign' => 'positive',
+                'create_time' => now(),
+                'update_time' => now()
+            ]
+        ]);
     }
 
     /**
@@ -32,27 +65,5 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('opt_pocket_expense_type');
-    }
-    
-    /**
-     * Seed default expense types as per system constraints
-     */
-    private function seedDefaultExpenseTypes(): void
-    {
-        $defaultTypes = [
-            ['option' => 'ATM Withdrawal', 'amount_sign' => 'negative'],
-            ['option' => 'Point of Sale', 'amount_sign' => 'negative'],
-            ['option' => 'Fee & Charges', 'amount_sign' => 'negative'],
-            ['option' => 'Refund from Merchant', 'amount_sign' => 'positive'],
-        ];
-        
-        foreach ($defaultTypes as $type) {
-            \DB::table('opt_pocket_expense_type')->insert([
-                'option' => $type['option'],
-                'amount_sign' => $type['amount_sign'],
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        }
     }
 };

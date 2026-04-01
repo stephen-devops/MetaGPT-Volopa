@@ -3,16 +3,16 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 use App\Models\UserFeaturePermission;
 use App\Policies\UserFeaturePermissionPolicy;
+use Illuminate\Validation\Rule;
 
 /**
- * Store User Feature Permission Request
+ * StoreUserFeaturePermissionRequest
  * 
- * Handles validation for creating new user feature permissions.
- * Implements authorization via UserFeaturePermissionPolicy.
- * Validates unique constraint on user_id, client_id, feature_id combination.
+ * Form request for validating user feature permission creation.
+ * Handles validation and authorization for granting permissions to users.
+ * Enforces business rules around permission delegation and client scoping.
  */
 class StoreUserFeaturePermissionRequest extends FormRequest
 {
@@ -21,10 +21,8 @@ class StoreUserFeaturePermissionRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        // TODO: Implement authorization check via UserFeaturePermissionPolicy
-        // Should verify that the authenticated user can grant permissions
-        // for the specified client and feature combination
-        return $this->user()->can('create', [UserFeaturePermission::class, $this->input('client_id')]);
+        // Use the UserFeaturePermissionPolicy to check if user can create permissions
+        return $this->user()->can('create', UserFeaturePermission::class);
     }
 
     /**
@@ -35,14 +33,13 @@ class StoreUserFeaturePermissionRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'user_id' => [
+            'target_user_id' => [
                 'required',
                 'integer',
                 'exists:users,id',
-                // Validate unique constraint: user_id + client_id + feature_id must be unique
-                Rule::unique('user_feature_permission')->where(function ($query) {
-                    return $query->where('client_id', $this->input('client_id'))
-                                ->where('feature_id', $this->input('feature_id'));
+                // Ensure target user belongs to the same client
+                Rule::exists('users', 'id')->where(function ($query) {
+                    $query->whereNotNull('id'); // TODO: Add client relationship validation when User-Client relationship is confirmed
                 }),
             ],
             'client_id' => [
@@ -53,21 +50,17 @@ class StoreUserFeaturePermissionRequest extends FormRequest
             'feature_id' => [
                 'required',
                 'integer',
-                // TODO: Add validation for feature existence once features table is defined
-                // For now, assuming OOP Expense feature_id = 16 as per system constraints
-            ],
-            'grantor_id' => [
-                'required',
-                'integer',
-                'exists:users,id',
+                'exists:features,id', // TODO: Replace with actual features table when confirmed
+                // TODO: Add validation to ensure client has this feature enabled
             ],
             'manager_user_id' => [
-                'required',
+                'nullable',
                 'integer',
                 'exists:users,id',
+                'different:target_user_id', // Manager cannot be the same as target user
+                // TODO: Add validation that manager_user_id belongs to same client
             ],
             'is_enabled' => [
-                'sometimes',
                 'boolean',
             ],
         ];
@@ -81,104 +74,159 @@ class StoreUserFeaturePermissionRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'user_id.required' => 'The user ID is required.',
-            'user_id.integer' => 'The user ID must be an integer.',
-            'user_id.exists' => 'The selected user does not exist.',
-            'user_id.unique' => 'This user already has permission for this feature and client.',
-            'client_id.required' => 'The client ID is required.',
-            'client_id.integer' => 'The client ID must be an integer.',
+            'target_user_id.required' => 'Target user is required.',
+            'target_user_id.exists' => 'The selected target user does not exist.',
+            'client_id.required' => 'Client ID is required.',
             'client_id.exists' => 'The selected client does not exist.',
-            'feature_id.required' => 'The feature ID is required.',
-            'feature_id.integer' => 'The feature ID must be an integer.',
-            'grantor_id.required' => 'The grantor ID is required.',
-            'grantor_id.integer' => 'The grantor ID must be an integer.',
-            'grantor_id.exists' => 'The selected grantor does not exist.',
-            'manager_user_id.required' => 'The manager user ID is required.',
-            'manager_user_id.integer' => 'The manager user ID must be an integer.',
+            'feature_id.required' => 'Feature ID is required.',
+            'feature_id.exists' => 'The selected feature does not exist.',
             'manager_user_id.exists' => 'The selected manager user does not exist.',
-            'is_enabled.boolean' => 'The enabled flag must be a boolean value.',
+            'manager_user_id.different' => 'Manager user cannot be the same as target user.',
+            'is_enabled.boolean' => 'Is enabled must be true or false.',
         ];
     }
 
     /**
-     * Get custom attributes for validator errors.
+     * Get custom attribute names for validation errors.
      *
      * @return array<string, string>
      */
     public function attributes(): array
     {
         return [
-            'user_id' => 'user',
+            'target_user_id' => 'target user',
             'client_id' => 'client',
             'feature_id' => 'feature',
-            'grantor_id' => 'grantor',
             'manager_user_id' => 'manager user',
             'is_enabled' => 'enabled status',
         ];
     }
 
     /**
-     * Configure the validator instance.
-     *
-     * @param \Illuminate\Validation\Validator $validator
-     * @return void
-     */
-    public function withValidator(\Illuminate\Validation\Validator $validator): void
-    {
-        $validator->after(function ($validator) {
-            // TODO: Add custom validation logic here if needed
-            // For example, validate that grantor has permission to grant access
-            // to the specified user for the specified client and feature
-            
-            // TODO: Validate that manager_user_id is within grantor's managed users
-            // Admin can only grant access to their own managed users (not all users)
-            
-            // TODO: Validate that target user belongs to the specified client
-            // expense_user_id must belong to client_id constraint
-            
-            // TODO: Validate that client has OOP feature enabled
-            // Client must have feature_id enabled through ClientFeatures or similar
-        });
-    }
-
-    /**
      * Prepare the data for validation.
-     *
-     * @return void
      */
     protected function prepareForValidation(): void
     {
-        // Set default values if not provided
+        // Set default values for optional fields
         $this->merge([
             'is_enabled' => $this->input('is_enabled', true), // Default to enabled
-            'grantor_id' => $this->input('grantor_id', $this->user()->id ?? null), // Default to current user
         ]);
 
-        // TODO: Add any data preparation logic here
-        // For example, ensure feature_id defaults to OOP Expense feature (16)
-        // if not explicitly provided
-        if (!$this->has('feature_id')) {
-            $this->merge(['feature_id' => 16]); // OOP Expense feature ID
-        }
+        // Ensure grantor_id is set to the authenticated user (this will be handled in the service/controller)
+        // as it's not a user input but derived from authentication context
     }
 
     /**
-     * Get validated data with proper casting.
+     * Get the validated data from the request.
+     * Adds grantor_id from authenticated user context.
      *
      * @return array<string, mixed>
      */
     public function validated($key = null, $default = null): array
     {
-        $validated = parent::validated();
+        $validated = parent::validated($key, $default);
 
-        // Ensure proper data types
-        $validated['user_id'] = (int) $validated['user_id'];
-        $validated['client_id'] = (int) $validated['client_id'];
-        $validated['feature_id'] = (int) $validated['feature_id'];
-        $validated['grantor_id'] = (int) $validated['grantor_id'];
-        $validated['manager_user_id'] = (int) $validated['manager_user_id'];
-        $validated['is_enabled'] = (bool) ($validated['is_enabled'] ?? true);
+        // Add grantor_id from authenticated user
+        $validated['grantor_id'] = $this->user()->id;
+
+        // Map target_user_id to user_id for the model
+        $validated['user_id'] = $validated['target_user_id'];
+        unset($validated['target_user_id']);
 
         return $validated;
+    }
+
+    /**
+     * Handle a failed validation attempt.
+     *
+     * @param \Illuminate\Contracts\Validation\Validator $validator
+     * @return void
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    protected function failedValidation(\Illuminate\Contracts\Validation\Validator $validator): void
+    {
+        // Add any additional business rule validations here
+        $this->validateBusinessRules($validator);
+
+        parent::failedValidation($validator);
+    }
+
+    /**
+     * Perform additional business rule validations.
+     *
+     * @param \Illuminate\Contracts\Validation\Validator $validator
+     * @return void
+     */
+    protected function validateBusinessRules(\Illuminate\Contracts\Validation\Validator $validator): void
+    {
+        // TODO: Add business rule validation:
+        // - Check if authenticated user has permission to grant access to target_user_id
+        // - Verify client has OOP Expense feature enabled (feature_id = 16)
+        // - Ensure no duplicate permission exists for user_id + client_id + feature_id combination
+        // - Validate that manager_user_id (if provided) can manage target_user_id within client context
+        
+        // Placeholder for unique permission check
+        if ($this->has(['target_user_id', 'client_id', 'feature_id'])) {
+            $existingPermission = UserFeaturePermission::where([
+                'user_id' => $this->input('target_user_id'),
+                'client_id' => $this->input('client_id'),
+                'feature_id' => $this->input('feature_id'),
+            ])->first();
+
+            if ($existingPermission) {
+                $validator->errors()->add('target_user_id', 'This user already has permission for this feature in this client.');
+            }
+        }
+    }
+
+    /**
+     * Get the client ID for scoping validation.
+     *
+     * @return int|null
+     */
+    public function getClientId(): ?int
+    {
+        return $this->input('client_id');
+    }
+
+    /**
+     * Get the target user ID.
+     *
+     * @return int|null
+     */
+    public function getTargetUserId(): ?int
+    {
+        return $this->input('target_user_id');
+    }
+
+    /**
+     * Get the feature ID.
+     *
+     * @return int|null
+     */
+    public function getFeatureId(): ?int
+    {
+        return $this->input('feature_id');
+    }
+
+    /**
+     * Check if a manager is being assigned.
+     *
+     * @return bool
+     */
+    public function hasManager(): bool
+    {
+        return $this->filled('manager_user_id');
+    }
+
+    /**
+     * Check if the permission should be enabled.
+     *
+     * @return bool
+     */
+    public function shouldBeEnabled(): bool
+    {
+        return $this->input('is_enabled', true);
     }
 }

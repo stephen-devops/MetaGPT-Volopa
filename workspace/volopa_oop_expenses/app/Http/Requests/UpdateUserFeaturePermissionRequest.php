@@ -3,14 +3,15 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Validation\Rule;
 use App\Models\UserFeaturePermission;
+use App\Policies\UserFeaturePermissionPolicy;
+use Illuminate\Validation\Rule;
 
 /**
- * Update User Feature Permission Request
+ * UpdateUserFeaturePermissionRequest
  * 
- * Handles validation and authorization for updating user feature permissions.
- * Implements RBAC constraints and multi-tenancy validation.
+ * Form request validation for updating UserFeaturePermission records.
+ * Handles validation and authorization for permission updates with optional manager delegation.
  */
 class UpdateUserFeaturePermissionRequest extends FormRequest
 {
@@ -21,176 +22,53 @@ class UpdateUserFeaturePermissionRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        // Authorization is handled by the UserFeaturePermissionPolicy
-        // The policy will check if the authenticated user can update the specific permission
-        $permission = $this->route('user_feature_permission');
+        $permission = $this->route('userFeaturePermission') ?? $this->route('id');
+        
+        if (!$permission instanceof UserFeaturePermission) {
+            // If we receive an ID, load the permission model
+            $permission = UserFeaturePermission::find($permission);
+        }
         
         if (!$permission) {
             return false;
         }
-
+        
+        // Use policy to check if user can update this permission
         return $this->user()->can('update', $permission);
     }
 
     /**
      * Get the validation rules that apply to the request.
      *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array|string>
+     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
      */
     public function rules(): array
     {
-        $permission = $this->route('user_feature_permission');
+        $permission = $this->route('userFeaturePermission') ?? $this->route('id');
+        
+        if (!$permission instanceof UserFeaturePermission) {
+            $permission = UserFeaturePermission::find($permission);
+        }
         
         return [
-            'user_id' => [
-                'sometimes',
-                'integer',
-                'exists:users,id',
-                function ($attribute, $value, $fail) use ($permission) {
-                    // Ensure user belongs to the same client when updating user_id
-                    if ($value && $permission && $this->filled('client_id')) {
-                        // TODO: Add validation to check if user belongs to client
-                        // This requires checking user-client relationship which is not defined in current context
-                    }
-                },
-            ],
-            'client_id' => [
-                'sometimes',
-                'integer',
-                'exists:clients,id',
-            ],
-            'feature_id' => [
-                'sometimes',
-                'integer',
-                'min:1',
-            ],
-            'grantor_id' => [
-                'sometimes',
-                'integer',
-                'exists:users,id',
-                function ($attribute, $value, $fail) {
-                    // Grantor must be the authenticated user or someone they can act on behalf of
-                    if ($value && $value !== $this->user()->id) {
-                        // TODO: Add validation to check if current user can act as this grantor
-                        // This requires checking delegation permissions
-                    }
-                },
-            ],
             'manager_user_id' => [
-                'sometimes',
+                'nullable',
                 'integer',
                 'exists:users,id',
                 function ($attribute, $value, $fail) use ($permission) {
-                    // Manager must be within the scope of users the grantor can manage
                     if ($value && $permission) {
-                        // TODO: Add validation to check if manager is within grantor's scope
-                        // This requires checking management hierarchy
+                        // Ensure manager belongs to the same client
+                        $managerUser = \App\Models\User::find($value);
+                        if ($managerUser && !$this->userBelongsToClient($managerUser->id, $permission->client_id)) {
+                            $fail('The selected manager must belong to the same client.');
+                        }
                     }
-                },
+                }
             ],
             'is_enabled' => [
                 'sometimes',
-                'boolean',
-            ],
-        ];
-    }
-
-    /**
-     * Configure the validator instance.
-     *
-     * @param  \Illuminate\Validation\Validator  $validator
-     * @return void
-     */
-    public function withValidator($validator): void
-    {
-        $validator->after(function ($validator) {
-            $permission = $this->route('user_feature_permission');
-            
-            if (!$permission) {
-                $validator->errors()->add('permission', 'Permission not found.');
-                return;
-            }
-
-            // Validate unique constraint if user_id, client_id, or feature_id is being updated
-            if ($this->hasAny(['user_id', 'client_id', 'feature_id'])) {
-                $userId = $this->input('user_id', $permission->user_id);
-                $clientId = $this->input('client_id', $permission->client_id);
-                $featureId = $this->input('feature_id', $permission->feature_id);
-
-                $exists = UserFeaturePermission::where('user_id', $userId)
-                    ->where('client_id', $clientId)
-                    ->where('feature_id', $featureId)
-                    ->where('id', '!=', $permission->id)
-                    ->exists();
-
-                if ($exists) {
-                    $validator->errors()->add('user_feature_permission', 'This permission combination already exists for the user.');
-                }
-            }
-
-            // Additional business rule validations
-            $this->validateBusinessRules($validator, $permission);
-        });
-    }
-
-    /**
-     * Validate business rules specific to permission updates.
-     *
-     * @param  \Illuminate\Validation\Validator  $validator
-     * @param  \App\Models\UserFeaturePermission  $permission
-     * @return void
-     */
-    protected function validateBusinessRules($validator, $permission): void
-    {
-        // Rule: Admin can only grant access to their own managed users
-        if ($this->filled('user_id') || $this->filled('manager_user_id')) {
-            $targetUserId = $this->input('user_id', $permission->user_id);
-            $managerUserId = $this->input('manager_user_id', $permission->manager_user_id);
-            $currentUserId = $this->user()->id;
-
-            // TODO: Implement validation for management hierarchy
-            // This requires checking if currentUserId can manage targetUserId and managerUserId
-            // Based on system constraints: "Admin can only grant access to their own managed users"
-        }
-
-        // Rule: Feature ID 16 represents OOP Expense feature per system constraints
-        if ($this->filled('feature_id')) {
-            $featureId = $this->input('feature_id');
-            
-            // TODO: Add validation to ensure feature_id is valid and enabled for the client
-            // This requires checking client feature configuration
-            if ($this->filled('client_id')) {
-                $clientId = $this->input('client_id', $permission->client_id);
-                // TODO: Validate that clientId has featureId enabled
-            }
-        }
-
-        // Rule: Ensure grantor has permission to grant this specific feature
-        if ($this->filled('grantor_id') || $this->filled('feature_id')) {
-            $grantorId = $this->input('grantor_id', $permission->grantor_id);
-            $featureId = $this->input('feature_id', $permission->feature_id);
-            $clientId = $this->input('client_id', $permission->client_id);
-
-            // TODO: Add validation to check if grantor has permission to grant this feature
-            // This requires checking grantor's own permissions for the feature in the client context
-        }
-    }
-
-    /**
-     * Get the error messages for the defined validation rules.
-     *
-     * @return array<string, string>
-     */
-    public function messages(): array
-    {
-        return [
-            'user_id.exists' => 'The selected user does not exist.',
-            'client_id.exists' => 'The selected client does not exist.',
-            'feature_id.integer' => 'The feature ID must be a valid integer.',
-            'feature_id.min' => 'The feature ID must be at least 1.',
-            'grantor_id.exists' => 'The selected grantor does not exist.',
-            'manager_user_id.exists' => 'The selected manager does not exist.',
-            'is_enabled.boolean' => 'The enabled status must be true or false.',
+                'boolean'
+            ]
         ];
     }
 
@@ -202,12 +80,22 @@ class UpdateUserFeaturePermissionRequest extends FormRequest
     public function attributes(): array
     {
         return [
-            'user_id' => 'user',
-            'client_id' => 'client',
-            'feature_id' => 'feature',
-            'grantor_id' => 'grantor',
-            'manager_user_id' => 'manager',
-            'is_enabled' => 'enabled status',
+            'manager_user_id' => 'manager user',
+            'is_enabled' => 'enabled status'
+        ];
+    }
+
+    /**
+     * Get custom messages for validator errors.
+     *
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'manager_user_id.exists' => 'The selected manager user does not exist.',
+            'manager_user_id.integer' => 'The manager user ID must be a valid number.',
+            'is_enabled.boolean' => 'The enabled status must be true or false.'
         ];
     }
 
@@ -218,36 +106,69 @@ class UpdateUserFeaturePermissionRequest extends FormRequest
      */
     protected function prepareForValidation(): void
     {
-        // Ensure boolean values are properly cast
+        // Convert string boolean values to actual booleans
         if ($this->has('is_enabled')) {
             $this->merge([
-                'is_enabled' => filter_var($this->input('is_enabled'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
+                'is_enabled' => filter_var($this->input('is_enabled'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)
             ]);
         }
-
-        // Ensure integer values are properly cast for foreign key fields
-        $integerFields = ['user_id', 'client_id', 'feature_id', 'grantor_id', 'manager_user_id'];
         
-        foreach ($integerFields as $field) {
-            if ($this->has($field) && !is_null($this->input($field))) {
-                $this->merge([
-                    $field => (int) $this->input($field),
-                ]);
-            }
+        // Convert empty manager_user_id to null
+        if ($this->has('manager_user_id') && empty($this->input('manager_user_id'))) {
+            $this->merge([
+                'manager_user_id' => null
+            ]);
         }
     }
 
     /**
-     * Handle a passed validation attempt.
+     * Get the validated data with only allowed fields for update.
+     *
+     * @return array<string, mixed>
+     */
+    public function getUpdateData(): array
+    {
+        $validated = $this->validated();
+        
+        // Only allow specific fields to be updated
+        $allowedFields = ['manager_user_id', 'is_enabled'];
+        
+        return array_intersect_key($validated, array_flip($allowedFields));
+    }
+
+    /**
+     * Check if user belongs to a specific client.
+     * 
+     * TODO: This should be moved to a service class or User model method
+     * when the user-client relationship structure is confirmed.
+     *
+     * @param int $userId
+     * @param int $clientId
+     * @return bool
+     */
+    private function userBelongsToClient(int $userId, int $clientId): bool
+    {
+        // TODO: Implement proper user-client relationship check
+        // This is a placeholder implementation
+        // The actual implementation should check user's association with client
+        // through the proper relationship (UserClient model, user.clients relationship, etc.)
+        
+        // For now, return true to allow validation to pass
+        // This should be replaced with actual business logic
+        return true;
+    }
+
+    /**
+     * Handle a failed authorization attempt.
      *
      * @return void
+     *
+     * @throws \Illuminate\Auth\Access\AuthorizationException
      */
-    protected function passedValidation(): void
+    protected function failedAuthorization(): void
     {
-        // Additional processing after validation passes
-        // This could include logging or other business logic
-        
-        // TODO: Add audit logging for permission update attempts
-        // This should log who is attempting to update which permission
+        throw new \Illuminate\Auth\Access\AuthorizationException(
+            'You are not authorized to update this user feature permission.'
+        );
     }
 }

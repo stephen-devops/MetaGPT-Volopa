@@ -3,6 +3,8 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseFileUpload;
+use App\Models\User;
+use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -25,68 +27,41 @@ class PocketExpenseFileUploadFactory extends Factory
      */
     public function definition(): array
     {
-        $fileNames = [
-            'expenses_january_2024.csv',
-            'monthly_expenses.csv',
-            'business_expenses.csv',
-            'pocket_expenses_batch.csv',
-            'expense_upload.csv',
-            'company_expenses.csv',
-            'quarterly_expenses.csv',
-            'team_expenses.csv'
-        ];
-
-        $filePaths = [
-            'uploads/csv/expenses/',
-            'storage/uploads/pocket-expenses/',
-            'temp/csv-uploads/',
-            'files/expense-uploads/'
+        $statusOptions = [
+            'uploaded',
+            'validation_failed',
+            'validation_passed',
+            'processing',
+            'completed',
+            'failed',
+            'sync_failed'
         ];
 
         return [
             'uuid' => Str::uuid()->toString(),
-            'user_id' => function () {
-                // TODO: Create or reference existing user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
-            },
-            'client_id' => function () {
-                // TODO: Create or reference existing client - depends on Client model factory
-                return \App\Models\Client::factory()->create()->id;
-            },
-            'created_by_user_id' => function () {
-                // TODO: Create or reference existing creator user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
-            },
-            'file_name' => $this->faker->randomElement($fileNames),
-            'file_path' => function () use ($filePaths) {
-                $basePath = $this->faker->randomElement($filePaths);
-                $fileName = $this->faker->uuid() . '.csv';
-                return $basePath . $fileName;
-            },
-            'total_records' => $this->faker->numberBetween(1, 200), // Max 200 rows per CSV file constraint
+            'user_id' => User::factory(),
+            'client_id' => Client::factory(),
+            'created_by_user_id' => User::factory(),
+            'file_name' => $this->faker->word . '_expenses_' . $this->faker->date() . '.csv',
+            'file_path' => 'storage/app/pocket-expense-uploads/' . Str::uuid() . '.csv',
+            'total_records' => $this->faker->numberBetween(1, 200), // Max 200 rows per CSV as per constraints
             'valid_records' => function (array $attributes) {
                 return $this->faker->numberBetween(0, $attributes['total_records']);
             },
-            'validation_errors' => $this->faker->optional(0.3)->passthrough(
-                json_encode([
+            'validation_errors' => $this->faker->optional(0.3)->passthrough([
+                'errors' => [
                     [
-                        'line_number' => $this->faker->numberBetween(2, 50),
-                        'field' => 'Date',
-                        'error' => 'Invalid date format',
-                        'value' => '2024-13-45'
-                    ],
-                    [
-                        'line_number' => $this->faker->numberBetween(2, 50),
-                        'field' => 'Amount',
-                        'error' => 'Amount must be numeric',
-                        'value' => 'invalid_amount'
+                        'line_number' => $this->faker->numberBetween(2, 201),
+                        'field' => $this->faker->randomElement(['Date', 'Amount', 'Currency Code', 'Merchant Name']),
+                        'error' => $this->faker->sentence,
+                        'value' => $this->faker->word
                     ]
-                ])
-            ),
-            'status' => $this->faker->randomElement(['uploaded', 'validating', 'processing', 'completed', 'failed']),
+                ]
+            ]),
+            'status' => $this->faker->randomElement($statusOptions),
             'uploaded_at' => now(),
             'validated_at' => $this->faker->optional(0.7)->passthrough(now()->addMinutes($this->faker->numberBetween(1, 10))),
-            'processed_at' => $this->faker->optional(0.5)->passthrough(now()->addMinutes($this->faker->numberBetween(10, 60))),
+            'processed_at' => $this->faker->optional(0.5)->passthrough(now()->addMinutes($this->faker->numberBetween(5, 30))),
             'created_at' => now(),
             'updated_at' => now(),
             'deleted_at' => null,
@@ -96,255 +71,254 @@ class PocketExpenseFileUploadFactory extends Factory
     /**
      * Indicate that the upload is in uploaded status.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function uploaded(): Factory
+    public function uploaded(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'uploaded',
-                'validated_at' => null,
-                'processed_at' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'uploaded',
+            'validated_at' => null,
+            'processed_at' => null,
+            'validation_errors' => null,
+        ]);
     }
 
     /**
-     * Indicate that the upload is in validating status.
+     * Indicate that the upload validation failed.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function validating(): Factory
+    public function validationFailed(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'validating',
-                'validated_at' => null,
-                'processed_at' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'validation_failed',
+            'validated_at' => now(),
+            'processed_at' => null,
+            'valid_records' => 0,
+            'validation_errors' => [
+                'errors' => [
+                    [
+                        'line_number' => 2,
+                        'field' => 'Date',
+                        'error' => 'Date format is invalid',
+                        'value' => '2021-13-45'
+                    ]
+                ]
+            ],
+        ]);
     }
 
     /**
-     * Indicate that the upload is in processing status.
+     * Indicate that the upload validation passed.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function processing(): Factory
+    public function validationPassed(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'processing',
-                'validated_at' => now()->subMinutes(5),
-                'processed_at' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'validation_passed',
+            'validated_at' => now(),
+            'processed_at' => null,
+            'valid_records' => $attributes['total_records'],
+            'validation_errors' => null,
+        ]);
+    }
+
+    /**
+     * Indicate that the upload is processing.
+     *
+     * @return static
+     */
+    public function processing(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'processing',
+            'validated_at' => now()->subMinutes(5),
+            'processed_at' => null,
+            'valid_records' => $attributes['total_records'],
+            'validation_errors' => null,
+        ]);
     }
 
     /**
      * Indicate that the upload is completed.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function completed(): Factory
+    public function completed(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'completed',
-                'validated_at' => now()->subMinutes(10),
-                'processed_at' => now()->subMinutes(2),
-                'validation_errors' => null,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'completed',
+            'validated_at' => now()->subMinutes(10),
+            'processed_at' => now(),
+            'valid_records' => $attributes['total_records'],
+            'validation_errors' => null,
+        ]);
     }
 
     /**
-     * Indicate that the upload failed.
+     * Indicate that the upload processing failed.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function failed(): Factory
+    public function failed(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'status' => 'failed',
-                'validated_at' => now()->subMinutes(5),
-                'processed_at' => null,
-                'validation_errors' => json_encode([
-                    [
-                        'line_number' => 2,
-                        'field' => 'Date',
-                        'error' => 'Date cannot be older than 3 years',
-                        'value' => '01/01/2020'
-                    ],
-                    [
-                        'line_number' => 3,
-                        'field' => 'Currency Code',
-                        'error' => 'Invalid currency code',
-                        'value' => 'XYZ'
-                    ]
-                ]),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'status' => 'failed',
+            'validated_at' => now()->subMinutes(10),
+            'processed_at' => now(),
+            'validation_errors' => [
+                'processing_error' => 'Failed to process expenses due to system error'
+            ],
+        ]);
+    }
+
+    /**
+     * Indicate that the upload sync failed.
+     *
+     * @return static
+     */
+    public function syncFailed(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => 'sync_failed',
+            'validated_at' => now()->subMinutes(15),
+            'processed_at' => now()->subMinutes(5),
+            'validation_errors' => [
+                'sync_error' => 'Failed to sync with main service'
+            ],
+        ]);
     }
 
     /**
      * Indicate that the upload is soft deleted.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function deleted(): Factory
+    public function deleted(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'deleted_at' => now(),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'deleted_at' => now(),
+        ]);
     }
 
     /**
-     * Create upload for specific user and client.
+     * Create an upload for a specific user and client.
      *
      * @param int $userId
      * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param int|null $createdByUserId
+     * @return static
      */
-    public function forUserAndClient(int $userId, int $clientId): Factory
+    public function forUser(int $userId, int $clientId, int $createdByUserId = null): static
     {
-        return $this->state(function (array $attributes) use ($userId, $clientId) {
-            return [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'created_by_user_id' => $createdByUserId ?? $userId,
+        ]);
     }
 
     /**
-     * Create upload created by specific user.
-     *
-     * @param int $createdByUserId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function createdBy(int $createdByUserId): Factory
-    {
-        return $this->state(function (array $attributes) use ($createdByUserId) {
-            return [
-                'created_by_user_id' => $createdByUserId,
-            ];
-        });
-    }
-
-    /**
-     * Create upload with specific file details.
+     * Create an upload with specific file details.
      *
      * @param string $fileName
      * @param string $filePath
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withFile(string $fileName, string $filePath): Factory
+    public function withFile(string $fileName, string $filePath): static
     {
-        return $this->state(function (array $attributes) use ($fileName, $filePath) {
-            return [
-                'file_name' => $fileName,
-                'file_path' => $filePath,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'file_name' => $fileName,
+            'file_path' => $filePath,
+        ]);
     }
 
     /**
-     * Create upload with specific record counts.
+     * Create an upload with specific record counts.
      *
      * @param int $totalRecords
-     * @param int $validRecords
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param int|null $validRecords
+     * @return static
      */
-    public function withRecordCounts(int $totalRecords, int $validRecords): Factory
+    public function withRecords(int $totalRecords, int $validRecords = null): static
     {
-        return $this->state(function (array $attributes) use ($totalRecords, $validRecords) {
-            return [
-                'total_records' => $totalRecords,
-                'valid_records' => $validRecords,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'total_records' => $totalRecords,
+            'valid_records' => $validRecords ?? $totalRecords,
+        ]);
     }
 
     /**
-     * Create upload with validation errors.
+     * Create an upload with validation errors.
      *
-     * @param array $errors
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param array $validationErrors
+     * @return static
      */
-    public function withValidationErrors(array $errors): Factory
+    public function withValidationErrors(array $validationErrors): static
     {
-        return $this->state(function (array $attributes) use ($errors) {
-            return [
-                'validation_errors' => json_encode($errors),
-                'status' => 'failed',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'validation_errors' => $validationErrors,
+            'status' => 'validation_failed',
+        ]);
     }
 
     /**
-     * Create upload with specific UUID.
+     * Create an upload with maximum allowed records (200).
      *
-     * @param string $uuid
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withUuid(string $uuid): Factory
+    public function maxRecords(): static
     {
-        return $this->state(function (array $attributes) use ($uuid) {
-            return [
-                'uuid' => $uuid,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'total_records' => 200,
+            'valid_records' => 200,
+        ]);
     }
 
     /**
-     * Create upload with maximum allowed records (constraint: 200 rows max).
+     * Create an upload with minimal records.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function maxRecords(): Factory
+    public function minRecords(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'total_records' => 200,
-                'valid_records' => $this->faker->numberBetween(180, 200),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'total_records' => 1,
+            'valid_records' => 1,
+        ]);
     }
 
     /**
-     * Create upload with no validation errors.
+     * Create an upload created by a specific admin user.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param int $adminUserId
+     * @return static
      */
-    public function withoutErrors(): Factory
+    public function createdByAdmin(int $adminUserId): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'validation_errors' => null,
-                'valid_records' => $attributes['total_records'] ?? $this->faker->numberBetween(1, 200),
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'created_by_user_id' => $adminUserId,
+        ]);
     }
 
     /**
-     * Create upload with specific timestamps.
+     * Create an upload with timestamps for testing workflow.
      *
-     * @param \Carbon\Carbon|null $uploadedAt
-     * @param \Carbon\Carbon|null $validatedAt
-     * @param \Carbon\Carbon|null $processedAt
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withTimestamps(?\Carbon\Carbon $uploadedAt = null, ?\Carbon\Carbon $validatedAt = null, ?\Carbon\Carbon $processedAt = null): Factory
+    public function withWorkflowTimestamps(): static
     {
-        return $this->state(function (array $attributes) use ($uploadedAt, $validatedAt, $processedAt) {
-            return [
-                'uploaded_at' => $uploadedAt ?? now(),
-                'validated_at' => $validatedAt,
-                'processed_at' => $processedAt,
-            ];
-        });
+        $uploadTime = now()->subMinutes(20);
+        $validateTime = $uploadTime->copy()->addMinutes(2);
+        $processTime = $validateTime->copy()->addMinutes(5);
+
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => $uploadTime,
+            'validated_at' => $validateTime,
+            'processed_at' => $processTime,
+            'created_at' => $uploadTime,
+            'updated_at' => $processTime,
+        ]);
     }
 }

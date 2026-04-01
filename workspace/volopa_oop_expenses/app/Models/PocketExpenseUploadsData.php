@@ -5,20 +5,22 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Database\Factories\PocketExpenseUploadsDataFactory;
 
 /**
- * Pocket Expense Uploads Data Model
+ * PocketExpenseUploadsData Model
  * 
- * Manages individual CSV row data for batch expense uploads.
- * Tracks processing status and stores expense data for each row.
+ * Stores individual CSV row data from batch uploads for processing.
+ * Each record represents one expense line from the uploaded CSV file.
+ * Status tracking enables batch processing and error handling.
  * 
  * @property int $id
  * @property int $upload_id
  * @property int $line_number
  * @property string $status
- * @property array|null $expense_data
- * @property \Illuminate\Support\Carbon $created_at
- * @property \Illuminate\Support\Carbon $updated_at
+ * @property array $expense_data
+ * @property \DateTime $created_at
+ * @property \DateTime $updated_at
  */
 class PocketExpenseUploadsData extends Model
 {
@@ -66,16 +68,15 @@ class PocketExpenseUploadsData extends Model
     protected $hidden = [];
 
     /**
-     * The model's default values for attributes.
-     *
-     * @var array<string, mixed>
+     * Status constants for expense data processing.
      */
-    protected $attributes = [
-        'status' => 'pending',
-    ];
+    const STATUS_PENDING = 'pending';
+    const STATUS_PROCESSING = 'processing';
+    const STATUS_SYNCED = 'synced';
+    const STATUS_FAILED = 'failed';
 
     /**
-     * Get the file upload that owns this data row.
+     * Get the file upload this data belongs to.
      */
     public function upload(): BelongsTo
     {
@@ -83,40 +84,51 @@ class PocketExpenseUploadsData extends Model
     }
 
     /**
-     * Scope a query to only include pending upload data.
+     * Scope a query to only include pending records.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopePending($query)
     {
-        return $query->where('status', 'pending');
+        return $query->where('status', self::STATUS_PENDING);
     }
 
     /**
-     * Scope a query to only include processed upload data.
+     * Scope a query to only include processing records.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeProcessed($query)
+    public function scopeProcessing($query)
     {
-        return $query->where('status', 'processed');
+        return $query->where('status', self::STATUS_PROCESSING);
     }
 
     /**
-     * Scope a query to only include failed upload data.
+     * Scope a query to only include synced records.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeSynced($query)
+    {
+        return $query->where('status', self::STATUS_SYNCED);
+    }
+
+    /**
+     * Scope a query to only include failed records.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @return \Illuminate\Database\Eloquent\Builder
      */
     public function scopeFailed($query)
     {
-        return $query->where('status', 'failed');
+        return $query->where('status', self::STATUS_FAILED);
     }
 
     /**
-     * Scope a query to only include data for a specific upload.
+     * Scope a query to only include records for a specific upload.
      *
      * @param \Illuminate\Database\Eloquent\Builder $query
      * @param int $uploadId
@@ -128,118 +140,150 @@ class PocketExpenseUploadsData extends Model
     }
 
     /**
-     * Check if this upload data is pending processing.
+     * Scope a query to get records ready for batch processing.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeReadyForProcessing($query)
+    {
+        return $query->where('status', self::STATUS_PENDING)
+                    ->orderBy('upload_id')
+                    ->orderBy('line_number');
+    }
+
+    /**
+     * Check if this record is pending.
      *
      * @return bool
      */
     public function isPending(): bool
     {
-        return $this->status === 'pending';
+        return $this->status === self::STATUS_PENDING;
     }
 
     /**
-     * Check if this upload data is processed.
+     * Check if this record is processing.
      *
      * @return bool
      */
-    public function isProcessed(): bool
+    public function isProcessing(): bool
     {
-        return $this->status === 'processed';
+        return $this->status === self::STATUS_PROCESSING;
     }
 
     /**
-     * Check if this upload data processing failed.
+     * Check if this record is synced.
+     *
+     * @return bool
+     */
+    public function isSynced(): bool
+    {
+        return $this->status === self::STATUS_SYNCED;
+    }
+
+    /**
+     * Check if this record failed.
      *
      * @return bool
      */
     public function isFailed(): bool
     {
-        return $this->status === 'failed';
+        return $this->status === self::STATUS_FAILED;
     }
 
     /**
-     * Mark this upload data as processed.
+     * Mark this record as processing.
      *
      * @return bool
      */
-    public function markAsProcessed(): bool
+    public function markAsProcessing(): bool
     {
-        $this->status = 'processed';
+        $this->status = self::STATUS_PROCESSING;
         return $this->save();
     }
 
     /**
-     * Mark this upload data as failed.
+     * Mark this record as synced.
+     *
+     * @return bool
+     */
+    public function markAsSynced(): bool
+    {
+        $this->status = self::STATUS_SYNCED;
+        return $this->save();
+    }
+
+    /**
+     * Mark this record as failed.
      *
      * @return bool
      */
     public function markAsFailed(): bool
     {
-        $this->status = 'failed';
+        $this->status = self::STATUS_FAILED;
         return $this->save();
     }
 
     /**
-     * Get the expense data as an array.
+     * Get specific field from expense data.
      *
-     * @return array|null
+     * @param string $field
+     * @param mixed $default
+     * @return mixed
      */
-    public function getExpenseData(): ?array
+    public function getExpenseDataField(string $field, $default = null)
     {
-        return $this->expense_data;
+        return $this->expense_data[$field] ?? $default;
     }
 
     /**
-     * Set the expense data from an array.
+     * Set specific field in expense data.
      *
-     * @param array $data
-     * @return bool
+     * @param string $field
+     * @param mixed $value
+     * @return void
      */
-    public function setExpenseData(array $data): bool
+    public function setExpenseDataField(string $field, $value): void
     {
+        $data = $this->expense_data ?? [];
+        $data[$field] = $value;
         $this->expense_data = $data;
-        return $this->save();
     }
 
     /**
-     * Get a specific field from the expense data.
-     *
-     * @param string $field
-     * @return mixed|null
-     */
-    public function getExpenseDataField(string $field)
-    {
-        return $this->expense_data[$field] ?? null;
-    }
-
-    /**
-     * Check if the expense data contains a specific field.
-     *
-     * @param string $field
-     * @return bool
-     */
-    public function hasExpenseDataField(string $field): bool
-    {
-        return isset($this->expense_data[$field]);
-    }
-
-    /**
-     * Get the CSV line number (including header row).
-     *
-     * @return int
-     */
-    public function getLineNumber(): int
-    {
-        return $this->line_number;
-    }
-
-    /**
-     * Get the display status with proper formatting.
+     * Get the display name for this upload data record.
      *
      * @return string
      */
-    public function getDisplayStatus(): string
+    public function getDisplayName(): string
     {
-        return ucfirst($this->status);
+        $merchantName = $this->getExpenseDataField('Merchant Name', 'Unknown Merchant');
+        return "Line {$this->line_number}: {$merchantName}";
+    }
+
+    /**
+     * Get all available status options.
+     *
+     * @return array
+     */
+    public static function getStatusOptions(): array
+    {
+        return [
+            self::STATUS_PENDING,
+            self::STATUS_PROCESSING,
+            self::STATUS_SYNCED,
+            self::STATUS_FAILED,
+        ];
+    }
+
+    /**
+     * Create a new factory instance for the model.
+     *
+     * @return \Database\Factories\PocketExpenseUploadsDataFactory
+     */
+    protected static function newFactory()
+    {
+        return PocketExpenseUploadsDataFactory::new();
     }
 }

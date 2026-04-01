@@ -3,7 +3,10 @@
 namespace Database\Factories;
 
 use App\Models\UserFeaturePermission;
+use App\Models\User;
+use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
+use Illuminate\Support\Facades\DB;
 
 /**
  * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\UserFeaturePermission>
@@ -25,89 +28,97 @@ class UserFeaturePermissionFactory extends Factory
     public function definition(): array
     {
         return [
-            'user_id' => function () {
-                // TODO: Create or reference existing user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
+            'user_id' => User::factory(),
+            'client_id' => Client::factory(),
+            'feature_id' => function () {
+                // TODO: Replace with actual feature_id reference when features table structure is confirmed
+                // For now, assuming OOP Expense feature has id = 16 based on system constraints
+                return 16;
             },
-            'client_id' => function () {
-                // TODO: Create or reference existing client - depends on Client model factory
-                return \App\Models\Client::factory()->create()->id;
-            },
-            'feature_id' => 16, // OOP Expense feature ID as per system constraints
-            'grantor_id' => function () {
-                // TODO: Create or reference existing grantor user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
-            },
+            'grantor_id' => User::factory(),
             'manager_user_id' => function () {
-                // TODO: Create or reference existing manager user - depends on User model factory
-                return \App\Models\User::factory()->create()->id;
+                return $this->faker->boolean(70) ? User::factory() : null;
             },
-            'is_enabled' => true,
-            'created_at' => now(),
-            'updated_at' => now(),
+            'is_enabled' => $this->faker->boolean(85),
+            'create_time' => now(),
+            'update_time' => now(),
         ];
+    }
+
+    /**
+     * Indicate that the permission is enabled.
+     *
+     * @return static
+     */
+    public function enabled(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'is_enabled' => true,
+        ]);
     }
 
     /**
      * Indicate that the permission is disabled.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function disabled(): Factory
+    public function disabled(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'is_enabled' => false,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'is_enabled' => false,
+        ]);
     }
 
     /**
-     * Create permission with specific feature ID.
+     * Indicate that the permission has a manager.
      *
-     * @param int $featureId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function forFeature(int $featureId): Factory
+    public function withManager(): static
     {
-        return $this->state(function (array $attributes) use ($featureId) {
-            return [
-                'feature_id' => $featureId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'manager_user_id' => User::factory(),
+        ]);
     }
 
     /**
-     * Create permission with specific user and client.
+     * Indicate that the permission has no manager.
+     *
+     * @return static
+     */
+    public function withoutManager(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'manager_user_id' => null,
+        ]);
+    }
+
+    /**
+     * Create a permission for a specific user and client.
      *
      * @param int $userId
      * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @param int|null $grantorId
+     * @return static
      */
-    public function forUserAndClient(int $userId, int $clientId): Factory
+    public function forUser(int $userId, int $clientId, int $grantorId = null): static
     {
-        return $this->state(function (array $attributes) use ($userId, $clientId) {
-            return [
-                'user_id' => $userId,
-                'client_id' => $clientId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'user_id' => $userId,
+            'client_id' => $clientId,
+            'grantor_id' => $grantorId ?? User::factory(),
+        ]);
     }
 
     /**
-     * Create permission with specific grantor and manager.
+     * Create a permission for OOP Expense feature specifically.
      *
-     * @param int $grantorId
-     * @param int $managerId
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function grantedBy(int $grantorId, int $managerId): Factory
+    public function oopExpenseFeature(): static
     {
-        return $this->state(function (array $attributes) use ($grantorId, $managerId) {
-            return [
-                'grantor_id' => $grantorId,
-                'manager_user_id' => $managerId,
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'feature_id' => 16, // OOP Expense feature ID as per system constraints
+        ]);
     }
 }

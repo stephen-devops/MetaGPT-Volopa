@@ -4,7 +4,10 @@ namespace App\Jobs;
 
 use App\Models\PocketExpenseFileUpload;
 use App\Models\PocketExpenseUploadsData;
-use App\Services\PocketExpenseService;
+use App\Models\PocketExpense;
+use App\Models\PocketExpenseMetadata;
+use App\Models\OptPocketExpenseType;
+use App\Models\PocketExpenseSourceClientConfig;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -12,15 +15,15 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Carbon\Carbon;
 use Exception;
 
 /**
- * Process Expense Upload Job
+ * ProcessExpenseUpload Job
  * 
- * Background job for processing validated CSV upload data into main expense records.
- * Handles batch processing with proper error handling and status updates.
- * 
- * @property int $uploadId
+ * Background job for processing validated CSV data.
+ * Syncs expense data to main service in batches of 100 rows as per system constraints.
+ * Updates upload status throughout the processing workflow.
  */
 class ProcessExpenseUpload implements ShouldQueue
 {
@@ -34,20 +37,6 @@ class ProcessExpenseUpload implements ShouldQueue
     public int $uploadId;
 
     /**
-     * The number of times the job may be attempted.
-     *
-     * @var int
-     */
-    public int $tries = 3;
-
-    /**
-     * The number of seconds the job can run before timing out.
-     *
-     * @var int
-     */
-    public int $timeout = 300;
-
-    /**
      * Create a new job instance.
      *
      * @param int $uploadId
@@ -55,6 +44,7 @@ class ProcessExpenseUpload implements ShouldQueue
     public function __construct(int $uploadId)
     {
         $this->uploadId = $uploadId;
+        $this->onQueue('expense-processing'); // Background job queue name as per system constraints
     }
 
     /**
@@ -65,9 +55,8 @@ class ProcessExpenseUpload implements ShouldQueue
     public function handle(): void
     {
         try {
-            Log::info('Starting expense upload processing', ['upload_id' => $this->uploadId]);
-            
-            // Load the upload record
+            Log::info('ProcessExpenseUpload job started', ['upload_id' => $this->uploadId]);
+
             $upload = PocketExpenseFileUpload::find($this->uploadId);
             
             if (!$upload) {
@@ -78,363 +67,303 @@ class ProcessExpenseUpload implements ShouldQueue
             // Update status to processing
             $this->updateUploadStatus('processing');
 
-            // Get all pending upload data for this upload
-            $pendingData = PocketExpenseUploadsData::where('upload_id', $this->uploadId)
+            // Get all pending upload data records
+            $uploadDataRecords = PocketExpenseUploadsData::where('upload_id', $this->uploadId)
                 ->where('status', 'pending')
+                ->orderBy('line_number')
                 ->get();
 
-            if ($pendingData->isEmpty()) {
-                Log::warning('No pending data found for upload', ['upload_id' => $this->uploadId]);
+            if ($uploadDataRecords->isEmpty()) {
+                Log::warning('No pending upload data found', ['upload_id' => $this->uploadId]);
                 $this->updateUploadStatus('completed');
                 return;
             }
 
-            // Process expenses in batches
-            $this->syncExpensesToMainService($pendingData);
+            // Process in batches of 100 as per system constraints
+            $batchSize = 100;
+            $batches = $uploadDataRecords->chunk($batchSize);
+            $totalProcessed = 0;
+            $totalFailed = 0;
 
-            // Update upload status to completed
-            $this->updateUploadStatus('completed');
-            
-            // Mark upload as processed
-            $upload->processed_at = now();
-            $upload->save();
+            foreach ($batches as $batch) {
+                try {
+                    $result = $this->syncExpenseBatch($batch->toArray());
+                    $totalProcessed += $result['processed'];
+                    $totalFailed += $result['failed'];
 
-            // Notify user of completion
-            $this->notifyUser();
+                    Log::info('Batch processed', [
+                        'upload_id' => $this->uploadId,
+                        'batch_size' => $batch->count(),
+                        'processed' => $result['processed'],
+                        'failed' => $result['failed']
+                    ]);
+                } catch (Exception $e) {
+                    Log::error('Batch processing failed', [
+                        'upload_id' => $this->uploadId,
+                        'batch_size' => $batch->count(),
+                        'error' => $e->getMessage()
+                    ]);
 
-            Log::info('Expense upload processing completed successfully', [
+                    // Mark all records in this batch as failed
+                    foreach ($batch as $record) {
+                        $record->update(['status' => 'failed']);
+                    }
+                    $totalFailed += $batch->count();
+                }
+            }
+
+            // Determine final status
+            if ($totalFailed === 0) {
+                $this->updateUploadStatus('completed');
+            } else if ($totalProcessed === 0) {
+                $this->updateUploadStatus('failed');
+            } else {
+                $this->updateUploadStatus('sync_failed');
+            }
+
+            Log::info('ProcessExpenseUpload job completed', [
                 'upload_id' => $this->uploadId,
-                'processed_count' => $pendingData->count()
+                'total_processed' => $totalProcessed,
+                'total_failed' => $totalFailed
             ]);
 
+            // TODO: Send notification about upload completion
+            // Decision needed on notification channel preference (in-app, email, push, or combination)
+
         } catch (Exception $e) {
-            Log::error('Error processing expense upload', [
+            Log::error('ProcessExpenseUpload job failed', [
                 'upload_id' => $this->uploadId,
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
 
-            // Update upload status to failed
             $this->updateUploadStatus('failed');
-            
-            // Re-throw to trigger job failure handling
-            throw $e;
+            throw $e; // Re-throw to trigger job failure handling
         }
     }
 
     /**
-     * Sync validated expenses to main service.
-     * Processes expenses in batches to avoid memory issues.
+     * Sync expense batch to create actual expense records.
+     * Processes expenses in batches with transaction safety.
      *
-     * @param \Illuminate\Support\Collection $expenses
-     * @return void
+     * @param array $expenses
+     * @return array ['processed' => int, 'failed' => int]
      */
-    private function syncExpensesToMainService(\Illuminate\Support\Collection $expenses): void
+    public function syncExpenseBatch(array $expenses): array
     {
-        $batchSize = 100;
-        $processed = 0;
-        $failed = 0;
+        $processedCount = 0;
+        $failedCount = 0;
 
-        Log::info('Starting expense sync to main service', [
-            'upload_id' => $this->uploadId,
-            'total_expenses' => $expenses->count(),
-            'batch_size' => $batchSize
-        ]);
-
-        // Process expenses in batches
-        $expenses->chunk($batchSize)->each(function ($batch) use (&$processed, &$failed) {
+        foreach ($expenses as $expenseData) {
             try {
-                DB::transaction(function () use ($batch, &$processed, &$failed) {
-                    foreach ($batch as $uploadData) {
-                        try {
-                            $this->processIndividualExpense($uploadData);
-                            $processed++;
-                            
-                            // Mark upload data as processed
-                            $uploadData->status = 'processed';
-                            $uploadData->save();
-                            
-                        } catch (Exception $e) {
-                            $failed++;
-                            Log::error('Failed to process individual expense', [
-                                'upload_id' => $this->uploadId,
-                                'line_number' => $uploadData->line_number,
-                                'error' => $e->getMessage()
-                            ]);
-                            
-                            // Mark upload data as failed
-                            $uploadData->status = 'failed';
-                            $uploadData->save();
-                        }
+                DB::transaction(function () use ($expenseData, &$processedCount) {
+                    // Mark as processing
+                    PocketExpenseUploadsData::where('id', $expenseData['id'])
+                        ->update(['status' => 'processing']);
+
+                    $csvData = $expenseData['expense_data'];
+                    $upload = PocketExpenseFileUpload::find($this->uploadId);
+
+                    // Convert CSV data to expense record format
+                    $expenseRecord = $this->convertCSVToExpenseData($csvData, $upload);
+
+                    // Create the pocket expense record
+                    $expense = PocketExpense::create($expenseRecord);
+
+                    // Create metadata if needed (source information)
+                    if (!empty($csvData['Source']) && $csvData['Source'] !== '') {
+                        $this->createExpenseSourceMetadata($expense, $csvData, $upload->client_id);
                     }
+
+                    // Create source note metadata if Other source is used
+                    if (!empty($csvData['Source Note']) && $csvData['Source Note'] !== '') {
+                        $this->createExpenseSourceNoteMetadata($expense, $csvData['Source Note']);
+                    }
+
+                    // Mark as synced
+                    PocketExpenseUploadsData::where('id', $expenseData['id'])
+                        ->update(['status' => 'synced']);
+
+                    $processedCount++;
+
+                    Log::debug('Expense synced successfully', [
+                        'upload_id' => $this->uploadId,
+                        'upload_data_id' => $expenseData['id'],
+                        'expense_id' => $expense->id,
+                        'line_number' => $expenseData['line_number']
+                    ]);
                 });
-                
-                Log::info('Processed batch successfully', [
-                    'upload_id' => $this->uploadId,
-                    'batch_size' => $batch->count(),
-                    'total_processed' => $processed,
-                    'total_failed' => $failed
-                ]);
-                
             } catch (Exception $e) {
-                Log::error('Batch processing failed', [
+                // Mark as failed
+                PocketExpenseUploadsData::where('id', $expenseData['id'])
+                    ->update(['status' => 'failed']);
+
+                $failedCount++;
+
+                Log::error('Expense sync failed', [
                     'upload_id' => $this->uploadId,
+                    'upload_data_id' => $expenseData['id'],
+                    'line_number' => $expenseData['line_number'],
                     'error' => $e->getMessage()
                 ]);
-                
-                // Mark entire batch as failed
-                $batch->each(function ($uploadData) {
-                    $uploadData->status = 'failed';
-                    $uploadData->save();
-                });
-                
-                $failed += $batch->count();
             }
-        });
-
-        Log::info('Expense sync completed', [
-            'upload_id' => $this->uploadId,
-            'processed' => $processed,
-            'failed' => $failed
-        ]);
-    }
-
-    /**
-     * Process an individual expense record.
-     *
-     * @param \App\Models\PocketExpenseUploadsData $uploadData
-     * @return void
-     * @throws \Exception
-     */
-    private function processIndividualExpense(PocketExpenseUploadsData $uploadData): void
-    {
-        $expenseData = json_decode($uploadData->expense_data, true);
-        
-        if (!$expenseData) {
-            throw new Exception('Invalid expense data JSON');
         }
-
-        // Get upload record to extract user and client information
-        $upload = $uploadData->upload;
-        
-        if (!$upload) {
-            throw new Exception('Upload record not found');
-        }
-
-        // Transform CSV data to expense creation format
-        $expenseCreateData = $this->transformCSVDataToExpenseData($expenseData, $upload);
-
-        // Create expense using PocketExpenseService
-        $service = app(PocketExpenseService::class);
-        $expense = $service->create($expenseCreateData);
-
-        Log::debug('Individual expense processed successfully', [
-            'upload_id' => $this->uploadId,
-            'line_number' => $uploadData->line_number,
-            'expense_id' => $expense->id
-        ]);
-    }
-
-    /**
-     * Transform CSV data to expense creation format.
-     *
-     * @param array $csvData
-     * @param \App\Models\PocketExpenseFileUpload $upload
-     * @return array
-     */
-    private function transformCSVDataToExpenseData(array $csvData, PocketExpenseFileUpload $upload): array
-    {
-        // TODO: Implement proper date parsing from DD/MM/YYYY format to database format
-        $date = $this->parseCSVDate($csvData['date'] ?? '');
-
-        // TODO: Implement expense type lookup by name to get ID
-        $expenseTypeId = $this->getExpenseTypeIdByName($csvData['expense_type'] ?? '');
-
-        // TODO: Implement amount sign adjustment based on expense type
-        $amount = $this->adjustAmountByExpenseType($csvData['amount'] ?? 0, $csvData['expense_type'] ?? '');
-
-        // TODO: Implement VAT amount calculation if VAT percentage is provided
-        $vatAmount = $this->calculateVATAmount($csvData['vat_percent'] ?? null, $amount);
 
         return [
-            'user_id' => $upload->user_id,
-            'client_id' => $upload->client_id,
-            'date' => $date,
-            'merchant_name' => substr($csvData['merchant_name'] ?? '', 0, 180), // Ensure VARCHAR(180) limit
-            'merchant_description' => $csvData['description'] ?? null,
-            'expense_type' => $expenseTypeId,
-            'currency' => $csvData['currency_code'] ?? 'USD',
-            'amount' => $amount,
-            'merchant_address' => $csvData['merchant_address'] ?? null,
-            'vat_amount' => $vatAmount,
-            'notes' => $csvData['notes'] ?? null,
-            'status' => 'submitted', // Default status for batch uploaded expenses
-            'created_by_user_id' => $upload->created_by_user_id,
-            // TODO: Add metadata handling for source, source_note, etc.
+            'processed' => $processedCount,
+            'failed' => $failedCount
         ];
     }
 
     /**
-     * Parse CSV date format (DD/MM/YYYY) to database format.
-     *
-     * @param string $dateString
-     * @return string
-     */
-    private function parseCSVDate(string $dateString): string
-    {
-        // TODO: Implement proper date parsing with validation
-        // Expected format: DD/MM/YYYY or DD-MM-YYYY
-        try {
-            $date = \DateTime::createFromFormat('d/m/Y', $dateString);
-            if (!$date) {
-                $date = \DateTime::createFromFormat('d-m-Y', $dateString);
-            }
-            if (!$date) {
-                throw new Exception('Invalid date format');
-            }
-            return $date->format('Y-m-d');
-        } catch (Exception $e) {
-            Log::error('Date parsing failed', ['date' => $dateString, 'error' => $e->getMessage()]);
-            throw new Exception('Invalid date format: ' . $dateString);
-        }
-    }
-
-    /**
-     * Get expense type ID by name.
-     *
-     * @param string $expenseTypeName
-     * @return int
-     * @throws \Exception
-     */
-    private function getExpenseTypeIdByName(string $expenseTypeName): int
-    {
-        // TODO: Implement expense type lookup with caching
-        // Should query opt_pocket_expense_type table by option field
-        $expenseType = DB::table('opt_pocket_expense_type')
-            ->where('option', $expenseTypeName)
-            ->first();
-
-        if (!$expenseType) {
-            throw new Exception('Invalid expense type: ' . $expenseTypeName);
-        }
-
-        return $expenseType->id;
-    }
-
-    /**
-     * Adjust amount sign based on expense type.
-     *
-     * @param float $amount
-     * @param string $expenseTypeName
-     * @return float
-     */
-    private function adjustAmountByExpenseType(float $amount, string $expenseTypeName): float
-    {
-        // TODO: Implement amount sign logic based on expense type
-        // Refund from Merchant = positive, others = negative
-        $expenseType = DB::table('opt_pocket_expense_type')
-            ->where('option', $expenseTypeName)
-            ->first();
-
-        if ($expenseType && $expenseType->amount_sign === 'positive') {
-            return abs($amount);
-        } else {
-            return -abs($amount);
-        }
-    }
-
-    /**
-     * Calculate VAT amount from percentage.
-     *
-     * @param string|null $vatPercent
-     * @param float $amount
-     * @return float|null
-     */
-    private function calculateVATAmount(?string $vatPercent, float $amount): ?float
-    {
-        if (empty($vatPercent)) {
-            return null;
-        }
-
-        // TODO: Implement VAT calculation
-        // Strip % sign if present and calculate VAT amount
-        $percent = floatval(str_replace('%', '', $vatPercent));
-        
-        if ($percent < 0 || $percent > 100) {
-            return null;
-        }
-
-        return abs($amount) * ($percent / 100);
-    }
-
-    /**
-     * Update upload status.
+     * Update upload status with timestamp tracking.
      *
      * @param string $status
      * @return void
      */
-    private function updateUploadStatus(string $status): void
+    public function updateUploadStatus(string $status): void
     {
-        try {
-            DB::table('pocket_expense_file_uploads')
-                ->where('id', $this->uploadId)
-                ->update([
-                    'status' => $status,
-                    'updated_at' => now()
-                ]);
+        $updates = ['status' => $status];
 
-            Log::info('Upload status updated', [
-                'upload_id' => $this->uploadId,
-                'status' => $status
-            ]);
-        } catch (Exception $e) {
-            Log::error('Failed to update upload status', [
-                'upload_id' => $this->uploadId,
-                'status' => $status,
-                'error' => $e->getMessage()
+        // Set processed_at timestamp when completed or failed
+        if (in_array($status, ['completed', 'failed', 'sync_failed'])) {
+            $updates['processed_at'] = now();
+        }
+
+        PocketExpenseFileUpload::where('id', $this->uploadId)->update($updates);
+
+        Log::info('Upload status updated', [
+            'upload_id' => $this->uploadId,
+            'status' => $status
+        ]);
+    }
+
+    /**
+     * Convert CSV row data to PocketExpense model attributes.
+     *
+     * @param array $csvData
+     * @param PocketExpenseFileUpload $upload
+     * @return array
+     */
+    private function convertCSVToExpenseData(array $csvData, PocketExpenseFileUpload $upload): array
+    {
+        // Parse date from DD/MM/YYYY format
+        $date = Carbon::createFromFormat('d/m/Y', $csvData['Date'])->format('Y-m-d');
+
+        // Get expense type ID
+        $expenseType = OptPocketExpenseType::where('option', $csvData['Expense Type'])->first();
+
+        // Apply correct amount sign based on expense type
+        $amount = abs((float) $csvData['Amount']);
+        if ($expenseType && $expenseType->amount_sign === 'negative') {
+            $amount = -$amount;
+        }
+
+        // Parse VAT percentage
+        $vatAmount = null;
+        if (!empty($csvData['VAT %']) && $csvData['VAT %'] !== '') {
+            $vatPercentage = (float) str_replace('%', '', $csvData['VAT %']);
+            $vatAmount = abs($amount) * ($vatPercentage / 100);
+        }
+
+        return [
+            'uuid' => \Illuminate\Support\Str::uuid()->toString(),
+            'user_id' => $upload->user_id,
+            'client_id' => $upload->client_id,
+            'date' => $date,
+            'merchant_name' => trim($csvData['Merchant Name']),
+            'merchant_description' => !empty($csvData['Description']) ? trim($csvData['Description']) : null,
+            'expense_type' => $expenseType->id,
+            'currency' => $csvData['Currency Code'],
+            'amount' => $amount,
+            'merchant_address' => !empty($csvData['Merchant Address']) ? trim($csvData['Merchant Address']) : null,
+            'vat_amount' => $vatAmount,
+            'notes' => !empty($csvData['Notes']) ? trim($csvData['Notes']) : null,
+            'status' => 'submitted', // Default status for CSV uploads
+            'created_by_user_id' => $upload->created_by_user_id,
+            'updated_by_user_id' => null,
+            'approved_by_user_id' => null,
+            'deleted' => 0,
+            'delete_time' => null,
+            'create_time' => now(),
+            'update_time' => now(),
+        ];
+    }
+
+    /**
+     * Create expense source metadata for the expense.
+     *
+     * @param PocketExpense $expense
+     * @param array $csvData
+     * @param int $clientId
+     * @return void
+     */
+    private function createExpenseSourceMetadata(PocketExpense $expense, array $csvData, int $clientId): void
+    {
+        $sourceName = $csvData['Source'];
+
+        // Find the expense source
+        $source = PocketExpenseSourceClientConfig::availableForClient($clientId)
+            ->where('name', $sourceName)
+            ->first();
+
+        if ($source) {
+            PocketExpenseMetadata::create([
+                'pocket_expense_id' => $expense->id,
+                'metadata_type' => 'expense_source',
+                'expense_source_id' => $source->id,
+                'transaction_category_id' => null,
+                'tracking_code_id' => null,
+                'project_id' => null,
+                'file_store_id' => null,
+                'additional_field_id' => null,
+                'user_id' => null,
+                'details_json' => null,
+                'deleted' => 0,
+                'delete_time' => null,
+                'create_time' => now(),
+                'update_time' => now(),
             ]);
         }
     }
 
     /**
-     * Notify user of processing completion.
+     * Create source note metadata for 'Other' source type.
      *
+     * @param PocketExpense $expense
+     * @param string $sourceNote
      * @return void
      */
-    private function notifyUser(): void
+    private function createExpenseSourceNoteMetadata(PocketExpense $expense, string $sourceNote): void
     {
-        try {
-            // TODO: Implement user notification
-            // The notification infrastructure existence is marked as UNKNOWN
-            // This could be in-app notifications, email, push notifications, or a combination
-            // For now, just log the notification intent
-            
-            Log::info('User notification should be sent', [
-                'upload_id' => $this->uploadId,
-                'message' => 'Expense upload processing completed successfully'
-            ]);
-
-            // TODO: Implement actual notification delivery based on platform preferences
-            // Examples:
-            // - app(NotificationService::class)->notifyUploadComplete($upload);
-            // - Mail::to($user)->send(new ExpenseUploadCompleted($upload));
-            // - Notification::send($user, new ExpenseUploadCompleted($upload));
-            
-        } catch (Exception $e) {
-            Log::error('Failed to send user notification', [
-                'upload_id' => $this->uploadId,
-                'error' => $e->getMessage()
-            ]);
-        }
+        PocketExpenseMetadata::create([
+            'pocket_expense_id' => $expense->id,
+            'metadata_type' => 'expense_source',
+            'expense_source_id' => null,
+            'transaction_category_id' => null,
+            'tracking_code_id' => null,
+            'project_id' => null,
+            'file_store_id' => null,
+            'additional_field_id' => null,
+            'user_id' => null,
+            'details_json' => [
+                'source_note' => trim($sourceNote),
+                'source_type' => 'other'
+            ],
+            'deleted' => 0,
+            'delete_time' => null,
+            'create_time' => now(),
+            'update_time' => now(),
+        ]);
     }
 
     /**
-     * Handle a job failure.
+     * Handle job failure.
      *
-     * @param \Throwable $exception
+     * @param Exception $exception
      * @return void
      */
-    public function failed(\Throwable $exception): void
+    public function failed(Exception $exception): void
     {
         Log::error('ProcessExpenseUpload job failed permanently', [
             'upload_id' => $this->uploadId,
@@ -442,23 +371,9 @@ class ProcessExpenseUpload implements ShouldQueue
             'trace' => $exception->getTraceAsString()
         ]);
 
-        // Update upload status to failed
         $this->updateUploadStatus('failed');
 
-        // TODO: Notify user of processing failure
-        Log::info('User should be notified of processing failure', [
-            'upload_id' => $this->uploadId,
-            'error' => 'Expense upload processing failed after all retry attempts'
-        ]);
-    }
-
-    /**
-     * Get the tags that should be assigned to the job.
-     *
-     * @return array<string>
-     */
-    public function tags(): array
-    {
-        return ['expense-upload', 'upload:' . $this->uploadId];
+        // TODO: Send failure notification to admin user
+        // Decision needed on notification channel preference
     }
 }

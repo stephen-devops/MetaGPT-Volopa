@@ -2,33 +2,37 @@
 
 namespace App\Http\Requests;
 
-use App\Models\PocketExpense;
-use App\Policies\PocketExpensePolicy;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
+use App\Models\PocketExpense;
+use App\Models\OptPocketExpenseType;
+use App\Policies\PocketExpensePolicy;
+use Carbon\Carbon;
 
 /**
- * Update Pocket Expense Request
+ * UpdatePocketExpenseRequest
  * 
- * Form request for validating pocket expense updates with authorization.
- * Includes validation for expense data, client scoping, and permission checks.
- * Enforces system constraints including date limits, currency validation, and amount sign logic.
+ * Form request validation for updating PocketExpense records.
+ * Handles validation rules, authorization, and data preparation for expense updates.
+ * All fields are optional for updates to allow partial updates.
  */
 class UpdatePocketExpenseRequest extends FormRequest
 {
     /**
      * Determine if the user is authorized to make this request.
-     * Uses PocketExpensePolicy to check update permissions.
+     * Uses PocketExpensePolicy to check update authorization.
+     *
+     * @return bool
      */
     public function authorize(): bool
     {
-        // Get the expense being updated from route parameter
         $expense = $this->route('pocket_expense') ?? $this->route('id');
         
         if (!$expense instanceof PocketExpense) {
-            // If we have an ID, try to find the expense
-            if (is_numeric($expense)) {
-                $expense = PocketExpense::find($expense);
+            // If expense ID is provided as parameter, fetch the expense
+            $expenseId = is_numeric($expense) ? $expense : null;
+            if ($expenseId) {
+                $expense = PocketExpense::find($expenseId);
             }
         }
         
@@ -36,7 +40,6 @@ class UpdatePocketExpenseRequest extends FormRequest
             return false;
         }
         
-        // Use policy to check if user can update this expense
         return $this->user()->can('update', $expense);
     }
 
@@ -47,330 +50,282 @@ class UpdatePocketExpenseRequest extends FormRequest
      */
     public function rules(): array
     {
-        $rules = [
+        $expense = $this->route('pocket_expense') ?? $this->route('id');
+        $expenseId = null;
+        
+        if ($expense instanceof PocketExpense) {
+            $expenseId = $expense->id;
+        } elseif (is_numeric($expense)) {
+            $expenseId = $expense;
+        }
+
+        return [
+            // Optional date field - must not be older than 3 years as per system constraints
             'date' => [
                 'sometimes',
                 'required',
+                'date',
                 'date_format:Y-m-d',
-                'after_or_equal:' . now()->subYears(3)->format('Y-m-d'), // Not older than 3 years constraint
-                'before_or_equal:' . now()->format('Y-m-d'), // Cannot be future date
+                'after_or_equal:' . Carbon::now()->subYears(3)->format('Y-m-d'),
+                'before_or_equal:' . Carbon::now()->format('Y-m-d'),
             ],
+            
+            // Optional merchant name with max length as per DB definition (VARCHAR 180)
             'merchant_name' => [
                 'sometimes',
                 'required',
                 'string',
-                'max:180', // VARCHAR(180) DB constraint
+                'max:180',
                 'min:1',
             ],
+            
+            // Optional merchant description
             'merchant_description' => [
                 'sometimes',
                 'nullable',
                 'string',
-                'max:65535', // TEXT field limit
+                'max:500',
             ],
+            
+            // Optional expense type - must exist in opt_pocket_expense_type table
             'expense_type' => [
                 'sometimes',
                 'required',
                 'integer',
                 'exists:opt_pocket_expense_type,id',
             ],
+            
+            // Optional currency - must be 3-letter ISO code
             'currency' => [
                 'sometimes',
                 'required',
                 'string',
-                'size:3', // Exactly 3 characters for ISO currency codes
-                'regex:/^[A-Z]{3}$/', // Only uppercase letters
-                // TODO: Add validation against platform allowed currency list
+                'size:3',
+                'regex:/^[A-Z]{3}$/',
+                // TODO: Add validation against allowed currency list from platform
             ],
+            
+            // Optional amount - decimal with 2 decimal places, can be positive or negative
             'amount' => [
                 'sometimes',
                 'required',
                 'numeric',
-                'between:-999999999999.99,999999999999.99', // DECIMAL(14,2) constraint
-                'not_in:0', // Amount cannot be zero
+                'between:-999999999999.99,999999999999.99',
             ],
+            
+            // Optional merchant address
             'merchant_address' => [
                 'sometimes',
                 'nullable',
                 'string',
-                'max:65535', // TEXT field limit
+                'max:500',
             ],
+            
+            // Optional VAT amount - must be between 0-100 if provided
             'vat_amount' => [
                 'sometimes',
                 'nullable',
                 'numeric',
-                'between:0,999999.99', // DECIMAL(8,2) constraint, VAT should be positive
+                'between:0,999999999999.99',
             ],
+            
+            // Optional notes with length limit and trimming
             'notes' => [
                 'sometimes',
                 'nullable',
                 'string',
-                'max:65535', // TEXT field limit
+                'max:1000',
             ],
+            
+            // Optional status - must be valid enum value
             'status' => [
                 'sometimes',
                 'required',
                 'string',
-                Rule::in(['draft', 'submitted', 'approved', 'rejected']), // Authoritative status enum values
+                'in:draft,submitted,approved,rejected',
             ],
         ];
-
-        return $rules;
     }
 
     /**
-     * Get the error messages for the defined validation rules.
+     * Get custom validation messages.
      *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
-            'date.after_or_equal' => 'The date cannot be older than 3 years from today.',
+            'date.after_or_equal' => 'The date must not be older than 3 years.',
             'date.before_or_equal' => 'The date cannot be in the future.',
             'date.date_format' => 'The date must be in YYYY-MM-DD format.',
-            'merchant_name.max' => 'The merchant name must not exceed 180 characters.',
+            'merchant_name.max' => 'The merchant name may not be greater than 180 characters.',
             'merchant_name.required' => 'The merchant name is required.',
-            'merchant_name.min' => 'The merchant name must not be empty.',
             'expense_type.exists' => 'The selected expense type is invalid.',
-            'expense_type.required' => 'The expense type is required.',
             'currency.size' => 'The currency code must be exactly 3 characters.',
-            'currency.regex' => 'The currency code must contain only uppercase letters.',
-            'currency.required' => 'The currency code is required.',
-            'amount.required' => 'The amount is required.',
-            'amount.numeric' => 'The amount must be a valid number.',
-            'amount.between' => 'The amount is outside the allowed range.',
-            'amount.not_in' => 'The amount cannot be zero.',
-            'vat_amount.numeric' => 'The VAT amount must be a valid number.',
-            'vat_amount.between' => 'The VAT amount must be between 0 and 999999.99.',
+            'currency.regex' => 'The currency code must be 3 uppercase letters.',
+            'amount.between' => 'The amount must be a valid decimal number.',
+            'vat_amount.between' => 'The VAT amount must be between 0 and 999999999999.99.',
             'status.in' => 'The status must be one of: draft, submitted, approved, rejected.',
+            'notes.max' => 'The notes may not be greater than 1000 characters.',
         ];
     }
 
     /**
-     * Get the custom attributes for validator errors.
+     * Get custom attributes for validator errors.
      *
      * @return array<string, string>
      */
     public function attributes(): array
     {
         return [
-            'date' => 'expense date',
+            'expense_type' => 'expense type',
             'merchant_name' => 'merchant name',
             'merchant_description' => 'merchant description',
-            'expense_type' => 'expense type',
-            'currency' => 'currency code',
-            'amount' => 'amount',
             'merchant_address' => 'merchant address',
             'vat_amount' => 'VAT amount',
-            'notes' => 'notes',
-            'status' => 'status',
         ];
-    }
-
-    /**
-     * Configure the validator instance.
-     *
-     * @param \Illuminate\Validation\Validator $validator
-     */
-    public function withValidator($validator): void
-    {
-        $validator->after(function ($validator) {
-            // Additional validation logic that requires access to multiple fields
-            
-            // Validate client_id scoping - expense must belong to authenticated user's client
-            $expense = $this->getExpenseFromRoute();
-            if ($expense && $this->user()) {
-                // TODO: Implement client scoping validation
-                // Ensure expense belongs to user's client context
-                // This requires User model to have client relationship or client_id access
-            }
-            
-            // Validate amount sign based on expense type
-            if ($this->has(['amount', 'expense_type'])) {
-                $this->validateAmountSign($validator);
-            }
-            
-            // Validate status transition rules
-            if ($this->has('status') && $expense) {
-                $this->validateStatusTransition($validator, $expense);
-            }
-        });
-    }
-
-    /**
-     * Validate amount sign based on expense type.
-     *
-     * @param \Illuminate\Validation\Validator $validator
-     */
-    protected function validateAmountSign($validator): void
-    {
-        $expenseTypeId = $this->input('expense_type');
-        $amount = (float) $this->input('amount');
-        
-        // TODO: Look up expense type to determine expected amount sign
-        // This requires OptPocketExpenseType model query
-        // Refund types should have positive amounts, others negative
-        // For now, adding placeholder validation
-        
-        // Example validation logic (needs actual implementation):
-        // $expenseType = OptPocketExpenseType::find($expenseTypeId);
-        // if ($expenseType) {
-        //     if ($expenseType->amount_sign === 'positive' && $amount < 0) {
-        //         $validator->errors()->add('amount', 'Amount should be positive for this expense type.');
-        //     }
-        //     if ($expenseType->amount_sign === 'negative' && $amount > 0) {
-        //         $validator->errors()->add('amount', 'Amount should be negative for this expense type.');
-        //     }
-        // }
-    }
-
-    /**
-     * Validate status transition rules.
-     *
-     * @param \Illuminate\Validation\Validator $validator
-     * @param PocketExpense $expense
-     */
-    protected function validateStatusTransition($validator, PocketExpense $expense): void
-    {
-        $newStatus = $this->input('status');
-        $currentStatus = $expense->status;
-        
-        // Define allowed status transitions
-        $allowedTransitions = [
-            'draft' => ['submitted'], // Draft can only go to submitted
-            'submitted' => ['approved', 'rejected'], // Submitted can go to approved or rejected
-            'approved' => [], // Approved is final
-            'rejected' => [], // Rejected is final
-        ];
-        
-        if (!in_array($newStatus, $allowedTransitions[$currentStatus] ?? [])) {
-            $validator->errors()->add('status', "Cannot transition from {$currentStatus} to {$newStatus}.");
-        }
-        
-        // Additional authorization checks for status transitions
-        if ($newStatus === 'approved' && !$this->user()->can('approve', $expense)) {
-            $validator->errors()->add('status', 'You are not authorized to approve expenses.');
-        }
-    }
-
-    /**
-     * Get the expense model from route parameter.
-     *
-     * @return PocketExpense|null
-     */
-    protected function getExpenseFromRoute(): ?PocketExpense
-    {
-        $expense = $this->route('pocket_expense') ?? $this->route('id');
-        
-        if ($expense instanceof PocketExpense) {
-            return $expense;
-        }
-        
-        if (is_numeric($expense)) {
-            return PocketExpense::find($expense);
-        }
-        
-        return null;
     }
 
     /**
      * Prepare the data for validation.
-     * Clean and format input data before validation.
+     * Trim notes and apply other data preparation as per system constraints.
+     *
+     * @return void
      */
     protected function prepareForValidation(): void
     {
-        $input = [];
+        $input = $this->all();
         
-        // Clean merchant name - trim whitespace
-        if ($this->has('merchant_name')) {
-            $input['merchant_name'] = trim($this->input('merchant_name'));
-        }
-        
-        // Clean notes - trim whitespace and prevent SQL injection
-        if ($this->has('notes')) {
-            $notes = trim($this->input('notes'));
-            $input['notes'] = $notes === '' ? null : $notes;
-        }
-        
-        // Clean merchant description
-        if ($this->has('merchant_description')) {
-            $description = trim($this->input('merchant_description'));
-            $input['merchant_description'] = $description === '' ? null : $description;
-        }
-        
-        // Clean merchant address
-        if ($this->has('merchant_address')) {
-            $address = trim($this->input('merchant_address'));
-            $input['merchant_address'] = $address === '' ? null : $address;
-        }
-        
-        // Format currency code to uppercase
-        if ($this->has('currency')) {
-            $input['currency'] = strtoupper(trim($this->input('currency')));
-        }
-        
-        // Clean amount - ensure numeric format
-        if ($this->has('amount')) {
-            $amount = $this->input('amount');
-            if (is_string($amount)) {
-                // Remove any non-numeric characters except decimal point and minus sign
-                $amount = preg_replace('/[^0-9.-]/', '', $amount);
+        // Trim notes to prevent SQL injection and clean data
+        if (isset($input['notes'])) {
+            $input['notes'] = trim($input['notes']);
+            // Set to null if empty after trimming
+            if ($input['notes'] === '') {
+                $input['notes'] = null;
             }
-            $input['amount'] = $amount;
         }
         
-        // Clean VAT amount
-        if ($this->has('vat_amount')) {
-            $vatAmount = $this->input('vat_amount');
-            if (is_string($vatAmount)) {
-                // Remove percentage sign and other non-numeric characters
-                $vatAmount = preg_replace('/[^0-9.]/', '', $vatAmount);
+        // Trim merchant description
+        if (isset($input['merchant_description'])) {
+            $input['merchant_description'] = trim($input['merchant_description']);
+            if ($input['merchant_description'] === '') {
+                $input['merchant_description'] = null;
             }
-            $input['vat_amount'] = $vatAmount === '' ? null : $vatAmount;
         }
         
-        // Apply cleaned input
-        if (!empty($input)) {
-            $this->merge($input);
+        // Trim merchant address
+        if (isset($input['merchant_address'])) {
+            $input['merchant_address'] = trim($input['merchant_address']);
+            if ($input['merchant_address'] === '') {
+                $input['merchant_address'] = null;
+            }
         }
+        
+        // Trim and clean merchant name
+        if (isset($input['merchant_name'])) {
+            $input['merchant_name'] = trim($input['merchant_name']);
+        }
+        
+        // Ensure currency is uppercase
+        if (isset($input['currency'])) {
+            $input['currency'] = strtoupper(trim($input['currency']));
+        }
+        
+        $this->replace($input);
     }
 
     /**
-     * Get validated data with additional processing.
-     * Ensures only updatable fields are returned.
+     * Get the validated data with additional processing.
+     * Adds system fields that should not be mass-assigned directly.
      *
-     * @param string|null $key
-     * @param mixed $default
-     * @return array|mixed
+     * @return array
      */
-    public function validated($key = null, $default = null)
+    public function getValidatedData(): array
     {
-        $validated = parent::validated($key, $default);
+        $validated = $this->validated();
         
-        if ($key !== null) {
-            return $validated;
-        }
-        
-        // Remove system fields that should not be mass assigned during updates
-        $excludeFields = [
-            'id',
-            'uuid', 
-            'user_id', 
-            'client_id', 
-            'created_by_user_id',
-            'create_time',
-            'deleted',
-            'delete_time'
-        ];
-        
-        foreach ($excludeFields as $field) {
-            unset($validated[$field]);
-        }
-        
-        // Add system fields that should be set during update
-        $validated['updated_by_user_id'] = $this->user()->id ?? null;
+        // Add system fields for audit trail
+        $validated['updated_by_user_id'] = $this->user()->id;
         
         return $validated;
+    }
+
+    /**
+     * Handle a failed validation attempt.
+     * Customize the response format for API consistency.
+     *
+     * @param \Illuminate\Contracts\Validation\Validator $validator
+     * @return void
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    protected function failedValidation(\Illuminate\Contracts\Validation\Validator $validator): void
+    {
+        throw new \Illuminate\Validation\ValidationException($validator, response()->json([
+            'success' => false,
+            'message' => 'Validation failed',
+            'errors' => $validator->errors()
+        ], 422));
+    }
+
+    /**
+     * Handle a failed authorization attempt.
+     *
+     * @return void
+     *
+     * @throws \Illuminate\Auth\Access\AuthorizationException
+     */
+    protected function failedAuthorization(): void
+    {
+        throw new \Illuminate\Auth\Access\AuthorizationException('You are not authorized to update this expense.');
+    }
+
+    /**
+     * Get data to be validated from the request.
+     * Only return fields that are allowed for update operations.
+     *
+     * @return array
+     */
+    public function validationData(): array
+    {
+        // Only allow specific fields to be updated, excluding system fields
+        $allowedFields = [
+            'date',
+            'merchant_name', 
+            'merchant_description',
+            'expense_type',
+            'currency',
+            'amount',
+            'merchant_address',
+            'vat_amount',
+            'notes',
+            'status',
+        ];
+        
+        return $this->only($allowedFields);
+    }
+
+    /**
+     * Determine if only status is being updated (for approval workflow).
+     *
+     * @return bool
+     */
+    public function isStatusOnlyUpdate(): bool
+    {
+        $input = $this->validationData();
+        return count($input) === 1 && isset($input['status']);
+    }
+
+    /**
+     * Check if the update includes financial data that requires recalculation.
+     *
+     * @return bool
+     */
+    public function requiresFXRecalculation(): bool
+    {
+        $financialFields = ['amount', 'currency', 'date'];
+        $input = array_keys($this->validationData());
+        
+        return !empty(array_intersect($financialFields, $input));
     }
 }

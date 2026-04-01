@@ -7,277 +7,226 @@ use App\Http\Requests\StoreUserFeaturePermissionRequest;
 use App\Http\Requests\UpdateUserFeaturePermissionRequest;
 use App\Http\Resources\UserFeaturePermissionResource;
 use App\Models\UserFeaturePermission;
-use App\Services\UserPermissionService;
+use App\Services\UserFeaturePermissionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 
 /**
- * User Feature Permission Controller
+ * UserFeaturePermissionController
  * 
- * Handles REST API operations for user feature permissions.
- * Implements RBAC with delegation capabilities for OOP Expense management.
- * All operations are scoped by client for multi-tenancy.
+ * REST API controller for user permission management with role-based access control.
+ * Supports delegation where admins can grant permissions to their managed users.
+ * All operations are scoped by client_id for multi-tenancy.
  */
 class UserFeaturePermissionController extends Controller
 {
-    /**
-     * The user permission service instance.
-     *
-     * @var UserPermissionService
-     */
-    protected UserPermissionService $userPermissionService;
+    protected UserFeaturePermissionService $userFeaturePermissionService;
 
     /**
-     * Create a new controller instance.
-     *
-     * @param UserPermissionService $userPermissionService
+     * Constructor - dependency injection for service layer
+     * 
+     * Note: OAuth2 middleware is applied at route group level, not in constructor
+     * as per system constraints.
      */
-    public function __construct(UserPermissionService $userPermissionService)
+    public function __construct(UserFeaturePermissionService $userFeaturePermissionService)
     {
-        $this->userPermissionService = $userPermissionService;
-        
-        // Apply OAuth2 authentication middleware per platform requirements
-        $this->middleware('auth:api');
+        $this->userFeaturePermissionService = $userFeaturePermissionService;
     }
 
     /**
-     * Display a paginated listing of user feature permissions.
-     *
+     * Display a listing of user feature permissions.
+     * 
      * @param Request $request
      * @return JsonResponse
      */
     public function index(Request $request): JsonResponse
     {
-        try {
-            // Get client_id from authenticated user context or request
-            // TODO: Implement proper client context extraction from authenticated user
-            $clientId = $request->input('client_id');
-            
-            if (!$clientId) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Client ID is required',
-                ], Response::HTTP_BAD_REQUEST);
-            }
+        // Authorize the action
+        $this->authorize('viewAny', UserFeaturePermission::class);
 
-            // Build query with filters and client scoping
-            $query = UserFeaturePermission::forClient($clientId)
-                ->with(['user', 'client', 'grantor', 'manager']);
+        // Validate required client_id parameter
+        $request->validate([
+            'client_id' => 'required|integer|exists:clients,id',
+            'user_id' => 'sometimes|integer|exists:users,id',
+            'feature_id' => 'sometimes|integer|exists:features,id',
+            'is_enabled' => 'sometimes|boolean',
+        ]);
 
-            // Apply optional filters
-            if ($request->has('user_id')) {
-                $query->where('user_id', $request->input('user_id'));
-            }
+        $clientId = (int) $request->input('client_id');
+        $userId = $request->input('user_id') ? (int) $request->input('user_id') : null;
+        $featureId = $request->input('feature_id') ? (int) $request->input('feature_id') : null;
+        $isEnabled = $request->input('is_enabled');
 
-            if ($request->has('feature_id')) {
-                $query->forFeature($request->input('feature_id'));
-            }
+        // Build query with filters
+        $query = UserFeaturePermission::query()
+            ->with(['user', 'client', 'feature', 'grantor', 'manager'])
+            ->forClient($clientId);
 
-            if ($request->has('manager_user_id')) {
-                $query->managedBy($request->input('manager_user_id'));
-            }
-
-            if ($request->has('is_enabled')) {
-                $isEnabled = filter_var($request->input('is_enabled'), FILTER_VALIDATE_BOOLEAN);
-                if ($isEnabled) {
-                    $query->enabled();
-                } else {
-                    $query->where('is_enabled', false);
-                }
-            }
-
-            // Apply pagination
-            $perPage = min($request->input('per_page', 15), 100); // Limit to prevent unbounded lists
-            $permissions = $query->paginate($perPage);
-
-            return response()->json([
-                'success' => true,
-                'data' => UserFeaturePermissionResource::collection($permissions),
-                'meta' => [
-                    'current_page' => $permissions->currentPage(),
-                    'last_page' => $permissions->lastPage(),
-                    'per_page' => $permissions->perPage(),
-                    'total' => $permissions->total(),
-                ],
-            ], Response::HTTP_OK);
-
-        } catch (\Exception $e) {
-            // TODO: Add proper observability logging
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve permissions',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+        if ($userId !== null) {
+            $query->where('user_id', $userId);
         }
+
+        if ($featureId !== null) {
+            $query->forFeature($featureId);
+        }
+
+        if ($isEnabled !== null) {
+            if ($isEnabled) {
+                $query->enabled();
+            } else {
+                $query->where('is_enabled', false);
+            }
+        }
+
+        // Apply authorization filters based on user role
+        // TODO: Implement role-based filtering based on authenticated user's permissions
+        // Primary Admin: see all permissions
+        // Admin: see only permissions they granted or for users they manage
+        // Business User/Card User: limited access based on specific grants
+
+        $permissions = $query->paginate(50); // Limit to prevent unbounded lists
+
+        return UserFeaturePermissionResource::collection($permissions)
+            ->response()
+            ->setStatusCode(200);
     }
 
     /**
      * Store a newly created user feature permission.
-     *
+     * 
      * @param StoreUserFeaturePermissionRequest $request
      * @return JsonResponse
      */
     public function store(StoreUserFeaturePermissionRequest $request): JsonResponse
     {
+        // Authorization is handled in the FormRequest
+        
+        // Extract validated data
+        $validatedData = $request->validated();
+        
+        // Get authenticated user ID (grantor)
+        $grantorId = auth()->id();
+        $validatedData['grantor_id'] = $grantorId;
+
         try {
-            // Extract validated data
-            $validatedData = $request->validated();
+            // Use service layer for business logic
+            $permission = $this->userFeaturePermissionService->createPermission($validatedData);
 
-            // Grant permission through service layer
-            $permission = $this->userPermissionService->grantPermission(
-                $validatedData['user_id'],
-                $validatedData['client_id'],
-                $validatedData['feature_id'],
-                $validatedData['grantor_id'],
-                $validatedData['manager_user_id']
-            );
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Permission granted successfully',
-                'data' => new UserFeaturePermissionResource($permission),
-            ], Response::HTTP_CREATED);
+            return (new UserFeaturePermissionResource($permission))
+                ->response()
+                ->setStatusCode(201);
 
         } catch (\Exception $e) {
-            // TODO: Add proper observability logging
+            // Log error and return appropriate response
+            \Log::error('Failed to create user feature permission', [
+                'error' => $e->getMessage(),
+                'data' => $validatedData,
+                'grantor_id' => $grantorId
+            ]);
+
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to grant permission: ' . $e->getMessage(),
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Failed to create permission',
+                'error' => 'An error occurred while creating the permission'
+            ], 500);
         }
     }
 
     /**
      * Display the specified user feature permission.
-     *
+     * 
      * @param int $id
      * @return JsonResponse
      */
     public function show(int $id): JsonResponse
     {
-        try {
-            $permission = UserFeaturePermission::with(['user', 'client', 'grantor', 'manager'])
-                ->find($id);
+        $permission = UserFeaturePermission::with(['user', 'client', 'feature', 'grantor', 'manager'])
+            ->findOrFail($id);
 
-            if (!$permission) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Permission not found',
-                ], Response::HTTP_NOT_FOUND);
-            }
+        // Authorize the action
+        $this->authorize('view', $permission);
 
-            // TODO: Add authorization check to ensure user can view this permission
-            // Policy check should verify client scoping and user permissions
-
-            return response()->json([
-                'success' => true,
-                'data' => new UserFeaturePermissionResource($permission),
-            ], Response::HTTP_OK);
-
-        } catch (\Exception $e) {
-            // TODO: Add proper observability logging
-            return response()->json([
-                'success' => false,
-                'message' => 'Failed to retrieve permission',
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
-        }
+        return (new UserFeaturePermissionResource($permission))
+            ->response()
+            ->setStatusCode(200);
     }
 
     /**
      * Update the specified user feature permission.
-     *
+     * 
      * @param UpdateUserFeaturePermissionRequest $request
      * @param int $id
      * @return JsonResponse
      */
     public function update(UpdateUserFeaturePermissionRequest $request, int $id): JsonResponse
     {
+        $permission = UserFeaturePermission::findOrFail($id);
+
+        // Authorization is handled in the FormRequest
+        
+        $validatedData = $request->validated();
+
         try {
-            $permission = UserFeaturePermission::find($id);
+            // Use service layer for business logic
+            $updatedPermission = $this->userFeaturePermissionService->updatePermission($permission, $validatedData);
 
-            if (!$permission) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Permission not found',
-                ], Response::HTTP_NOT_FOUND);
-            }
-
-            // Extract validated data
-            $validatedData = $request->validated();
-
-            // Update permission through service layer or direct model update
-            // For simple field updates, we can update directly
-            if (isset($validatedData['is_enabled'])) {
-                $permission->is_enabled = $validatedData['is_enabled'];
-            }
-
-            if (isset($validatedData['manager_user_id'])) {
-                $permission->manager_user_id = $validatedData['manager_user_id'];
-            }
-
-            $permission->save();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Permission updated successfully',
-                'data' => new UserFeaturePermissionResource($permission->fresh()),
-            ], Response::HTTP_OK);
+            return (new UserFeaturePermissionResource($updatedPermission))
+                ->response()
+                ->setStatusCode(200);
 
         } catch (\Exception $e) {
-            // TODO: Add proper observability logging
+            // Log error and return appropriate response
+            \Log::error('Failed to update user feature permission', [
+                'error' => $e->getMessage(),
+                'permission_id' => $id,
+                'data' => $validatedData,
+                'user_id' => auth()->id()
+            ]);
+
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to update permission: ' . $e->getMessage(),
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Failed to update permission',
+                'error' => 'An error occurred while updating the permission'
+            ], 500);
         }
     }
 
     /**
-     * Remove the specified user feature permission (revoke).
-     *
+     * Remove the specified user feature permission.
+     * 
      * @param int $id
      * @return JsonResponse
      */
     public function destroy(int $id): JsonResponse
     {
+        $permission = UserFeaturePermission::findOrFail($id);
+
+        // Authorize the action
+        $this->authorize('delete', $permission);
+
         try {
-            $permission = UserFeaturePermission::find($id);
+            // Use service layer for business logic
+            $result = $this->userFeaturePermissionService->revokePermission($permission);
 
-            if (!$permission) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Permission not found',
-                ], Response::HTTP_NOT_FOUND);
-            }
-
-            // TODO: Add authorization check to ensure user can revoke this permission
-            // Policy check should verify client scoping and user permissions
-
-            // Revoke permission through service layer
-            $revoked = $this->userPermissionService->revokePermission(
-                $permission->user_id,
-                $permission->client_id,
-                $permission->feature_id
-            );
-
-            if ($revoked) {
-                return response()->json([
-                    'success' => true,
-                    'message' => 'Permission revoked successfully',
-                ], Response::HTTP_NO_CONTENT);
+            if ($result) {
+                return response()->json(null, 204);
             } else {
                 return response()->json([
-                    'success' => false,
                     'message' => 'Failed to revoke permission',
-                ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                    'error' => 'Permission could not be revoked'
+                ], 422);
             }
 
         } catch (\Exception $e) {
-            // TODO: Add proper observability logging
+            // Log error and return appropriate response
+            \Log::error('Failed to revoke user feature permission', [
+                'error' => $e->getMessage(),
+                'permission_id' => $id,
+                'user_id' => auth()->id()
+            ]);
+
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to revoke permission: ' . $e->getMessage(),
-            ], Response::HTTP_INTERNAL_SERVER_ERROR);
+                'message' => 'Failed to revoke permission',
+                'error' => 'An error occurred while revoking the permission'
+            ], 500);
         }
     }
 }

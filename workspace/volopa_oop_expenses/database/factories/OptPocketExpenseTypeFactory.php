@@ -24,109 +24,112 @@ class OptPocketExpenseTypeFactory extends Factory
      */
     public function definition(): array
     {
+        // Use seeded expense type options from the migration
         $expenseTypes = [
-            'ATM Withdrawal',
-            'Point of Sale',
-            'Fee & Charges',
-            'Refund from Merchant',
-            'Online Purchase',
-            'Cash Advance',
-            'Service Fee',
-            'Transfer Fee',
-            'Merchant Refund',
-            'Chargeback'
+            ['option' => 'ATM Withdrawal', 'amount_sign' => 'negative'],
+            ['option' => 'Point of Sale', 'amount_sign' => 'negative'],
+            ['option' => 'Fee & Charges', 'amount_sign' => 'negative'],
+            ['option' => 'Refund from Merchant', 'amount_sign' => 'positive'],
         ];
 
+        $selectedType = $this->faker->randomElement($expenseTypes);
+
         return [
-            'option' => $this->faker->randomElement($expenseTypes),
-            'amount_sign' => $this->faker->randomElement(['positive', 'negative']),
-            'created_at' => now(),
-            'updated_at' => now(),
+            'option' => $selectedType['option'],
+            'amount_sign' => $selectedType['amount_sign'],
+            'create_time' => now(),
+            'update_time' => now(),
         ];
     }
 
     /**
      * Indicate that the expense type has negative amount sign.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function negative(): Factory
+    public function negative(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'amount_sign' => 'negative',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount_sign' => 'negative',
+        ]);
     }
 
     /**
      * Indicate that the expense type has positive amount sign.
      *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function positive(): Factory
+    public function positive(): static
     {
-        return $this->state(function (array $attributes) {
-            return [
-                'amount_sign' => 'positive',
-            ];
-        });
+        return $this->state(fn (array $attributes) => [
+            'amount_sign' => 'positive',
+        ]);
     }
 
     /**
-     * Create specific expense type with custom option.
+     * Create an ATM Withdrawal expense type.
+     *
+     * @return static
+     */
+    public function atmWithdrawal(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'option' => 'ATM Withdrawal',
+            'amount_sign' => 'negative',
+        ]);
+    }
+
+    /**
+     * Create a Point of Sale expense type.
+     *
+     * @return static
+     */
+    public function pointOfSale(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'option' => 'Point of Sale',
+            'amount_sign' => 'negative',
+        ]);
+    }
+
+    /**
+     * Create a Fee & Charges expense type.
+     *
+     * @return static
+     */
+    public function feeCharges(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'option' => 'Fee & Charges',
+            'amount_sign' => 'negative',
+        ]);
+    }
+
+    /**
+     * Create a Refund from Merchant expense type.
+     *
+     * @return static
+     */
+    public function refundFromMerchant(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'option' => 'Refund from Merchant',
+            'amount_sign' => 'positive',
+        ]);
+    }
+
+    /**
+     * Create a custom expense type with specific option.
      *
      * @param string $option
      * @param string $amountSign
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
+     * @return static
      */
-    public function withOption(string $option, string $amountSign = 'negative'): Factory
+    public function withOption(string $option, string $amountSign = 'negative'): static
     {
-        return $this->state(function (array $attributes) use ($option, $amountSign) {
-            return [
-                'option' => $option,
-                'amount_sign' => $amountSign,
-            ];
-        });
-    }
-
-    /**
-     * Create ATM Withdrawal expense type (default negative).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function atmWithdrawal(): Factory
-    {
-        return $this->withOption('ATM Withdrawal', 'negative');
-    }
-
-    /**
-     * Create Point of Sale expense type (default negative).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function pointOfSale(): Factory
-    {
-        return $this->withOption('Point of Sale', 'negative');
-    }
-
-    /**
-     * Create Fee & Charges expense type (default negative).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function feeAndCharges(): Factory
-    {
-        return $this->withOption('Fee & Charges', 'negative');
-    }
-
-    /**
-     * Create Refund from Merchant expense type (default positive).
-     *
-     * @return \Illuminate\Database\Eloquent\Factories\Factory
-     */
-    public function refundFromMerchant(): Factory
-    {
-        return $this->withOption('Refund from Merchant', 'positive');
+        return $this->state(fn (array $attributes) => [
+            'option' => $option,
+            'amount_sign' => $amountSign,
+        ]);
     }
 }

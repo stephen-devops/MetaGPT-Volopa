@@ -6,24 +6,25 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Str;
+use Illuminate\Database\Eloquent\Builder;
+use Database\Factories\PocketExpenseSourceClientConfigFactory;
 
 /**
- * Pocket Expense Source Client Config Model
+ * PocketExpenseSourceClientConfig Model
  * 
- * Manages client-specific expense sources configuration.
- * Each client can have up to 20 active expense sources with unique names.
- * Includes global 'Other' record that cannot be deleted or edited.
+ * Manages expense source configurations for clients with support for global 'Other' record.
+ * Enforces unique source names per client and supports soft delete functionality.
+ * Maximum 20 active expense sources per client as per system constraints.
  * 
  * @property int $id
  * @property string $uuid
  * @property int|null $client_id
  * @property string $name
  * @property bool $is_default
- * @property bool $deleted
- * @property \Illuminate\Support\Carbon|null $delete_time
- * @property \Illuminate\Support\Carbon $create_time
- * @property \Illuminate\Support\Carbon $update_time
+ * @property int $deleted
+ * @property \DateTime|null $delete_time
+ * @property \DateTime $create_time
+ * @property \DateTime|null $update_time
  */
 class PocketExpenseSourceClientConfig extends Model
 {
@@ -37,15 +38,7 @@ class PocketExpenseSourceClientConfig extends Model
     protected $table = 'pocket_expense_source_client_config';
 
     /**
-     * The primary key associated with the table.
-     *
-     * @var string
-     */
-    protected $primaryKey = 'id';
-
-    /**
-     * Indicates if the model should be timestamped.
-     * Using custom timestamp columns per Volopa legacy convention.
+     * Disable Laravel's default timestamps as we use Volopa legacy pattern
      *
      * @var bool
      */
@@ -61,8 +54,6 @@ class PocketExpenseSourceClientConfig extends Model
         'client_id',
         'name',
         'is_default',
-        'deleted',
-        'delete_time',
     ];
 
     /**
@@ -76,7 +67,7 @@ class PocketExpenseSourceClientConfig extends Model
         'client_id' => 'integer',
         'name' => 'string',
         'is_default' => 'boolean',
-        'deleted' => 'boolean',
+        'deleted' => 'integer',
         'delete_time' => 'datetime',
         'create_time' => 'datetime',
         'update_time' => 'datetime',
@@ -90,40 +81,7 @@ class PocketExpenseSourceClientConfig extends Model
     protected $hidden = [];
 
     /**
-     * The model's default values for attributes.
-     *
-     * @var array<string, mixed>
-     */
-    protected $attributes = [
-        'is_default' => false,
-        'deleted' => false,
-    ];
-
-    /**
-     * Boot the model.
-     * Auto-generate UUID on creation.
-     */
-    protected static function boot(): void
-    {
-        parent::boot();
-
-        static::creating(function ($model) {
-            if (empty($model->uuid)) {
-                $model->uuid = Str::uuid()->toString();
-            }
-            if (empty($model->create_time)) {
-                $model->create_time = now();
-            }
-            $model->update_time = now();
-        });
-
-        static::updating(function ($model) {
-            $model->update_time = now();
-        });
-    }
-
-    /**
-     * Get the client that owns this expense source configuration.
+     * Get the client this source belongs to (nullable for global 'Other' record).
      */
     public function client(): BelongsTo
     {
@@ -131,79 +89,79 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Get the expense metadata that use this source.
+     * Get all expenses that use this source through metadata.
      */
-    public function metadata(): HasMany
+    public function expenses(): HasMany
     {
         return $this->hasMany(PocketExpenseMetadata::class, 'expense_source_id');
     }
 
     /**
-     * Scope a query to only include active (non-deleted) sources.
+     * Scope a query to only include non-deleted sources.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder $query
+     * @return Builder
      */
-    public function scopeActive($query)
+    public function scopeActive(Builder $query): Builder
     {
-        return $query->where('deleted', false);
+        return $query->where('deleted', 0);
     }
 
     /**
      * Scope a query to only include deleted sources.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder $query
+     * @return Builder
      */
-    public function scopeDeleted($query)
+    public function scopeDeleted(Builder $query): Builder
     {
-        return $query->where('deleted', true);
-    }
-
-    /**
-     * Scope a query to only include default sources.
-     *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
-     */
-    public function scopeDefault($query)
-    {
-        return $query->where('is_default', true);
+        return $query->where('deleted', 1);
     }
 
     /**
      * Scope a query to only include sources for a specific client.
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param Builder $query
      * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @return Builder
      */
-    public function scopeForClient($query, int $clientId)
+    public function scopeForClient(Builder $query, int $clientId): Builder
     {
         return $query->where('client_id', $clientId);
     }
 
     /**
+     * Scope a query to only include default sources.
+     *
+     * @param Builder $query
+     * @return Builder
+     */
+    public function scopeDefault(Builder $query): Builder
+    {
+        return $query->where('is_default', true);
+    }
+
+    /**
      * Scope a query to only include global sources (client_id is null).
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @param Builder $query
+     * @return Builder
      */
-    public function scopeGlobal($query)
+    public function scopeGlobal(Builder $query): Builder
     {
         return $query->whereNull('client_id');
     }
 
     /**
-     * Scope a query to get available sources for a client (active + global).
+     * Scope a query to get available sources for a client (client sources + global 'Other').
      *
-     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param Builder $query
      * @param int $clientId
-     * @return \Illuminate\Database\Eloquent\Builder
+     * @return Builder
      */
-    public function scopeAvailableForClient($query, int $clientId)
+    public function scopeAvailableForClient(Builder $query, int $clientId): Builder
     {
-        return $query->where('deleted', false)
+        return $query->active()
                     ->where(function ($subQuery) use ($clientId) {
                         $subQuery->where('client_id', $clientId)
                                 ->orWhereNull('client_id');
@@ -211,27 +169,27 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Check if this source is the global 'Other' record.
-     *
-     * @return bool
-     */
-    public function isGlobalOther(): bool
-    {
-        return is_null($this->client_id) && $this->name === 'Other';
-    }
-
-    /**
-     * Check if this source is active (not deleted).
+     * Check if this source is currently active (not soft deleted).
      *
      * @return bool
      */
     public function isActive(): bool
     {
-        return !$this->deleted;
+        return $this->deleted === 0;
     }
 
     /**
-     * Check if this source is a default source.
+     * Check if this source is soft deleted.
+     *
+     * @return bool
+     */
+    public function isDeleted(): bool
+    {
+        return $this->deleted === 1;
+    }
+
+    /**
+     * Check if this is a default source.
      *
      * @return bool
      */
@@ -241,36 +199,56 @@ class PocketExpenseSourceClientConfig extends Model
     }
 
     /**
-     * Soft delete this source.
-     * Cannot delete global 'Other' record per system constraints.
+     * Check if this is the global 'Other' source.
      *
      * @return bool
-     * @throws \Exception
+     */
+    public function isGlobalOther(): bool
+    {
+        return is_null($this->client_id) && $this->name === 'Other';
+    }
+
+    /**
+     * Check if this source belongs to a specific client.
+     *
+     * @param int $clientId
+     * @return bool
+     */
+    public function belongsToClient(int $clientId): bool
+    {
+        return $this->client_id === $clientId;
+    }
+
+    /**
+     * Soft delete this source by setting deleted flag and delete_time.
+     *
+     * @return bool
      */
     public function softDelete(): bool
     {
+        // Prevent deletion of global 'Other' record as per system constraints
         if ($this->isGlobalOther()) {
-            throw new \Exception('Global Other record cannot be deleted');
+            return false;
         }
 
-        $this->deleted = true;
+        $this->deleted = 1;
         $this->delete_time = now();
         $this->update_time = now();
-        
+
         return $this->save();
     }
 
     /**
-     * Restore a soft deleted source.
+     * Restore this source by clearing deleted flag and delete_time.
      *
      * @return bool
      */
     public function restore(): bool
     {
-        $this->deleted = false;
+        $this->deleted = 0;
         $this->delete_time = null;
         $this->update_time = now();
-        
+
         return $this->save();
     }
 
@@ -281,28 +259,67 @@ class PocketExpenseSourceClientConfig extends Model
      */
     public function getDisplayName(): string
     {
-        return $this->name;
+        $prefix = $this->isGlobalOther() ? '[Global] ' : '';
+        $suffix = $this->isDefault() ? ' (Default)' : '';
+        
+        return $prefix . $this->name . $suffix;
     }
 
     /**
-     * Check if this source can be edited.
-     * Global 'Other' record cannot be edited per system constraints.
+     * Create a new factory instance for the model.
      *
-     * @return bool
+     * @return PocketExpenseSourceClientConfigFactory
      */
-    public function canEdit(): bool
+    protected static function newFactory(): PocketExpenseSourceClientConfigFactory
     {
-        return !$this->isGlobalOther();
+        return PocketExpenseSourceClientConfigFactory::new();
     }
 
     /**
-     * Check if this source can be deleted.
-     * Global 'Other' record cannot be deleted per system constraints.
-     *
-     * @return bool
+     * Boot the model.
      */
-    public function canDelete(): bool
+    protected static function boot(): void
     {
-        return !$this->isGlobalOther();
+        parent::boot();
+
+        // Set create_time on creation
+        static::creating(function ($model) {
+            if (is_null($model->create_time)) {
+                $model->create_time = now();
+            }
+            if (is_null($model->update_time)) {
+                $model->update_time = now();
+            }
+            
+            // Generate UUID if not set
+            if (empty($model->uuid)) {
+                $model->uuid = \Illuminate\Support\Str::uuid()->toString();
+            }
+        });
+
+        // Update update_time on updating
+        static::updating(function ($model) {
+            $model->update_time = now();
+        });
+    }
+
+    /**
+     * Get validation rules for unique constraint checking.
+     *
+     * @param int|null $excludeId
+     * @return array
+     */
+    public static function getUniqueValidationRules(?int $excludeId = null): array
+    {
+        $uniqueRule = 'unique:pocket_expense_source_client_config,name,NULL,id,client_id';
+        
+        if ($excludeId) {
+            $uniqueRule .= ',' . $excludeId;
+        }
+
+        return [
+            'name' => ['required', 'string', 'max:100', $uniqueRule],
+            'client_id' => ['nullable', 'integer', 'exists:clients,id'],
+        ];
     }
 }
