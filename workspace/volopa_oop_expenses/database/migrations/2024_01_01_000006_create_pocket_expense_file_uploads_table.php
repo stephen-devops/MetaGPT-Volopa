@@ -13,48 +13,48 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('pocket_expense_file_uploads', function (Blueprint $table) {
-            $table->id();
-            $table->string('uuid', 36);
-            $table->unsignedBigInteger('user_id');
-            $table->unsignedBigInteger('client_id');
-            $table->unsignedBigInteger('created_by_user_id');
-            $table->string('file_name', 255);
-            $table->string('file_path', 500);
-            $table->integer('total_records')->default(0);
-            $table->integer('valid_records')->default(0);
-            $table->json('validation_errors')->nullable();
+            $table->id()->comment('Primary key');
+            $table->string('uuid', 36)->unique()->comment('UUID for external references');
+            $table->unsignedBigInteger('user_id')->comment('Reference to users table - target user for expenses');
+            $table->unsignedBigInteger('client_id')->comment('Reference to clients table - multi-tenancy');
+            $table->unsignedBigInteger('created_by_user_id')->comment('Reference to users table - admin who uploaded');
+            $table->string('file_name', 255)->comment('Original uploaded file name');
+            $table->string('file_path', 255)->comment('Stored file path');
+            $table->unsignedInteger('total_records')->default(0)->comment('Total number of records in CSV');
+            $table->unsignedInteger('valid_records')->default(0)->comment('Number of valid records after validation');
+            $table->json('validation_errors')->nullable()->comment('Validation errors in JSON format');
             $table->enum('status', [
                 'uploaded',
-                'validation_failed',
+                'validation_failed', 
                 'validation_passed',
                 'processing',
                 'completed',
                 'failed',
                 'sync_failed'
-            ])->default('uploaded');
-            $table->timestamp('uploaded_at')->nullable();
-            $table->timestamp('validated_at')->nullable();
-            $table->timestamp('processed_at')->nullable();
+            ])->default('uploaded')->comment('Upload processing status');
+            $table->timestamp('uploaded_at')->useCurrent()->comment('File upload timestamp');
+            $table->timestamp('validated_at')->nullable()->comment('Validation completion timestamp');
+            $table->timestamp('processed_at')->nullable()->comment('Processing completion timestamp');
             $table->timestamps();
             $table->softDeletes();
+            
+            // Set table engine and charset according to constraints
+            $table->engine = 'InnoDB';
+            $table->charset = 'utf8mb4';
+            $table->collation = 'utf8mb4_unicode_ci';
             
             // Foreign key constraints
             $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
             $table->foreign('client_id')->references('id')->on('clients')->onDelete('cascade');
-            $table->foreign('created_by_user_id')->references('id')->on('users')->onDelete('cascade');
+            $table->foreign('created_by_user_id')->references('id')->on('users')->onDelete('restrict');
             
             // Indexes for performance
-            $table->index(['uuid']);
-            $table->index(['user_id', 'client_id']);
-            $table->index(['client_id', 'status']);
-            $table->index(['status']);
-            $table->index(['created_by_user_id']);
-            $table->index(['uploaded_at']);
-            
-            // Table settings
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
+            $table->index(['user_id', 'client_id'], 'idx_user_client');
+            $table->index(['client_id', 'status'], 'idx_client_status');
+            $table->index(['created_by_user_id'], 'idx_created_by');
+            $table->index(['status'], 'idx_status');
+            $table->index(['uploaded_at'], 'idx_uploaded_at');
+            $table->index(['uuid'], 'idx_uuid');
         });
     }
 

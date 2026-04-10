@@ -3,10 +3,9 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseFileUpload;
-use App\Models\User;
-use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 /**
  * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\PocketExpenseFileUpload>
@@ -27,6 +26,7 @@ class PocketExpenseFileUploadFactory extends Factory
      */
     public function definition(): array
     {
+        // Available status values from ENUM constraints
         $statusOptions = [
             'uploaded',
             'validation_failed',
@@ -37,31 +37,29 @@ class PocketExpenseFileUploadFactory extends Factory
             'sync_failed'
         ];
 
+        // Common CSV file names
+        $fileNames = [
+            'expenses_2024_01.csv',
+            'pocket_expenses.csv',
+            'monthly_expenses.csv',
+            'expense_upload.csv',
+            'out_of_pocket_expenses.csv'
+        ];
+
         return [
-            'uuid' => Str::uuid()->toString(),
-            'user_id' => User::factory(),
-            'client_id' => Client::factory(),
-            'created_by_user_id' => User::factory(),
-            'file_name' => $this->faker->word . '_expenses_' . $this->faker->date() . '.csv',
-            'file_path' => 'storage/app/pocket-expense-uploads/' . Str::uuid() . '.csv',
-            'total_records' => $this->faker->numberBetween(1, 200), // Max 200 rows per CSV as per constraints
-            'valid_records' => function (array $attributes) {
-                return $this->faker->numberBetween(0, $attributes['total_records']);
-            },
-            'validation_errors' => $this->faker->optional(0.3)->passthrough([
-                'errors' => [
-                    [
-                        'line_number' => $this->faker->numberBetween(2, 201),
-                        'field' => $this->faker->randomElement(['Date', 'Amount', 'Currency Code', 'Merchant Name']),
-                        'error' => $this->faker->sentence,
-                        'value' => $this->faker->word
-                    ]
-                ]
-            ]),
-            'status' => $this->faker->randomElement($statusOptions),
+            'uuid' => (string) Str::uuid(),
+            'user_id' => 1, // Default to user ID 1, should be overridden in tests with actual user
+            'client_id' => 1, // Default to client ID 1, should be overridden in tests with actual client
+            'created_by_user_id' => 1, // Default to user ID 1, should be overridden in tests with actual admin user
+            'file_name' => $this->faker->randomElement($fileNames),
+            'file_path' => 'storage/app/pocket-expense-uploads/' . $this->faker->uuid() . '.csv',
+            'total_records' => $this->faker->numberBetween(1, 200), // Max 200 rows per CSV constraint
+            'valid_records' => 0, // Default to 0, will be calculated during validation
+            'validation_errors' => null, // No validation errors by default
+            'status' => 'uploaded', // Default status as per ENUM constraint
             'uploaded_at' => now(),
-            'validated_at' => $this->faker->optional(0.7)->passthrough(now()->addMinutes($this->faker->numberBetween(1, 10))),
-            'processed_at' => $this->faker->optional(0.5)->passthrough(now()->addMinutes($this->faker->numberBetween(5, 30))),
+            'validated_at' => null,
+            'processed_at' => null,
             'created_at' => now(),
             'updated_at' => now(),
             'deleted_at' => null,
@@ -69,63 +67,55 @@ class PocketExpenseFileUploadFactory extends Factory
     }
 
     /**
-     * Indicate that the upload is in uploaded status.
-     *
-     * @return static
-     */
-    public function uploaded(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'status' => 'uploaded',
-            'validated_at' => null,
-            'processed_at' => null,
-            'validation_errors' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the upload validation failed.
+     * Indicate that the upload has validation errors.
      *
      * @return static
      */
     public function validationFailed(): static
     {
+        $sampleErrors = [
+            [
+                'line_number' => 2,
+                'field' => 'Date',
+                'error' => 'Date format must be DD/MM/YYYY',
+                'value' => '2024-01-01'
+            ],
+            [
+                'line_number' => 3,
+                'field' => 'Currency Code',
+                'error' => 'Invalid currency code',
+                'value' => 'XXX'
+            ]
+        ];
+
         return $this->state(fn (array $attributes) => [
             'status' => 'validation_failed',
+            'validation_errors' => json_encode($sampleErrors),
             'validated_at' => now(),
-            'processed_at' => null,
             'valid_records' => 0,
-            'validation_errors' => [
-                'errors' => [
-                    [
-                        'line_number' => 2,
-                        'field' => 'Date',
-                        'error' => 'Date format is invalid',
-                        'value' => '2021-13-45'
-                    ]
-                ]
-            ],
         ]);
     }
 
     /**
-     * Indicate that the upload validation passed.
+     * Indicate that the upload passed validation.
      *
      * @return static
      */
     public function validationPassed(): static
     {
-        return $this->state(fn (array $attributes) => [
-            'status' => 'validation_passed',
-            'validated_at' => now(),
-            'processed_at' => null,
-            'valid_records' => $attributes['total_records'],
-            'validation_errors' => null,
-        ]);
+        return $this->state(function (array $attributes) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            return [
+                'status' => 'validation_passed',
+                'validation_errors' => null,
+                'validated_at' => now(),
+                'valid_records' => $totalRecords, // All records are valid
+            ];
+        });
     }
 
     /**
-     * Indicate that the upload is processing.
+     * Indicate that the upload is being processed.
      *
      * @return static
      */
@@ -133,31 +123,31 @@ class PocketExpenseFileUploadFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'status' => 'processing',
-            'validated_at' => now()->subMinutes(5),
-            'processed_at' => null,
-            'valid_records' => $attributes['total_records'],
-            'validation_errors' => null,
+            'validated_at' => now(),
         ]);
     }
 
     /**
-     * Indicate that the upload is completed.
+     * Indicate that the upload has completed successfully.
      *
      * @return static
      */
     public function completed(): static
     {
-        return $this->state(fn (array $attributes) => [
-            'status' => 'completed',
-            'validated_at' => now()->subMinutes(10),
-            'processed_at' => now(),
-            'valid_records' => $attributes['total_records'],
-            'validation_errors' => null,
-        ]);
+        return $this->state(function (array $attributes) {
+            $totalRecords = $attributes['total_records'] ?? $this->faker->numberBetween(1, 200);
+            return [
+                'status' => 'completed',
+                'validated_at' => now()->subMinutes(10),
+                'processed_at' => now(),
+                'valid_records' => $totalRecords,
+                'validation_errors' => null,
+            ];
+        });
     }
 
     /**
-     * Indicate that the upload processing failed.
+     * Indicate that the upload failed during processing.
      *
      * @return static
      */
@@ -165,16 +155,12 @@ class PocketExpenseFileUploadFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'status' => 'failed',
-            'validated_at' => now()->subMinutes(10),
-            'processed_at' => now(),
-            'validation_errors' => [
-                'processing_error' => 'Failed to process expenses due to system error'
-            ],
+            'validated_at' => now()->subMinutes(5),
         ]);
     }
 
     /**
-     * Indicate that the upload sync failed.
+     * Indicate that the upload failed during sync.
      *
      * @return static
      */
@@ -182,11 +168,8 @@ class PocketExpenseFileUploadFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'status' => 'sync_failed',
-            'validated_at' => now()->subMinutes(15),
+            'validated_at' => now()->subMinutes(10),
             'processed_at' => now()->subMinutes(5),
-            'validation_errors' => [
-                'sync_error' => 'Failed to sync with main service'
-            ],
         ]);
     }
 
@@ -203,99 +186,38 @@ class PocketExpenseFileUploadFactory extends Factory
     }
 
     /**
-     * Create an upload for a specific user and client.
+     * Set the user for this upload (target user for expenses).
      *
      * @param int $userId
-     * @param int $clientId
-     * @param int|null $createdByUserId
      * @return static
      */
-    public function forUser(int $userId, int $clientId, int $createdByUserId = null): static
+    public function forUser(int $userId): static
     {
         return $this->state(fn (array $attributes) => [
             'user_id' => $userId,
+        ]);
+    }
+
+    /**
+     * Set the client for this upload.
+     *
+     * @param int $clientId
+     * @return static
+     */
+    public function forClient(int $clientId): static
+    {
+        return $this->state(fn (array $attributes) => [
             'client_id' => $clientId,
-            'created_by_user_id' => $createdByUserId ?? $userId,
         ]);
     }
 
     /**
-     * Create an upload with specific file details.
-     *
-     * @param string $fileName
-     * @param string $filePath
-     * @return static
-     */
-    public function withFile(string $fileName, string $filePath): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'file_name' => $fileName,
-            'file_path' => $filePath,
-        ]);
-    }
-
-    /**
-     * Create an upload with specific record counts.
-     *
-     * @param int $totalRecords
-     * @param int|null $validRecords
-     * @return static
-     */
-    public function withRecords(int $totalRecords, int $validRecords = null): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'total_records' => $totalRecords,
-            'valid_records' => $validRecords ?? $totalRecords,
-        ]);
-    }
-
-    /**
-     * Create an upload with validation errors.
-     *
-     * @param array $validationErrors
-     * @return static
-     */
-    public function withValidationErrors(array $validationErrors): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'validation_errors' => $validationErrors,
-            'status' => 'validation_failed',
-        ]);
-    }
-
-    /**
-     * Create an upload with maximum allowed records (200).
-     *
-     * @return static
-     */
-    public function maxRecords(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'total_records' => 200,
-            'valid_records' => 200,
-        ]);
-    }
-
-    /**
-     * Create an upload with minimal records.
-     *
-     * @return static
-     */
-    public function minRecords(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'total_records' => 1,
-            'valid_records' => 1,
-        ]);
-    }
-
-    /**
-     * Create an upload created by a specific admin user.
+     * Set the admin user who created this upload.
      *
      * @param int $adminUserId
      * @return static
      */
-    public function createdByAdmin(int $adminUserId): static
+    public function createdBy(int $adminUserId): static
     {
         return $this->state(fn (array $attributes) => [
             'created_by_user_id' => $adminUserId,
@@ -303,22 +225,168 @@ class PocketExpenseFileUploadFactory extends Factory
     }
 
     /**
-     * Create an upload with timestamps for testing workflow.
+     * Set the file name for this upload.
+     *
+     * @param string $fileName
+     * @return static
+     */
+    public function withFileName(string $fileName): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'file_name' => $fileName,
+        ]);
+    }
+
+    /**
+     * Set the file path for this upload.
+     *
+     * @param string $filePath
+     * @return static
+     */
+    public function withFilePath(string $filePath): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'file_path' => $filePath,
+        ]);
+    }
+
+    /**
+     * Set the total records for this upload.
+     *
+     * @param int $totalRecords
+     * @return static
+     */
+    public function withTotalRecords(int $totalRecords): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'total_records' => $totalRecords,
+        ]);
+    }
+
+    /**
+     * Set the valid records for this upload.
+     *
+     * @param int $validRecords
+     * @return static
+     */
+    public function withValidRecords(int $validRecords): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'valid_records' => $validRecords,
+        ]);
+    }
+
+    /**
+     * Set validation errors for this upload.
+     *
+     * @param array $errors
+     * @return static
+     */
+    public function withValidationErrors(array $errors): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'validation_errors' => json_encode($errors),
+            'status' => 'validation_failed',
+            'validated_at' => now(),
+        ]);
+    }
+
+    /**
+     * Set the upload status.
+     *
+     * @param string $status
+     * @return static
+     */
+    public function withStatus(string $status): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'status' => $status,
+        ]);
+    }
+
+    /**
+     * Create upload with small file (under 50 records).
      *
      * @return static
      */
-    public function withWorkflowTimestamps(): static
+    public function smallFile(): static
     {
-        $uploadTime = now()->subMinutes(20);
-        $validateTime = $uploadTime->copy()->addMinutes(2);
-        $processTime = $validateTime->copy()->addMinutes(5);
-
+        $totalRecords = $this->faker->numberBetween(1, 50);
         return $this->state(fn (array $attributes) => [
-            'uploaded_at' => $uploadTime,
-            'validated_at' => $validateTime,
-            'processed_at' => $processTime,
-            'created_at' => $uploadTime,
-            'updated_at' => $processTime,
+            'total_records' => $totalRecords,
+            'valid_records' => $totalRecords,
+        ]);
+    }
+
+    /**
+     * Create upload with large file (close to 200 record limit).
+     *
+     * @return static
+     */
+    public function largeFile(): static
+    {
+        $totalRecords = $this->faker->numberBetween(150, 200);
+        return $this->state(fn (array $attributes) => [
+            'total_records' => $totalRecords,
+            'valid_records' => $totalRecords,
+        ]);
+    }
+
+    /**
+     * Create upload with partial validation errors.
+     *
+     * @return static
+     */
+    public function partialErrors(): static
+    {
+        return $this->state(function (array $attributes) {
+            $totalRecords = $this->faker->numberBetween(10, 50);
+            $validRecords = $this->faker->numberBetween(5, $totalRecords - 1);
+            $errorCount = $totalRecords - $validRecords;
+            
+            $sampleErrors = [];
+            for ($i = 0; $i < $errorCount; $i++) {
+                $sampleErrors[] = [
+                    'line_number' => $this->faker->numberBetween(2, $totalRecords + 1),
+                    'field' => $this->faker->randomElement(['Date', 'Currency Code', 'Amount', 'Merchant Name']),
+                    'error' => $this->faker->sentence(3),
+                    'value' => $this->faker->word()
+                ];
+            }
+            
+            return [
+                'total_records' => $totalRecords,
+                'valid_records' => $validRecords,
+                'validation_errors' => json_encode($sampleErrors),
+                'status' => 'validation_failed',
+                'validated_at' => now(),
+            ];
+        });
+    }
+
+    /**
+     * Create upload that was uploaded recently (within last hour).
+     *
+     * @return static
+     */
+    public function recent(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => now()->subMinutes($this->faker->numberBetween(1, 60)),
+            'created_at' => now()->subMinutes($this->faker->numberBetween(1, 60)),
+        ]);
+    }
+
+    /**
+     * Create upload that was uploaded earlier (within last 24 hours).
+     *
+     * @return static
+     */
+    public function older(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'uploaded_at' => now()->subHours($this->faker->numberBetween(2, 24)),
+            'created_at' => now()->subHours($this->faker->numberBetween(2, 24)),
         ]);
     }
 }

@@ -1,9 +1,8 @@
 """Shared YAML context reader for Volopa OOP Expense roles.
 
-Provides structured access to the three YAML context files:
+Provides structured access to the two YAML context files:
   - project_context.yaml   (feature-specific intent, rules, flows, interfaces)
-  - environment_context.yaml (platform-level standards and constraints)
-  - environment_artifacts.yaml (existing models, tables, middleware, infra)
+  - environment_context.yaml (platform-level standards, constraints, and interfaces)
 
 Usage:
     from industry.utils.context_reader import ContextReader
@@ -29,16 +28,14 @@ class ContextReader:
     _FILE_MAP = {
         "project": "project_context.yaml",
         "environment": "environment_context.yaml",
-        "artifacts": "environment_artifacts.yaml",
     }
 
     def __init__(self, base_path: Optional[str] = None):
         if base_path is None:
-            # Resolve to industry/requirements/updated_req/ relative to this file
+            # Resolve to industry/requirements/ relative to this file
             base_path = str(
                 Path(__file__).resolve().parent.parent
                 / "requirements"
-                / "updated_req"
             )
         self._base_path = base_path
         self._cache: dict[str, dict] = {}
@@ -54,10 +51,6 @@ class ContextReader:
     @property
     def environment(self) -> dict:
         return self._load("environment")
-
-    @property
-    def artifacts(self) -> dict:
-        return self._load("artifacts")
 
     # ------------------------------------------------------------------
     # Generic accessors
@@ -436,15 +429,15 @@ class ContextReader:
         return f"=== PLATFORM DECISIONS ===\n{self.format_section(data)}"
 
     def get_existing_tables_and_models(self, detail: str = "full") -> str:
-        """Return artifacts.interfaces.existing_database_tables + standard_volopa_models.
+        """Return environment.interfaces.existing_database_tables + standard_volopa_models.
 
         Args:
             detail: "names" | "full"
               - "names" -> table names and model class names only
               - "full"  -> complete details (columns, relationships, etc.)
         """
-        tables = self.get("artifacts", "interfaces", "existing_database_tables")
-        models = self.get("artifacts", "interfaces", "standard_volopa_models")
+        tables = self.get("environment", "interfaces", "existing_database_tables")
+        models = self.get("environment", "interfaces", "standard_volopa_models")
         lines = [f"=== EXISTING TABLES AND MODELS (detail={detail}) ==="]
 
         if detail == "names":
@@ -465,13 +458,13 @@ class ContextReader:
         return "\n".join(lines)
 
     def get_existing_user_roles(self) -> str:
-        """Return artifacts.interfaces.existing_user_roles."""
-        data = self.get("artifacts", "interfaces", "existing_user_roles")
+        """Return environment.interfaces.existing_user_roles."""
+        data = self.get("environment", "interfaces", "existing_user_roles")
         return f"=== EXISTING USER ROLES ===\n{self.format_section(data)}"
 
     def get_existing_platform_services(self) -> str:
         """Return middleware, endpoints, infra, UI paths, validation patterns."""
-        ifaces = self.get("artifacts", "interfaces")
+        ifaces = self.get("environment", "interfaces")
         lines = ["=== EXISTING PLATFORM SERVICES ==="]
         for key in (
             "standard_volopa_middleware",
@@ -487,8 +480,8 @@ class ContextReader:
         return "\n".join(lines)
 
     def get_fx_query_contract(self) -> str:
-        """Return artifacts.interfaces.fx_query_contract."""
-        data = self.get("artifacts", "interfaces", "fx_query_contract")
+        """Return environment.interfaces.fx_query_contract."""
+        data = self.get("environment", "interfaces", "fx_query_contract")
         return f"=== FX QUERY CONTRACT ===\n{self.format_section(data)}"
 
     def get_laravel_task_conventions(self) -> str:
@@ -542,7 +535,7 @@ class ContextReader:
         try:
             data = self.get("project", "flows", "platform_flow_touchpoints")
         except KeyError:
-            return "=== PLATFORM FLOW TOUCHPOINTS ===\n(section not present — see environment_artifacts.yaml for existing platform services)"
+            return "=== PLATFORM FLOW TOUCHPOINTS ===\n(section not present — see environment_context.yaml#interfaces for existing platform services)"
         return f"=== PLATFORM FLOW TOUCHPOINTS ===\n{self.format_section(data)}"
 
     # ------------------------------------------------------------------

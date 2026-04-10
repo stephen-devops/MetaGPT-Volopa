@@ -5,19 +5,16 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Database\Factories\OptPocketExpenseTypeFactory;
 
 /**
  * OptPocketExpenseType Model
  * 
- * Lookup table for expense types with predefined options and amount signs.
- * Determines whether an expense amount should be positive or negative based on type.
+ * Manages expense types and their associated amount signs.
+ * Determines whether an expense type should have positive or negative amounts.
  * 
  * @property int $id
  * @property string $option
  * @property string $amount_sign
- * @property \DateTime $create_time
- * @property \DateTime|null $update_time
  */
 class OptPocketExpenseType extends Model
 {
@@ -31,7 +28,8 @@ class OptPocketExpenseType extends Model
     protected $table = 'opt_pocket_expense_type';
 
     /**
-     * Disable Laravel's default timestamps as we use Volopa legacy pattern
+     * Indicates if the model should be timestamped.
+     * This table does not use Laravel's default timestamps.
      *
      * @var bool
      */
@@ -56,8 +54,6 @@ class OptPocketExpenseType extends Model
         'id' => 'integer',
         'option' => 'string',
         'amount_sign' => 'string',
-        'create_time' => 'datetime',
-        'update_time' => 'datetime',
     ];
 
     /**
@@ -69,10 +65,12 @@ class OptPocketExpenseType extends Model
 
     /**
      * Get all expenses that use this expense type.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
      */
     public function expenses(): HasMany
     {
-        return $this->hasMany(PocketExpense::class, 'expense_type');
+        return $this->hasMany(PocketExpense::class, 'expense_type', 'id');
     }
 
     /**
@@ -98,6 +96,18 @@ class OptPocketExpenseType extends Model
     }
 
     /**
+     * Scope a query to filter by expense type option.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param string $option
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeByOption($query, string $option)
+    {
+        return $query->where('option', $option);
+    }
+
+    /**
      * Check if this expense type has a positive amount sign.
      *
      * @return bool
@@ -118,57 +128,13 @@ class OptPocketExpenseType extends Model
     }
 
     /**
-     * Get the sign multiplier for amount calculation.
+     * Get the sign multiplier for this expense type.
+     * Returns 1 for positive amounts, -1 for negative amounts.
      *
      * @return int
      */
     public function getSignMultiplier(): int
     {
         return $this->amount_sign === 'positive' ? 1 : -1;
-    }
-
-    /**
-     * Apply the correct sign to an amount based on this expense type.
-     *
-     * @param float $amount
-     * @return float
-     */
-    public function applySignToAmount(float $amount): float
-    {
-        $absoluteAmount = abs($amount);
-        return $this->amount_sign === 'positive' ? $absoluteAmount : -$absoluteAmount;
-    }
-
-    /**
-     * Create a new factory instance for the model.
-     *
-     * @return \Database\Factories\OptPocketExpenseTypeFactory
-     */
-    protected static function newFactory()
-    {
-        return OptPocketExpenseTypeFactory::new();
-    }
-
-    /**
-     * Boot the model.
-     */
-    protected static function boot()
-    {
-        parent::boot();
-
-        // Set create_time on creation
-        static::creating(function ($model) {
-            if (is_null($model->create_time)) {
-                $model->create_time = now();
-            }
-            if (is_null($model->update_time)) {
-                $model->update_time = now();
-            }
-        });
-
-        // Update update_time on updating
-        static::updating(function ($model) {
-            $model->update_time = now();
-        });
     }
 }

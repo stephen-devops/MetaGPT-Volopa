@@ -24,21 +24,19 @@ class OptPocketExpenseTypeFactory extends Factory
      */
     public function definition(): array
     {
-        // Use seeded expense type options from the migration
+        // Default to one of the existing expense types from seeded data
         $expenseTypes = [
             ['option' => 'ATM Withdrawal', 'amount_sign' => 'negative'],
             ['option' => 'Point of Sale', 'amount_sign' => 'negative'],
             ['option' => 'Fee & Charges', 'amount_sign' => 'negative'],
             ['option' => 'Refund from Merchant', 'amount_sign' => 'positive'],
         ];
-
-        $selectedType = $this->faker->randomElement($expenseTypes);
-
+        
+        $randomType = $this->faker->randomElement($expenseTypes);
+        
         return [
-            'option' => $selectedType['option'],
-            'amount_sign' => $selectedType['amount_sign'],
-            'create_time' => now(),
-            'update_time' => now(),
+            'option' => $randomType['option'],
+            'amount_sign' => $randomType['amount_sign'],
         ];
     }
 
@@ -67,7 +65,7 @@ class OptPocketExpenseTypeFactory extends Factory
     }
 
     /**
-     * Create an ATM Withdrawal expense type.
+     * Create ATM Withdrawal expense type.
      *
      * @return static
      */
@@ -80,7 +78,7 @@ class OptPocketExpenseTypeFactory extends Factory
     }
 
     /**
-     * Create a Point of Sale expense type.
+     * Create Point of Sale expense type.
      *
      * @return static
      */
@@ -93,11 +91,11 @@ class OptPocketExpenseTypeFactory extends Factory
     }
 
     /**
-     * Create a Fee & Charges expense type.
+     * Create Fee & Charges expense type.
      *
      * @return static
      */
-    public function feeCharges(): static
+    public function feeAndCharges(): static
     {
         return $this->state(fn (array $attributes) => [
             'option' => 'Fee & Charges',
@@ -106,11 +104,11 @@ class OptPocketExpenseTypeFactory extends Factory
     }
 
     /**
-     * Create a Refund from Merchant expense type.
+     * Create Refund from Merchant expense type.
      *
      * @return static
      */
-    public function refundFromMerchant(): static
+    public function refund(): static
     {
         return $this->state(fn (array $attributes) => [
             'option' => 'Refund from Merchant',
@@ -119,7 +117,7 @@ class OptPocketExpenseTypeFactory extends Factory
     }
 
     /**
-     * Create a custom expense type with specific option.
+     * Create a custom expense type with specified option name.
      *
      * @param string $option
      * @param string $amountSign

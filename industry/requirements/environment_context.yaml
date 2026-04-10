@@ -5,11 +5,14 @@
 #   SD-OOP_Expense_single_data_capturing.json
 # Context: Environment - stable, cross-project rules, standards, and platform constraints
 #
-# This file covers 4 of the 6 canonical dimensions:
-#   Intent, Requirements, Constraints, Decisions
-# The 5th dimension (Interfaces) is in environment_artifacts.yaml, which serves
-#   as a RAG repository substitute for existing platform symbols.
-# The 6th dimension (Flows) is always project-scoped — see project_context.yaml.
+# This file covers 4 of the 5 canonical dimensions:
+#   Intent, Constraints, Decisions, Interfaces
+# The 5th dimension (Flows) is always project-scoped — see project_context.yaml.
+#
+# The Interfaces dimension (existing platform tables, models, middleware,
+#   endpoints, infrastructure) was previously in environment_artifacts.yaml.
+# Those symbols are now indexed in a live OpenSearch RAG repository;
+#   the canonical listing is kept here for documentation and fallback.
 
 metadata:
   platform_name: "Volopa"
@@ -20,8 +23,7 @@ metadata:
     - "SD-OOP_Expense_single_data_capturing.json"
     - "dos_and_donts.pdf"
   generated_date: "2026-02-11"
-  note: "This captures platform-level intent, requirements, constraints, and decisions. Existing platform symbols (tables, models, middleware, endpoints) are in environment_artifacts.yaml. Flows (dynamic behavior/sequencing) are always project-specific — see project_context.yaml."
-  companion_file: "environment_artifacts.yaml (Interfaces dimension - RAG substitute)"
+  note: "This captures platform-level intent, constraints, decisions, and interfaces. Existing platform symbols (tables, models, middleware, endpoints) are now indexed in the live OpenSearch RAG repository; the Interfaces dimension below serves as canonical documentation and fallback. Flows (dynamic behavior/sequencing) are always project-specific — see project_context.yaml."
 
 # =============================================================================
 # 1. INTENT
@@ -423,3 +425,386 @@ decisions:
     - id: "ENV-DEC-UNRESOLVED-004"
       area: "Table naming convention"
       question: "Specs reference both 'clients(id)' and 'client(id)', and both 'users(id)' and 'user(id)'. What is the actual table name convention - singular or plural?"
+
+# =============================================================================
+# 4. INTERFACES (Existing Platform Tables, Models, Middleware, Endpoints, Infra)
+# =============================================================================
+# Previously in environment_artifacts.yaml (RAG substitute).
+# These symbols are now indexed in the live OpenSearch RAG repository
+# (volopa_platform_symbols). This section serves as canonical documentation
+# and fallback reference.
+interfaces:
+  description: "Structural contracts and schemas - existing platform tables, services, and infrastructure"
+
+  # ---------------------------------------------------------------------------
+  # Existing Database Tables
+  # ---------------------------------------------------------------------------
+  existing_database_tables:
+    description: "Platform tables referenced by OOP Expense specs via foreign keys or queries"
+
+    core_identity:
+      - name: "users"
+        origin: EXISTING
+        description: "Platform user table - all user roles"
+        type: "Database Table"
+        referenced_in:
+          - "SD-OOP_User_Management_System.json#er_diagram (FK target)"
+          - "SD-OOP_User_Management_System.json#database_schema (FK: user_id, grantor_id, manager_user_id)"
+          - "SD-OOP_Expense_single_data_capturing.json#database_schema (FK: user_id, created_by_user_id, approved_by_user_id)"
+          - "SD-OOP_Pocket_expense.json#api_contract (exists validation: user_id, expense_user_id)"
+        key_columns_used:
+          - { column: "id", type: "BIGINT UNSIGNED / INT(11) UNSIGNED", note: "Referenced as FK by multiple new tables" }
+
+      - name: "clients"
+        origin: EXISTING
+        description: "Platform client/company table - multi-tenancy anchor"
+        type: "Database Table"
+        referenced_in:
+          - "SD-OOP_User_Management_System.json#er_diagram (FK target)"
+          - "SD-OOP_User_Management_System.json#database_schema (FK: client_id)"
+          - "SD-OOP_Expense_single_data_capturing.json#database_schema (FK: client_id)"
+          - "SD-OOP_Pocket_expense.json#api_contract (exists validation: client_id)"
+        key_columns_used:
+          - { column: "id", type: "BIGINT UNSIGNED / INT(10) UNSIGNED", note: "Referenced as FK by all new tables" }
+        note: "Specs reference both 'clients(id)' and 'client(id)' - likely the same table with inconsistent naming"
+
+      - name: "features"
+        origin: EXISTING
+        description: "Platform feature registry - tracks available features per client"
+        type: "Database Table"
+        referenced_in:
+          - "SD-OOP_User_Management_System.json#er_diagram (FK target)"
+          - "SD-OOP_User_Management_System.json#database_schema (FK: feature_id)"
+        key_columns_used:
+          - { column: "id", type: "BIGINT UNSIGNED", note: "OOP Expense is feature_id = 16 based on example data" }
+
+    metadata_references:
+      - name: "transaction_category"
+        origin: EXISTING
+        description: "Platform transaction categorisation table"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata (FK: transaction_category_id)"
+        key_columns_used:
+          - { column: "id", type: "INT(10) UNSIGNED" }
+
+      - name: "tracking_codes"
+        origin: EXISTING
+        description: "Platform tracking code table for cost centre / department tracking"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata (FK: tracking_code_id)"
+        key_columns_used:
+          - { column: "id", type: "INT(10) UNSIGNED" }
+
+      - name: "configurable_projects"
+        origin: EXISTING
+        description: "Platform project configuration table"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata (FK: project_id)"
+        key_columns_used:
+          - { column: "id", type: "INT(10) UNSIGNED" }
+
+      - name: "file_store"
+        origin: EXISTING
+        description: "Platform file storage reference table (for receipts, attachments)"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata (FK: file_store_id)"
+        key_columns_used:
+          - { column: "id", type: "INT(10) UNSIGNED" }
+
+      - name: "expense_additional_field"
+        origin: EXISTING
+        description: "Platform configurable additional fields for expenses"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata (FK: additional_field_id)"
+        key_columns_used:
+          - { column: "id", type: "INT(10) UNSIGNED" }
+
+    fx_and_card_infrastructure:
+      - name: "prepaid_card"
+        origin: EXISTING
+        description: "Card records; used to determine client wallet base currency"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+        filter_conditions: ["master_virtual_card = 1", "deleted = 0"]
+
+      - name: "prepaid_card_tier_map"
+        origin: EXISTING
+        description: "Mapping between cards and account tiers"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+
+      - name: "account_tier"
+        origin: EXISTING
+        description: "Account tier definitions with base currency"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+
+      - name: "account"
+        origin: EXISTING
+        description: "Financial accounts with base currency"
+        type: "Database Table"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+
+      - name: "currency"
+        origin: EXISTING
+        description: "Master currency table (ISO codes)"
+        type: "Database Table"
+        referenced_in:
+          - "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+          - "SD-OOP_Pocket_expense.json#validation_service (Currency Code validation)"
+
+    validation_reference_data:
+      - name: "Supported currencies list"
+        origin: EXISTING
+        description: "Platform-managed list of supported currency codes (3-letter ISO)"
+        type: "Reference Data"
+        referenced_in:
+          - "SD-OOP_Pocket_expense.json#validation_service.preloaded_reference_data"
+          - "SD-OOP_Pocket_expense.json#csv_file_definition.columns[Currency Code]"
+        used_for: "CSV validation - Currency Code column"
+
+      - name: "Supported countries list"
+        origin: EXISTING
+        description: "Platform-managed list of supported countries"
+        type: "Reference Data"
+        referenced_in:
+          - "SD-OOP_Pocket_expense.json#validation_service.preloaded_reference_data"
+          - "SD-OOP_Pocket_expense.json#csv_file_definition.columns[Merchant Country]"
+        used_for: "CSV validation - Merchant Country column"
+
+  # ---------------------------------------------------------------------------
+  # Existing Eloquent Models
+  # ---------------------------------------------------------------------------
+  standard_volopa_models:
+    description: "Existing Volopa platform Eloquent models available for integration"
+    category: "Platform Standard Models"
+    models:
+      - name: "User"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "User authentication and identity model"
+        table: "users"
+        referenced_in:
+          - "SD-OOP_User_Management_System.json#database_schema (FK target)"
+          - "SD-OOP_Pocket_expense.json#api_contract (exists validation)"
+
+      - name: "Client"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Client/organization model - multi-tenancy anchor"
+        table: "clients"
+        referenced_in:
+          - "SD-OOP_User_Management_System.json#database_schema (FK target)"
+          - "SD-OOP_Pocket_expense.json#api_contract (exists validation)"
+
+      - name: "ClientFeatures"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Client feature flags - tracks which features are enabled per client"
+        referenced_in: "SD-OOP_Pocket_expense.json#api_contract.additional_checks (Client has OOP feature enabled)"
+        note: "Backing table unknown — no table field defined"
+        see: "project_context.yaml#decisions.unresolved[DEC-UNRESOLVED-004]"
+
+      - name: "Account"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Financial account model with base currency"
+        table: "account"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+
+      - name: "PrepaidCard"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Card model; master_virtual_card used for wallet currency lookup"
+        table: "prepaid_card"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+
+      - name: "Currency"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Master currency model (ISO codes)"
+        table: "currency"
+        referenced_in:
+          - "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+          - "SD-OOP_Pocket_expense.json#validation_service"
+
+      - name: "TransactionCategory"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Transaction categorisation model"
+        table: "transaction_category"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata"
+
+      - name: "TrackingCode"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Tracking code model for cost centre / department tracking"
+        table: "tracking_codes"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata"
+
+      - name: "ConfigurableProject"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Project configuration model"
+        table: "configurable_projects"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata"
+
+      - name: "FileStore"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "File storage reference model (receipts, attachments)"
+        table: "file_store"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata"
+
+      - name: "ExpenseAdditionalField"
+        origin: EXISTING
+        type: "Eloquent Model"
+        description: "Configurable additional fields for expenses"
+        table: "expense_additional_field"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#database_schema.pocket_expense_metadata"
+
+  # ---------------------------------------------------------------------------
+  # Existing User Roles
+  # ---------------------------------------------------------------------------
+  existing_user_roles:
+    description: "Platform user role hierarchy - pre-existing, not created by OOP Expense"
+    origin: EXISTING
+    roles:
+      - name: "Primary Administrator"
+        description: "Highest-level client user. Full access to all users and features."
+        referenced_in: "SD-OOP_User_Management_System.json#permission_metrics"
+
+      - name: "Administrator"
+        description: "Client admin user. Limited to own resources by default; expandable via delegation."
+        referenced_in: "SD-OOP_User_Management_System.json#permission_metrics"
+
+      - name: "Business User"
+        description: "Standard business user. Own-resource access only; no approval rights."
+        referenced_in: "SD-OOP_User_Management_System.json#permission_metrics"
+
+      - name: "Card User"
+        description: "Card-holding user. Own-resource access only; no approval rights."
+        referenced_in: "SD-OOP_User_Management_System.json#permission_metrics"
+
+      - name: "Volopa Admin"
+        description: "Internal Volopa operations user. Manages clients via Admin.Volopa."
+        referenced_in: "SD-OOP_User_Management_System.json#access_control_flow.granting_managing_rights"
+
+  # ---------------------------------------------------------------------------
+  # Existing Middleware
+  # ---------------------------------------------------------------------------
+  standard_volopa_middleware:
+    description: "Existing Volopa middleware components"
+    category: "Platform Middleware"
+    components:
+      - name: "Oauth2UserClient"
+        origin: EXISTING
+        type: "Middleware"
+        description: "OAuth2 token-based authentication middleware. Validates access tokens for all API requests. All OOP Expense endpoints must use this middleware."
+        referenced_in:
+          - "SD-OOP_Pocket_expense.json#api_contract.route.middleware"
+          - "SD-OOP_Pocket_expense.json#security_and_permissions"
+        applied_to: "All routes in routes/api.php"
+
+  # ---------------------------------------------------------------------------
+  # Existing Endpoints
+  # ---------------------------------------------------------------------------
+  existing_endpoints:
+    - name: "/wallet-ccy-value"
+      origin: EXISTING
+      type: "API Endpoint"
+      description: "Returns wallet base currency information for a client. Used by FX conversion flow to identify the target currency for conversion."
+      referenced_in: "SD-OOP_Expense_single_data_capturing.json#fx_conversion_flow.step_2_fx_calculation"
+      returns:
+        - "client_id"
+        - "account_base_currency_id"
+        - "account_base_currency_code"
+        - "tier_base_currency_id"
+        - "tier_base_currency_code"
+        - "card_currency"
+
+  # ---------------------------------------------------------------------------
+  # Existing Infrastructure
+  # ---------------------------------------------------------------------------
+  standard_volopa_infrastructure:
+    description: "Existing Volopa infrastructure components"
+    category: "Platform Infrastructure"
+
+    components:
+      - name: "FX Service"
+        origin: EXISTING
+        type: "Infrastructure"
+        description: "Platform FX rate and commission infrastructure"
+        referenced_in: "SD-OOP_Expense_single_data_capturing.json#fx_conversion_flow.step_2_fx_calculation"
+        capabilities:
+          - "FX rate lookup by date and currency pair"
+          - "Client commission configuration and application"
+        see: "project_context.yaml#constraints.fx_constraints for OOP-specific rules (formula, 30-day lookback, debounce)"
+
+      - name: "Queue"
+        origin: EXISTING
+        type: "Infrastructure"
+        description: "Laravel queue system for async job processing"
+        referenced_in: "SD-OOP_Pocket_expense.json#storing_pocket_expenses_from_file_upload"
+        used_for: "ProcessExpenseUpload background job dispatch"
+
+      - name: "Storage"
+        origin: EXISTING
+        type: "Infrastructure"
+        description: "Platform file storage (Laravel storage/app/) for uploaded files"
+        referenced_in: "SD-OOP_Pocket_expense.json#file_processing.steps[1]"
+        path_pattern: "storage/app/pocket-expense-uploads"
+
+      - name: "Notification System"
+        origin: UNKNOWN
+        type: "Infrastructure"
+        description: "Platform notification infrastructure (channels TBD: in-app, email)"
+        referenced_in: "SD-OOP_Pocket_expense.json#file_processing.steps[5]"
+        note: "Assumed to exist at platform level but exact channel and implementation unclear"
+        see: "project_context.yaml#decisions.unresolved[DEC-UNRESOLVED-001]"
+
+  # ---------------------------------------------------------------------------
+  # Existing UI Entry Points
+  # ---------------------------------------------------------------------------
+  existing_ui_entry_points:
+    description: "Pre-existing UI paths and admin tools referenced by OOP Expense specs"
+    paths:
+      - name: "Settings > Manage Users"
+        origin: EXISTING
+        context: "Web App (client-facing)"
+        type: "UI Path"
+        description: "Existing user management UI where permission delegation for OOP Expense will be configured"
+        referenced_in: "SD-OOP_User_Management_System.json#access_control_flow.granting_managing_rights"
+
+      - name: "Admin.Volopa: User accounts page"
+        origin: EXISTING
+        context: "Admin.Volopa (internal ops)"
+        type: "UI Path"
+        description: "Internal admin tool for managing client users and feature enablement"
+        referenced_in:
+          - "SD-OOP_User_Management_System.json#access_control_flow.granting_managing_rights"
+          - "SD-OOP_User_Management_System.json#access_control_flow.revoking_managing_rights"
+
+  # ---------------------------------------------------------------------------
+  # FX Query Contract
+  # ---------------------------------------------------------------------------
+  fx_query_contract:
+    description: "The join chain used to determine a client's wallet base currency"
+    origin: EXISTING
+    source: "SD-OOP_Expense_single_data_capturing.json#currency_conversion"
+    join_chain:
+      - { step: 1, table: "prepaid_card", join_to: "prepaid_card_tier_map", on: "card_id" }
+      - { step: 2, table: "prepaid_card_tier_map", join_to: "account_tier", on: "tier_id" }
+      - { step: 3, table: "account_tier", join_to: "account", on: "account_id" }
+      - { step: 4, table: "account", join_to: "currency", on: "currency_id" }
+    filter_conditions:
+      - "client_id = {target_client_id}"
+      - "prepaid_card.master_virtual_card = 1"
+      - "prepaid_card.deleted = 0"
+    returned_fields:
+      - "client_id"
+      - "account_base_currency_id"
+      - "account_base_currency_code"
+      - "tier_base_currency_id"
+      - "tier_base_currency_code"
+      - "card_currency"

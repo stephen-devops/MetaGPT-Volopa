@@ -3,16 +3,13 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
-use App\Models\PocketExpenseSourceClientConfig;
-use App\Policies\PocketExpenseSourcePolicy;
 use Illuminate\Validation\Rule;
 
 /**
  * StorePocketExpenseSourceRequest
  * 
- * Form request validation for creating PocketExpenseSourceClientConfig.
- * Enforces unique source names per client and validates against system constraints.
- * Maximum 20 active expense sources per client.
+ * Handles validation for creating new expense sources.
+ * Validates source name uniqueness per client and enforces constraints.
  */
 class StorePocketExpenseSourceRequest extends FormRequest
 {
@@ -23,14 +20,15 @@ class StorePocketExpenseSourceRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        // Use PocketExpenseSourcePolicy to check create permission
-        return $this->user()->can('create', PocketExpenseSourceClientConfig::class);
+        // TODO: Implement authorization logic using PocketExpenseSourceClientConfigPolicy
+        // Should check if authenticated user can create expense sources for the client
+        return true;
     }
 
     /**
      * Get the validation rules that apply to the request.
      *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
+     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array|string>
      */
     public function rules(): array
     {
@@ -39,48 +37,19 @@ class StorePocketExpenseSourceRequest extends FormRequest
                 'required',
                 'integer',
                 'exists:clients,id',
-                function ($attribute, $value, $fail) {
-                    // Check if client has reached maximum 20 active sources
-                    $activeSourcesCount = PocketExpenseSourceClientConfig::active()
-                        ->forClient($value)
-                        ->count();
-                    
-                    if ($activeSourcesCount >= 20) {
-                        $fail('Client has reached maximum limit of 20 active expense sources.');
-                    }
-                },
             ],
             'name' => [
                 'required',
                 'string',
                 'max:100',
-                Rule::unique('pocket_expense_source_client_config')
+                Rule::unique('pocket_expense_source_client_config', 'name')
                     ->where('client_id', $this->input('client_id'))
-                    ->where('deleted', 0), // Only check against non-deleted sources
+                    ->where('deleted', 0), // Only check against active sources
             ],
             'is_default' => [
                 'sometimes',
                 'boolean',
             ],
-        ];
-    }
-
-    /**
-     * Get custom error messages for validation rules.
-     *
-     * @return array<string, string>
-     */
-    public function messages(): array
-    {
-        return [
-            'client_id.required' => 'Client ID is required.',
-            'client_id.integer' => 'Client ID must be an integer.',
-            'client_id.exists' => 'Selected client does not exist.',
-            'name.required' => 'Source name is required.',
-            'name.string' => 'Source name must be a string.',
-            'name.max' => 'Source name may not be greater than 100 characters.',
-            'name.unique' => 'Source name already exists for this client.',
-            'is_default.boolean' => 'Default flag must be true or false.',
         ];
     }
 
@@ -93,30 +62,44 @@ class StorePocketExpenseSourceRequest extends FormRequest
     {
         return [
             'client_id' => 'client',
-            'name' => 'source name',
-            'is_default' => 'default status',
+            'name' => 'expense source name',
+            'is_default' => 'default source flag',
+        ];
+    }
+
+    /**
+     * Get custom validation messages.
+     *
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'name.unique' => 'An expense source with this name already exists for this client.',
+            'name.max' => 'The expense source name may not be greater than 100 characters.',
+            'client_id.required' => 'A client must be specified.',
+            'client_id.exists' => 'The selected client does not exist.',
         ];
     }
 
     /**
      * Prepare the data for validation.
-     *
+     * 
      * @return void
      */
     protected function prepareForValidation(): void
     {
-        // Set default value for is_default if not provided
-        if (!$this->has('is_default')) {
+        // Trim whitespace from name field
+        if ($this->has('name')) {
             $this->merge([
-                'is_default' => false,
+                'name' => trim($this->input('name'))
             ]);
         }
 
-        // Ensure client_id is from the authenticated user's context
-        // This should be validated against user's accessible clients in the policy
-        if ($this->has('client_id')) {
+        // Set default value for is_default if not provided
+        if (!$this->has('is_default')) {
             $this->merge([
-                'client_id' => (int) $this->input('client_id'),
+                'is_default' => false
             ]);
         }
     }
@@ -127,36 +110,41 @@ class StorePocketExpenseSourceRequest extends FormRequest
      * @param \Illuminate\Validation\Validator $validator
      * @return void
      */
-    public function withValidator(\Illuminate\Validation\Validator $validator): void
+    public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
-            // Additional validation: Prevent creating global 'Other' source
-            if ($this->input('name') === 'Other' && is_null($this->input('client_id'))) {
-                $validator->errors()->add('name', 'Global "Other" source cannot be created through this endpoint.');
+            // Check maximum 20 active expense sources per client constraint
+            if ($this->input('client_id')) {
+                $activeSourcesCount = \App\Models\PocketExpenseSourceClientConfig::where('client_id', $this->input('client_id'))
+                    ->where('deleted', 0)
+                    ->count();
+                    
+                if ($activeSourcesCount >= 20) {
+                    $validator->errors()->add('client_id', 'This client already has the maximum of 20 active expense sources.');
+                }
             }
 
-            // Additional validation: Check if user can manage this client
-            $clientId = $this->input('client_id');
-            if ($clientId && !$this->userCanManageClient($clientId)) {
-                $validator->errors()->add('client_id', 'You do not have permission to manage sources for this client.');
+            // Prevent creating sources with reserved names that conflict with global sources
+            if ($this->input('name') === 'Other') {
+                $validator->errors()->add('name', 'The name "Other" is reserved for the global expense source.');
             }
         });
     }
 
     /**
-     * Check if the authenticated user can manage the specified client.
-     * 
-     * TODO: Implement actual client access checking based on user permissions
-     * This should verify that the user has management rights for the client
+     * Get the validated data with additional processing.
      *
-     * @param int $clientId
-     * @return bool
+     * @return array
      */
-    private function userCanManageClient(int $clientId): bool
+    public function validated($key = null, $default = null): array
     {
-        // TODO: Implement proper client access validation
-        // This should check user's client access permissions
-        // For now, return true as placeholder
-        return true;
+        $validated = parent::validated($key, $default);
+        
+        // Ensure boolean conversion for is_default
+        if (isset($validated['is_default'])) {
+            $validated['is_default'] = (int) $validated['is_default'];
+        }
+        
+        return $validated;
     }
 }

@@ -3,7 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseSourceClientConfig;
-use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
 
@@ -26,58 +25,46 @@ class PocketExpenseSourceClientConfigFactory extends Factory
      */
     public function definition(): array
     {
-        // Default source names that align with system constraints (3 defaults auto-created)
-        $defaultSources = [
+        // Default expense source names that would be commonly used
+        $sourceNames = [
             'Cash',
             'Corporate Card',
             'Personal Card',
-            'Online Banking',
-            'Credit Card',
+            'Bank Transfer',
             'Debit Card',
-            'Company Account',
+            'Credit Card',
             'Petty Cash',
-            'Travel Card',
-            'Expense Account'
+            'Company Account',
+            'Personal Account',
+            'Travel Card'
         ];
 
         return [
-            'uuid' => Str::uuid()->toString(),
-            'client_id' => Client::factory(),
-            'name' => $this->faker->randomElement($defaultSources),
-            'is_default' => $this->faker->boolean(20), // 20% chance of being default
-            'deleted' => 0,
-            'delete_time' => null,
+            'uuid' => (string) Str::uuid(),
+            'client_id' => 1, // Default to client ID 1, should be overridden in tests with actual client
+            'name' => $this->faker->randomElement($sourceNames),
+            'is_default' => 0, // Default to non-default source
+            'deleted' => 0, // Active by default
+            'delete_time' => null, // Not deleted
             'create_time' => now(),
-            'update_time' => now(),
+            'update_time' => null,
         ];
     }
 
     /**
-     * Indicate that the source is a default source.
+     * Indicate that the expense source is a default source.
      *
      * @return static
      */
-    public function default(): static
+    public function isDefault(): static
     {
         return $this->state(fn (array $attributes) => [
-            'is_default' => true,
+            'is_default' => 1,
         ]);
     }
 
     /**
-     * Indicate that the source is not a default source.
-     *
-     * @return static
-     */
-    public function notDefault(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'is_default' => false,
-        ]);
-    }
-
-    /**
-     * Indicate that the source is soft deleted.
+     * Indicate that the expense source is soft deleted.
      *
      * @return static
      */
@@ -90,60 +77,7 @@ class PocketExpenseSourceClientConfigFactory extends Factory
     }
 
     /**
-     * Create a Cash source.
-     *
-     * @return static
-     */
-    public function cash(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => 'Cash',
-            'is_default' => true,
-        ]);
-    }
-
-    /**
-     * Create a Corporate Card source.
-     *
-     * @return static
-     */
-    public function corporateCard(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => 'Corporate Card',
-            'is_default' => true,
-        ]);
-    }
-
-    /**
-     * Create a Personal Card source.
-     *
-     * @return static
-     */
-    public function personalCard(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'name' => 'Personal Card',
-            'is_default' => true,
-        ]);
-    }
-
-    /**
-     * Create the global 'Other' source with null client_id.
-     *
-     * @return static
-     */
-    public function globalOther(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'client_id' => null,
-            'name' => 'Other',
-            'is_default' => false,
-        ]);
-    }
-
-    /**
-     * Create a source for a specific client.
+     * Set the client for this expense source.
      *
      * @param int $clientId
      * @return static
@@ -156,7 +90,60 @@ class PocketExpenseSourceClientConfigFactory extends Factory
     }
 
     /**
-     * Create a source with a specific name.
+     * Create a global "Other" source (client_id = null).
+     *
+     * @return static
+     */
+    public function globalOther(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'client_id' => null,
+            'name' => 'Other',
+            'is_default' => 0,
+        ]);
+    }
+
+    /**
+     * Create Cash expense source.
+     *
+     * @return static
+     */
+    public function cash(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'name' => 'Cash',
+            'is_default' => 1,
+        ]);
+    }
+
+    /**
+     * Create Corporate Card expense source.
+     *
+     * @return static
+     */
+    public function corporateCard(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'name' => 'Corporate Card',
+            'is_default' => 1,
+        ]);
+    }
+
+    /**
+     * Create Personal Card expense source.
+     *
+     * @return static
+     */
+    public function personalCard(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'name' => 'Personal Card',
+            'is_default' => 1,
+        ]);
+    }
+
+    /**
+     * Create expense source with custom name.
      *
      * @param string $name
      * @return static
@@ -169,17 +156,14 @@ class PocketExpenseSourceClientConfigFactory extends Factory
     }
 
     /**
-     * Create the three default sources for a client as per system constraints.
+     * Set the expense source as updated.
      *
-     * @param int $clientId
-     * @return array<static>
+     * @return static
      */
-    public function createDefaultSources(int $clientId): array
+    public function updated(): static
     {
-        return [
-            $this->forClient($clientId)->cash(),
-            $this->forClient($clientId)->corporateCard(),
-            $this->forClient($clientId)->personalCard(),
-        ];
+        return $this->state(fn (array $attributes) => [
+            'update_time' => now(),
+        ]);
     }
 }

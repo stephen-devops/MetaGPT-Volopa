@@ -3,8 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpense;
-use App\Models\User;
-use App\Models\Client;
 use App\Models\OptPocketExpenseType;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Str;
@@ -29,45 +27,34 @@ class PocketExpenseFactory extends Factory
      */
     public function definition(): array
     {
-        // Generate a date within the last 3 years as per system constraints
-        $maxDate = now();
-        $minDate = now()->subYears(3);
+        // Common currencies
+        $currencies = ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF'];
+        
+        // Default to past 30 days to avoid 3-year constraint issues
+        $expenseDate = $this->faker->dateTimeBetween('-30 days', 'now')->format('Y-m-d');
         
         return [
-            'uuid' => Str::uuid()->toString(),
-            'user_id' => User::factory(),
-            'client_id' => Client::factory(),
-            'date' => $this->faker->dateTimeBetween($minDate, $maxDate)->format('Y-m-d'),
-            'merchant_name' => $this->faker->company,
-            'merchant_description' => $this->faker->optional(0.7)->catchPhrase,
-            'expense_type' => OptPocketExpenseType::factory(),
-            'currency' => $this->faker->randomElement(['USD', 'EUR', 'GBP', 'CAD', 'AUD']),
-            'amount' => $this->faker->randomFloat(2, 10, 5000),
-            'merchant_address' => $this->faker->optional(0.6)->address,
-            'vat_amount' => $this->faker->optional(0.4)->randomFloat(2, 1, 500),
-            'notes' => $this->faker->optional(0.5)->sentence,
-            'status' => $this->faker->randomElement(['draft', 'submitted', 'approved', 'rejected']),
-            'created_by_user_id' => User::factory(),
-            'updated_by_user_id' => $this->faker->optional(0.6)->passthrough(User::factory()),
-            'approved_by_user_id' => $this->faker->optional(0.3)->passthrough(User::factory()),
+            'uuid' => (string) Str::uuid(),
+            'user_id' => 1, // Default to user ID 1, should be overridden in tests with actual user
+            'client_id' => 1, // Default to client ID 1, should be overridden in tests with actual client
+            'date' => $expenseDate,
+            'merchant_name' => $this->faker->company(),
+            'merchant_description' => $this->faker->optional()->sentence(6),
+            'expense_type' => 1, // Default to first expense type, should be overridden with actual OptPocketExpenseType ID
+            'currency' => $this->faker->randomElement($currencies),
+            'amount' => $this->faker->randomFloat(2, 5, 1000), // Random amount between 5 and 1000
+            'merchant_address' => $this->faker->optional()->address(),
+            'vat_amount' => $this->faker->optional()->randomFloat(2, 0, 100),
+            'notes' => $this->faker->optional()->text(200),
+            'status' => 'draft',
+            'created_by_user_id' => 1, // Default to user ID 1, should be overridden in tests
+            'updated_by_user_id' => null,
+            'approved_by_user_id' => null,
+            'create_time' => now(),
+            'update_time' => null,
             'deleted' => 0,
             'delete_time' => null,
-            'create_time' => now(),
-            'update_time' => now(),
         ];
-    }
-
-    /**
-     * Indicate that the expense is in draft status.
-     *
-     * @return static
-     */
-    public function draft(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'status' => 'draft',
-            'approved_by_user_id' => null,
-        ]);
     }
 
     /**
@@ -79,7 +66,6 @@ class PocketExpenseFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'status' => 'submitted',
-            'approved_by_user_id' => null,
         ]);
     }
 
@@ -92,7 +78,7 @@ class PocketExpenseFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'status' => 'approved',
-            'approved_by_user_id' => User::factory(),
+            'approved_by_user_id' => 1, // Should be overridden with actual approver user ID
         ]);
     }
 
@@ -105,7 +91,6 @@ class PocketExpenseFactory extends Factory
     {
         return $this->state(fn (array $attributes) => [
             'status' => 'rejected',
-            'approved_by_user_id' => User::factory(),
         ]);
     }
 
@@ -123,62 +108,33 @@ class PocketExpenseFactory extends Factory
     }
 
     /**
-     * Create an expense for a specific user and client.
+     * Set the user for this expense.
      *
      * @param int $userId
-     * @param int $clientId
      * @return static
      */
-    public function forUser(int $userId, int $clientId): static
+    public function forUser(int $userId): static
     {
         return $this->state(fn (array $attributes) => [
             'user_id' => $userId,
+        ]);
+    }
+
+    /**
+     * Set the client for this expense.
+     *
+     * @param int $clientId
+     * @return static
+     */
+    public function forClient(int $clientId): static
+    {
+        return $this->state(fn (array $attributes) => [
             'client_id' => $clientId,
         ]);
     }
 
     /**
-     * Create an expense with specific amount and currency.
-     *
-     * @param float $amount
-     * @param string $currency
-     * @return static
-     */
-    public function withAmount(float $amount, string $currency = 'USD'): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'amount' => $amount,
-            'currency' => $currency,
-        ]);
-    }
-
-    /**
-     * Create an expense with VAT amount.
-     *
-     * @param float|null $vatAmount
-     * @return static
-     */
-    public function withVat(float $vatAmount = null): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'vat_amount' => $vatAmount ?? $this->faker->randomFloat(2, 1, 100),
-        ]);
-    }
-
-    /**
-     * Create an expense without VAT.
-     *
-     * @return static
-     */
-    public function withoutVat(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'vat_amount' => null,
-        ]);
-    }
-
-    /**
-     * Create an expense with specific expense type.
+     * Set the expense type.
      *
      * @param int $expenseTypeId
      * @return static
@@ -191,44 +147,33 @@ class PocketExpenseFactory extends Factory
     }
 
     /**
-     * Create an expense with a specific date.
+     * Set the currency for this expense.
      *
-     * @param string $date
+     * @param string $currency
      * @return static
      */
-    public function withDate(string $date): static
+    public function withCurrency(string $currency): static
     {
         return $this->state(fn (array $attributes) => [
-            'date' => $date,
+            'currency' => strtoupper($currency),
         ]);
     }
 
     /**
-     * Create an expense from today.
+     * Set the amount for this expense.
      *
+     * @param float $amount
      * @return static
      */
-    public function today(): static
+    public function withAmount(float $amount): static
     {
         return $this->state(fn (array $attributes) => [
-            'date' => now()->format('Y-m-d'),
+            'amount' => $amount,
         ]);
     }
 
     /**
-     * Create an expense from recent dates (within last 30 days).
-     *
-     * @return static
-     */
-    public function recent(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'date' => $this->faker->dateTimeBetween('-30 days', 'now')->format('Y-m-d'),
-        ]);
-    }
-
-    /**
-     * Create an expense with specific merchant name.
+     * Set the merchant name.
      *
      * @param string $merchantName
      * @return static
@@ -241,7 +186,74 @@ class PocketExpenseFactory extends Factory
     }
 
     /**
-     * Create an expense with notes.
+     * Set the expense date.
+     *
+     * @param string $date
+     * @return static
+     */
+    public function withDate(string $date): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'date' => $date,
+        ]);
+    }
+
+    /**
+     * Set the created by user.
+     *
+     * @param int $userId
+     * @return static
+     */
+    public function createdBy(int $userId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'created_by_user_id' => $userId,
+        ]);
+    }
+
+    /**
+     * Set the updated by user.
+     *
+     * @param int $userId
+     * @return static
+     */
+    public function updatedBy(int $userId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'updated_by_user_id' => $userId,
+            'update_time' => now(),
+        ]);
+    }
+
+    /**
+     * Set the approved by user.
+     *
+     * @param int $userId
+     * @return static
+     */
+    public function approvedBy(int $userId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'approved_by_user_id' => $userId,
+            'status' => 'approved',
+        ]);
+    }
+
+    /**
+     * Create expense with VAT amount.
+     *
+     * @param float $vatAmount
+     * @return static
+     */
+    public function withVat(float $vatAmount): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'vat_amount' => $vatAmount,
+        ]);
+    }
+
+    /**
+     * Create expense with notes.
      *
      * @param string $notes
      * @return static
@@ -254,15 +266,26 @@ class PocketExpenseFactory extends Factory
     }
 
     /**
-     * Create an expense created by a specific user.
+     * Create expense from recent date (within 30 days).
      *
-     * @param int $createdByUserId
      * @return static
      */
-    public function createdBy(int $createdByUserId): static
+    public function recent(): static
     {
         return $this->state(fn (array $attributes) => [
-            'created_by_user_id' => $createdByUserId,
+            'date' => $this->faker->dateTimeBetween('-30 days', 'now')->format('Y-m-d'),
+        ]);
+    }
+
+    /**
+     * Create expense from older date (within 3 years but older than 30 days).
+     *
+     * @return static
+     */
+    public function older(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'date' => $this->faker->dateTimeBetween('-3 years', '-31 days')->format('Y-m-d'),
         ]);
     }
 }

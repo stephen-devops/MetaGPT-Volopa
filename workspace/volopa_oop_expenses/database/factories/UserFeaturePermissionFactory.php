@@ -3,10 +3,7 @@
 namespace Database\Factories;
 
 use App\Models\UserFeaturePermission;
-use App\Models\User;
-use App\Models\Client;
 use Illuminate\Database\Eloquent\Factories\Factory;
-use Illuminate\Support\Facades\DB;
 
 /**
  * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\UserFeaturePermission>
@@ -28,33 +25,15 @@ class UserFeaturePermissionFactory extends Factory
     public function definition(): array
     {
         return [
-            'user_id' => User::factory(),
-            'client_id' => Client::factory(),
-            'feature_id' => function () {
-                // TODO: Replace with actual feature_id reference when features table structure is confirmed
-                // For now, assuming OOP Expense feature has id = 16 based on system constraints
-                return 16;
-            },
-            'grantor_id' => User::factory(),
-            'manager_user_id' => function () {
-                return $this->faker->boolean(70) ? User::factory() : null;
-            },
-            'is_enabled' => $this->faker->boolean(85),
-            'create_time' => now(),
-            'update_time' => now(),
-        ];
-    }
-
-    /**
-     * Indicate that the permission is enabled.
-     *
-     * @return static
-     */
-    public function enabled(): static
-    {
-        return $this->state(fn (array $attributes) => [
+            'user_id' => 1, // Default to user ID 1, should be overridden in tests with actual user
+            'client_id' => 1, // Default to client ID 1, should be overridden in tests with actual client
+            'feature_id' => 16, // OOP Expense feature ID as per constraints
+            'grantor_id' => 1, // Default to user ID 1 as grantor, should be overridden in tests
+            'manager_user_id' => 1, // Default to user ID 1 as manager, should be overridden in tests
             'is_enabled' => true,
-        ]);
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
     }
 
     /**
@@ -70,55 +49,67 @@ class UserFeaturePermissionFactory extends Factory
     }
 
     /**
-     * Indicate that the permission has a manager.
-     *
-     * @return static
-     */
-    public function withManager(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'manager_user_id' => User::factory(),
-        ]);
-    }
-
-    /**
-     * Indicate that the permission has no manager.
-     *
-     * @return static
-     */
-    public function withoutManager(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'manager_user_id' => null,
-        ]);
-    }
-
-    /**
-     * Create a permission for a specific user and client.
+     * Set the user for this permission.
      *
      * @param int $userId
-     * @param int $clientId
-     * @param int|null $grantorId
      * @return static
      */
-    public function forUser(int $userId, int $clientId, int $grantorId = null): static
+    public function forUser(int $userId): static
     {
         return $this->state(fn (array $attributes) => [
             'user_id' => $userId,
-            'client_id' => $clientId,
-            'grantor_id' => $grantorId ?? User::factory(),
         ]);
     }
 
     /**
-     * Create a permission for OOP Expense feature specifically.
+     * Set the client for this permission.
      *
+     * @param int $clientId
      * @return static
      */
-    public function oopExpenseFeature(): static
+    public function forClient(int $clientId): static
     {
         return $this->state(fn (array $attributes) => [
-            'feature_id' => 16, // OOP Expense feature ID as per system constraints
+            'client_id' => $clientId,
+        ]);
+    }
+
+    /**
+     * Set the feature for this permission.
+     *
+     * @param int $featureId
+     * @return static
+     */
+    public function forFeature(int $featureId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'feature_id' => $featureId,
+        ]);
+    }
+
+    /**
+     * Set the grantor (user who grants the permission).
+     *
+     * @param int $grantorId
+     * @return static
+     */
+    public function grantedBy(int $grantorId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'grantor_id' => $grantorId,
+        ]);
+    }
+
+    /**
+     * Set the manager user (user being managed).
+     *
+     * @param int $managerUserId
+     * @return static
+     */
+    public function managing(int $managerUserId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'manager_user_id' => $managerUserId,
         ]);
     }
 }

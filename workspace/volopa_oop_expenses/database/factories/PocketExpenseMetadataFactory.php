@@ -3,8 +3,6 @@
 namespace Database\Factories;
 
 use App\Models\PocketExpenseMetadata;
-use App\Models\PocketExpense;
-use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 
 /**
@@ -26,6 +24,7 @@ class PocketExpenseMetadataFactory extends Factory
      */
     public function definition(): array
     {
+        // Available metadata types from ENUM constraints
         $metadataTypes = [
             'category',
             'tracking_code_type_1',
@@ -37,151 +36,21 @@ class PocketExpenseMetadataFactory extends Factory
         ];
 
         return [
-            'pocket_expense_id' => PocketExpense::factory(),
+            'pocket_expense_id' => 1, // Default to pocket expense ID 1, should be overridden in tests
             'metadata_type' => $this->faker->randomElement($metadataTypes),
-            'transaction_category_id' => $this->faker->optional(0.3)->passthrough($this->faker->numberBetween(1, 100)),
-            'tracking_code_id' => $this->faker->optional(0.2)->passthrough($this->faker->numberBetween(1, 100)),
-            'project_id' => $this->faker->optional(0.2)->passthrough($this->faker->numberBetween(1, 100)),
-            'file_store_id' => $this->faker->optional(0.1)->passthrough($this->faker->numberBetween(1, 100)),
-            'expense_source_id' => $this->faker->optional(0.4)->passthrough($this->faker->numberBetween(1, 100)),
-            'additional_field_id' => $this->faker->optional(0.1)->passthrough($this->faker->numberBetween(1, 100)),
-            'user_id' => $this->faker->optional(0.3)->passthrough(User::factory()),
-            'details_json' => $this->faker->optional(0.4)->passthrough([
-                'description' => $this->faker->sentence,
-                'reference' => $this->faker->optional()->word,
-                'custom_data' => $this->faker->optional()->words(3, true)
-            ]),
-            'deleted' => 0,
-            'delete_time' => null,
+            'transaction_category_id' => null, // Optional FK, can be set via state methods
+            'tracking_code_id' => null, // Optional FK, can be set via state methods
+            'project_id' => null, // Optional FK, can be set via state methods
+            'file_store_id' => null, // Optional FK, can be set via state methods
+            'expense_source_id' => null, // Optional FK, can be set via state methods
+            'additional_field_id' => null, // Optional FK, can be set via state methods
+            'user_id' => 1, // Default to user ID 1, should be overridden in tests
+            'details_json' => null, // Optional JSON field for additional metadata
             'create_time' => now(),
-            'update_time' => now(),
+            'update_time' => null,
+            'deleted' => 0, // Active by default
+            'delete_time' => null,
         ];
-    }
-
-    /**
-     * Indicate that the metadata is for category type.
-     *
-     * @return static
-     */
-    public function category(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'category',
-            'transaction_category_id' => $this->faker->numberBetween(1, 100),
-            'tracking_code_id' => null,
-            'project_id' => null,
-            'file_store_id' => null,
-            'expense_source_id' => null,
-            'additional_field_id' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the metadata is for tracking code type 1.
-     *
-     * @return static
-     */
-    public function trackingCodeType1(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'tracking_code_type_1',
-            'tracking_code_id' => $this->faker->numberBetween(1, 100),
-            'transaction_category_id' => null,
-            'project_id' => null,
-            'file_store_id' => null,
-            'expense_source_id' => null,
-            'additional_field_id' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the metadata is for tracking code type 2.
-     *
-     * @return static
-     */
-    public function trackingCodeType2(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'tracking_code_type_2',
-            'tracking_code_id' => $this->faker->numberBetween(1, 100),
-            'transaction_category_id' => null,
-            'project_id' => null,
-            'file_store_id' => null,
-            'expense_source_id' => null,
-            'additional_field_id' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the metadata is for project type.
-     *
-     * @return static
-     */
-    public function project(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'project',
-            'project_id' => $this->faker->numberBetween(1, 100),
-            'transaction_category_id' => null,
-            'tracking_code_id' => null,
-            'file_store_id' => null,
-            'expense_source_id' => null,
-            'additional_field_id' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the metadata is for additional field type.
-     *
-     * @return static
-     */
-    public function additionalField(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'additional_field',
-            'additional_field_id' => $this->faker->numberBetween(1, 100),
-            'transaction_category_id' => null,
-            'tracking_code_id' => null,
-            'project_id' => null,
-            'file_store_id' => null,
-            'expense_source_id' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the metadata is for file type.
-     *
-     * @return static
-     */
-    public function file(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'file',
-            'file_store_id' => $this->faker->numberBetween(1, 100),
-            'transaction_category_id' => null,
-            'tracking_code_id' => null,
-            'project_id' => null,
-            'expense_source_id' => null,
-            'additional_field_id' => null,
-        ]);
-    }
-
-    /**
-     * Indicate that the metadata is for expense source type.
-     *
-     * @return static
-     */
-    public function expenseSource(): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'metadata_type' => 'expense_source',
-            'expense_source_id' => $this->faker->numberBetween(1, 100),
-            'transaction_category_id' => null,
-            'tracking_code_id' => null,
-            'project_id' => null,
-            'file_store_id' => null,
-            'additional_field_id' => null,
-        ]);
     }
 
     /**
@@ -198,12 +67,12 @@ class PocketExpenseMetadataFactory extends Factory
     }
 
     /**
-     * Create metadata for a specific pocket expense.
+     * Set the pocket expense for this metadata.
      *
      * @param int $pocketExpenseId
      * @return static
      */
-    public function forExpense(int $pocketExpenseId): static
+    public function forPocketExpense(int $pocketExpenseId): static
     {
         return $this->state(fn (array $attributes) => [
             'pocket_expense_id' => $pocketExpenseId,
@@ -211,25 +80,12 @@ class PocketExpenseMetadataFactory extends Factory
     }
 
     /**
-     * Create metadata with specific details JSON.
-     *
-     * @param array $details
-     * @return static
-     */
-    public function withDetails(array $details): static
-    {
-        return $this->state(fn (array $attributes) => [
-            'details_json' => $details,
-        ]);
-    }
-
-    /**
-     * Create metadata with specific user.
+     * Set the user for this metadata.
      *
      * @param int $userId
      * @return static
      */
-    public function withUser(int $userId): static
+    public function forUser(int $userId): static
     {
         return $this->state(fn (array $attributes) => [
             'user_id' => $userId,
@@ -237,38 +93,216 @@ class PocketExpenseMetadataFactory extends Factory
     }
 
     /**
-     * Create metadata with specific metadata type and ID.
+     * Create category metadata.
      *
-     * @param string $metadataType
-     * @param int $referenceId
+     * @param int|null $transactionCategoryId
      * @return static
      */
-    public function withTypeAndReference(string $metadataType, int $referenceId): static
+    public function category(int $transactionCategoryId = null): static
     {
-        $fieldMapping = [
-            'category' => 'transaction_category_id',
-            'tracking_code_type_1' => 'tracking_code_id',
-            'tracking_code_type_2' => 'tracking_code_id',
-            'project' => 'project_id',
-            'additional_field' => 'additional_field_id',
-            'file' => 'file_store_id',
-            'expense_source' => 'expense_source_id',
-        ];
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'category',
+            'transaction_category_id' => $transactionCategoryId,
+        ]);
+    }
 
-        $state = [
+    /**
+     * Create tracking code type 1 metadata.
+     *
+     * @param int|null $trackingCodeId
+     * @return static
+     */
+    public function trackingCodeType1(int $trackingCodeId = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'tracking_code_type_1',
+            'tracking_code_id' => $trackingCodeId,
+        ]);
+    }
+
+    /**
+     * Create tracking code type 2 metadata.
+     *
+     * @param int|null $trackingCodeId
+     * @return static
+     */
+    public function trackingCodeType2(int $trackingCodeId = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'tracking_code_type_2',
+            'tracking_code_id' => $trackingCodeId,
+        ]);
+    }
+
+    /**
+     * Create project metadata.
+     *
+     * @param int|null $projectId
+     * @return static
+     */
+    public function project(int $projectId = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'project',
+            'project_id' => $projectId,
+        ]);
+    }
+
+    /**
+     * Create file metadata.
+     *
+     * @param int|null $fileStoreId
+     * @return static
+     */
+    public function file(int $fileStoreId = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'file',
+            'file_store_id' => $fileStoreId,
+        ]);
+    }
+
+    /**
+     * Create expense source metadata.
+     *
+     * @param int|null $expenseSourceId
+     * @return static
+     */
+    public function expenseSource(int $expenseSourceId = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'expense_source',
+            'expense_source_id' => $expenseSourceId,
+        ]);
+    }
+
+    /**
+     * Create additional field metadata.
+     *
+     * @param int|null $additionalFieldId
+     * @return static
+     */
+    public function additionalField(int $additionalFieldId = null): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'metadata_type' => 'additional_field',
+            'additional_field_id' => $additionalFieldId,
+        ]);
+    }
+
+    /**
+     * Set JSON details for this metadata.
+     *
+     * @param array $details
+     * @return static
+     */
+    public function withDetails(array $details): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'details_json' => json_encode($details),
+        ]);
+    }
+
+    /**
+     * Set the metadata type.
+     *
+     * @param string $metadataType
+     * @return static
+     */
+    public function withType(string $metadataType): static
+    {
+        return $this->state(fn (array $attributes) => [
             'metadata_type' => $metadataType,
-            'transaction_category_id' => null,
-            'tracking_code_id' => null,
-            'project_id' => null,
-            'file_store_id' => null,
-            'expense_source_id' => null,
-            'additional_field_id' => null,
-        ];
+        ]);
+    }
 
-        if (isset($fieldMapping[$metadataType])) {
-            $state[$fieldMapping[$metadataType]] = $referenceId;
-        }
+    /**
+     * Set the metadata as updated.
+     *
+     * @return static
+     */
+    public function updated(): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'update_time' => now(),
+        ]);
+    }
 
-        return $this->state(fn (array $attributes) => $state);
+    /**
+     * Create metadata with transaction category reference.
+     *
+     * @param int $transactionCategoryId
+     * @return static
+     */
+    public function withTransactionCategory(int $transactionCategoryId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'transaction_category_id' => $transactionCategoryId,
+        ]);
+    }
+
+    /**
+     * Create metadata with tracking code reference.
+     *
+     * @param int $trackingCodeId
+     * @return static
+     */
+    public function withTrackingCode(int $trackingCodeId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'tracking_code_id' => $trackingCodeId,
+        ]);
+    }
+
+    /**
+     * Create metadata with project reference.
+     *
+     * @param int $projectId
+     * @return static
+     */
+    public function withProject(int $projectId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'project_id' => $projectId,
+        ]);
+    }
+
+    /**
+     * Create metadata with file store reference.
+     *
+     * @param int $fileStoreId
+     * @return static
+     */
+    public function withFileStore(int $fileStoreId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'file_store_id' => $fileStoreId,
+        ]);
+    }
+
+    /**
+     * Create metadata with expense source reference.
+     *
+     * @param int $expenseSourceId
+     * @return static
+     */
+    public function withExpenseSource(int $expenseSourceId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'expense_source_id' => $expenseSourceId,
+        ]);
+    }
+
+    /**
+     * Create metadata with additional field reference.
+     *
+     * @param int $additionalFieldId
+     * @return static
+     */
+    public function withAdditionalField(int $additionalFieldId): static
+    {
+        return $this->state(fn (array $attributes) => [
+            'additional_field_id' => $additionalFieldId,
+        ]);
     }
 }

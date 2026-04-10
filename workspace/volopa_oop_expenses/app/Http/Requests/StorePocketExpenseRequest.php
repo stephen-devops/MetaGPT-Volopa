@@ -3,18 +3,14 @@
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Support\Facades\Gate;
-use Illuminate\Validation\Rule;
-use App\Models\PocketExpense;
-use App\Models\OptPocketExpenseType;
 use Carbon\Carbon;
+use Illuminate\Validation\Rule;
 
 /**
- * StorePocketExpenseRequest
+ * StorePopocketExpenseRequest
  * 
- * Form request validation for creating pocket expenses.
- * Validates all required fields and business rules for expense creation.
- * Enforces authorization through PocketExpensePolicy.
+ * Form request for validating and authorizing creation of pocket expenses.
+ * Handles validation of expense data including metadata and FX conversion requirements.
  */
 class StorePocketExpenseRequest extends FormRequest
 {
@@ -23,7 +19,9 @@ class StorePocketExpenseRequest extends FormRequest
      */
     public function authorize(): bool
     {
-        return Gate::allows('create', PocketExpense::class);
+        // Authorization is handled by PocketExpensePolicy, so we return true here
+        // The actual authorization logic is in PocketExpenseController using policies
+        return true;
     }
 
     /**
@@ -34,20 +32,15 @@ class StorePocketExpenseRequest extends FormRequest
     public function rules(): array
     {
         return [
-            // Required fields as per system constraints
-            'client_id' => [
-                'required',
-                'integer',
-                'exists:clients,id'
-            ],
+            // Core expense fields
             'date' => [
                 'required',
+                'date',
                 'date_format:Y-m-d',
-                'before_or_equal:today',
                 function ($attribute, $value, $fail) {
-                    // Date must not be older than 3 years as per system constraints
-                    $threeYearsAgo = Carbon::now()->subYears(3)->format('Y-m-d');
-                    if ($value < $threeYearsAgo) {
+                    // Date must not be older than 3 years
+                    $threeYearsAgo = Carbon::now()->subYears(3);
+                    if (Carbon::parse($value)->lt($threeYearsAgo)) {
                         $fail('The date must not be older than 3 years.');
                     }
                 },
@@ -55,85 +48,155 @@ class StorePocketExpenseRequest extends FormRequest
             'merchant_name' => [
                 'required',
                 'string',
-                'max:180' // VARCHAR 180 as per database schema
+                'max:180', // VARCHAR(180) as per database constraint
+                'min:1',
+            ],
+            'merchant_description' => [
+                'nullable',
+                'string',
+                'max:255',
             ],
             'expense_type' => [
                 'required',
                 'integer',
-                'exists:opt_pocket_expense_type,id'
+                'exists:opt_pocket_expense_type,id',
             ],
             'currency' => [
                 'required',
                 'string',
                 'size:3', // 3-letter ISO currency code
-                // TODO: Add validation against platform currency list when available
-                'regex:/^[A-Z]{3}$/' // Must be 3 uppercase letters
+                'regex:/^[A-Z]{3}$/',
+                // TODO: Add validation against platform currency list
             ],
             'amount' => [
                 'required',
                 'numeric',
+                'regex:/^\d+(\.\d{1,2})?$/', // Decimal(14,2) format
                 'min:0.01',
-                'max:999999999999.99' // DECIMAL(14,2) constraint
-            ],
-            
-            // Optional fields
-            'merchant_description' => [
-                'nullable',
-                'string',
-                'max:255'
+                'max:999999999999.99', // Max for DECIMAL(14,2)
             ],
             'merchant_address' => [
                 'nullable',
                 'string',
-                'max:500'
+                'max:500',
             ],
             'vat_amount' => [
                 'nullable',
                 'numeric',
                 'min:0',
-                'max:999999999999.99' // DECIMAL(14,2) constraint
+                'max:100',
+                'regex:/^\d+(\.\d{1,2})?$/', // Decimal(12,2) format
             ],
             'notes' => [
                 'nullable',
                 'string',
-                'max:1000' // Reasonable limit for text field
+                'max:65535', // TEXT field limit
             ],
+            
+            // System fields
+            'client_id' => [
+                'required',
+                'integer',
+                'exists:clients,id',
+            ],
+            'user_id' => [
+                'required',
+                'integer',
+                'exists:users,id',
+            ],
+            
+            // Optional status field (defaults to 'draft' if not provided)
             'status' => [
-                'sometimes',
+                'nullable',
                 'string',
-                Rule::in(['draft', 'submitted', 'approved', 'rejected'])
-            ]
+                Rule::in(['draft', 'submitted', 'approved', 'rejected']),
+            ],
+            
+            // Metadata fields (all optional)
+            'metadata' => [
+                'nullable',
+                'array',
+            ],
+            'metadata.*.metadata_type' => [
+                'required_with:metadata',
+                'string',
+                Rule::in([
+                    'category',
+                    'tracking_code_type_1',
+                    'tracking_code_type_2',
+                    'project',
+                    'additional_field',
+                    'file',
+                    'expense_source'
+                ]),
+            ],
+            'metadata.*.transaction_category_id' => [
+                'nullable',
+                'integer',
+                'exists:transaction_category,id',
+            ],
+            'metadata.*.tracking_code_id' => [
+                'nullable',
+                'integer',
+                'exists:tracking_codes,id',
+            ],
+            'metadata.*.project_id' => [
+                'nullable',
+                'integer',
+                'exists:configurable_projects,id',
+            ],
+            'metadata.*.file_store_id' => [
+                'nullable',
+                'integer',
+                'exists:file_store,id',
+            ],
+            'metadata.*.expense_source_id' => [
+                'nullable',
+                'integer',
+                'exists:pocket_expense_source_client_config,id',
+            ],
+            'metadata.*.additional_field_id' => [
+                'nullable',
+                'integer',
+                'exists:expense_additional_field,id',
+            ],
+            'metadata.*.details_json' => [
+                'nullable',
+                'json',
+            ],
         ];
     }
 
     /**
-     * Get custom error messages for validator errors.
+     * Get custom error messages for validation rules.
      *
      * @return array<string, string>
      */
     public function messages(): array
     {
         return [
-            'client_id.required' => 'Client ID is required.',
-            'client_id.exists' => 'The selected client does not exist.',
-            'date.required' => 'Expense date is required.',
-            'date.date_format' => 'Date must be in YYYY-MM-DD format.',
-            'date.before_or_equal' => 'Expense date cannot be in the future.',
-            'merchant_name.required' => 'Merchant name is required.',
-            'merchant_name.max' => 'Merchant name cannot exceed 180 characters.',
-            'expense_type.required' => 'Expense type is required.',
+            'date.required' => 'The expense date is required.',
+            'date.date_format' => 'The date must be in YYYY-MM-DD format.',
+            'merchant_name.required' => 'The merchant name is required.',
+            'merchant_name.max' => 'The merchant name must not exceed 180 characters.',
+            'expense_type.required' => 'The expense type is required.',
             'expense_type.exists' => 'The selected expense type is invalid.',
-            'currency.required' => 'Currency code is required.',
-            'currency.size' => 'Currency code must be exactly 3 characters.',
-            'currency.regex' => 'Currency code must be 3 uppercase letters (ISO format).',
-            'amount.required' => 'Amount is required.',
-            'amount.numeric' => 'Amount must be a valid number.',
-            'amount.min' => 'Amount must be greater than 0.',
-            'amount.max' => 'Amount exceeds maximum allowed value.',
-            'vat_amount.numeric' => 'VAT amount must be a valid number.',
-            'vat_amount.min' => 'VAT amount cannot be negative.',
-            'vat_amount.max' => 'VAT amount exceeds maximum allowed value.',
-            'status.in' => 'Status must be one of: draft, submitted, approved, rejected.',
+            'currency.required' => 'The currency code is required.',
+            'currency.size' => 'The currency code must be exactly 3 characters.',
+            'currency.regex' => 'The currency code must be 3 uppercase letters.',
+            'amount.required' => 'The expense amount is required.',
+            'amount.numeric' => 'The amount must be a valid number.',
+            'amount.min' => 'The amount must be at least 0.01.',
+            'amount.max' => 'The amount exceeds the maximum allowed value.',
+            'vat_amount.min' => 'The VAT amount cannot be negative.',
+            'vat_amount.max' => 'The VAT amount cannot exceed 100.',
+            'client_id.required' => 'The client ID is required.',
+            'client_id.exists' => 'The selected client is invalid.',
+            'user_id.required' => 'The user ID is required.',
+            'user_id.exists' => 'The selected user is invalid.',
+            'status.in' => 'The status must be one of: draft, submitted, approved, rejected.',
+            'metadata.*.metadata_type.required_with' => 'The metadata type is required when metadata is provided.',
+            'metadata.*.metadata_type.in' => 'The metadata type is invalid.',
         ];
     }
 
@@ -145,107 +208,99 @@ class StorePocketExpenseRequest extends FormRequest
     public function attributes(): array
     {
         return [
-            'client_id' => 'client',
-            'expense_type' => 'expense type',
             'merchant_name' => 'merchant name',
             'merchant_description' => 'merchant description',
-            'merchant_address' => 'merchant address',
+            'expense_type' => 'expense type',
             'vat_amount' => 'VAT amount',
+            'client_id' => 'client',
+            'user_id' => 'user',
         ];
     }
 
     /**
      * Prepare the data for validation.
-     *
-     * @return void
+     * Clean and format input data before validation.
      */
     protected function prepareForValidation(): void
     {
-        // Trim string fields to prevent whitespace issues
-        $this->merge([
-            'merchant_name' => $this->input('merchant_name') ? trim($this->input('merchant_name')) : null,
-            'merchant_description' => $this->input('merchant_description') ? trim($this->input('merchant_description')) : null,
-            'merchant_address' => $this->input('merchant_address') ? trim($this->input('merchant_address')) : null,
-            'notes' => $this->input('notes') ? trim($this->input('notes')) : null,
-            'currency' => $this->input('currency') ? strtoupper(trim($this->input('currency'))) : null,
-        ]);
+        $data = [];
+
+        // Clean and trim text fields to prevent SQL injection and excess whitespace
+        if ($this->has('merchant_name')) {
+            $data['merchant_name'] = trim(strip_tags($this->merchant_name));
+        }
+
+        if ($this->has('merchant_description')) {
+            $data['merchant_description'] = trim(strip_tags($this->merchant_description));
+        }
+
+        if ($this->has('merchant_address')) {
+            $data['merchant_address'] = trim(strip_tags($this->merchant_address));
+        }
+
+        if ($this->has('notes')) {
+            $data['notes'] = trim(strip_tags($this->notes));
+        }
+
+        // Normalize currency to uppercase
+        if ($this->has('currency')) {
+            $data['currency'] = strtoupper(trim($this->currency));
+        }
+
+        // Strip % sign from VAT amount if present
+        if ($this->has('vat_amount') && is_string($this->vat_amount)) {
+            $vatAmount = str_replace('%', '', trim($this->vat_amount));
+            if (is_numeric($vatAmount)) {
+                $data['vat_amount'] = (float) $vatAmount;
+            }
+        }
 
         // Set default status if not provided
-        if (!$this->has('status') || empty($this->input('status'))) {
-            $this->merge(['status' => 'draft']);
+        if (!$this->has('status')) {
+            $data['status'] = 'draft';
         }
-    }
 
-    /**
-     * Configure the validator instance.
-     *
-     * @param  \Illuminate\Validation\Validator  $validator
-     * @return void
-     */
-    public function withValidator($validator): void
-    {
-        $validator->after(function ($validator) {
-            // Additional business logic validation
-            
-            // Ensure user_id is set to authenticated user (server-side check as per constraints)
-            if (!$this->has('user_id')) {
-                $this->merge(['user_id' => auth()->id()]);
-            }
-            
-            // Validate that the expense user belongs to the same client (multi-tenancy check)
-            if ($this->filled(['client_id'])) {
-                // TODO: Add validation to ensure authenticated user belongs to the specified client
-                // This requires checking user-client relationship when User model is fully defined
-            }
+        // Ensure amount is properly formatted
+        if ($this->has('amount') && is_numeric($this->amount)) {
+            $data['amount'] = (float) $this->amount;
+        }
 
-            // Additional validation for VAT amount relative to main amount
-            if ($this->filled(['amount', 'vat_amount'])) {
-                $amount = (float) $this->input('amount');
-                $vatAmount = (float) $this->input('vat_amount');
-                
-                // VAT amount should not exceed the main amount (reasonable business rule)
-                if ($vatAmount > $amount) {
-                    $validator->errors()->add('vat_amount', 'VAT amount cannot exceed the main expense amount.');
-                }
-            }
-        });
+        $this->merge($data);
     }
 
     /**
      * Get the validated data with additional processing.
+     * This method can be used by the controller to get clean, validated data.
      *
-     * @return array
+     * @return array<string, mixed>
      */
-    public function validated($key = null, $default = null): array
+    public function getValidatedData(): array
     {
-        $validated = parent::validated();
-        
+        $validated = $this->validated();
+
         // Ensure required system fields are set
-        $validated['user_id'] = auth()->id();
         $validated['created_by_user_id'] = auth()->id();
-        
+        $validated['create_time'] = now();
+
         // Generate UUID for the expense
-        $validated['uuid'] = \Illuminate\Support\Str::uuid()->toString();
-        
+        $validated['uuid'] = (string) \Illuminate\Support\Str::uuid();
+
+        // Set default status if not provided
+        if (!isset($validated['status'])) {
+            $validated['status'] = 'draft';
+        }
+
         return $validated;
     }
 
     /**
-     * Handle a failed validation attempt.
-     *
-     * @param  \Illuminate\Contracts\Validation\Validator  $validator
-     * @return void
+     * Determine if the user belongs to the specified client.
+     * Used for additional authorization checks.
      */
-    protected function failedValidation($validator): void
+    public function userBelongsToClient(): bool
     {
-        // Log validation failures for observability as per system constraints
-        \Log::info('PocketExpense creation validation failed', [
-            'user_id' => auth()->id(),
-            'client_id' => $this->input('client_id'),
-            'errors' => $validator->errors()->toArray(),
-            'input' => $this->except(['password', 'token']) // Exclude sensitive fields
-        ]);
-
-        parent::failedValidation($validator);
+        // TODO: Implement logic to verify user belongs to client
+        // This should check the user's client association
+        return true;
     }
 }

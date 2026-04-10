@@ -2,9 +2,9 @@
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\V1\UserFeaturePermissionController;
-use App\Http\Controllers\Api\V1\PocketExpenseController;
-use App\Http\Controllers\Api\V1\PocketExpenseSourceController;
+use App\Http\Controllers\Api\UserFeaturePermissionController;
+use App\Http\Controllers\Api\PocketExpenseController;
+use App\Http\Controllers\Api\PocketExpenseSourceController;
 use App\Http\Controllers\PocketExpenseUploadController;
 
 /*
@@ -18,72 +18,49 @@ use App\Http\Controllers\PocketExpenseUploadController;
 |
 */
 
-/*
-|--------------------------------------------------------------------------
-| OOP Expense Management API Routes
-|--------------------------------------------------------------------------
-|
-| All routes use Oauth2UserClient middleware for authentication as per
-| system constraints. Controllers MUST NOT call $this->middleware() in
-| constructors as Oauth2UserClient is applied at route group level only.
-|
-*/
-
-// API v1 routes with OAuth2 authentication
 Route::middleware(['Oauth2UserClient'])->group(function () {
     
-    // User Feature Permission Management Routes
+    // Version 1 API routes
     Route::prefix('v1')->group(function () {
-        Route::apiResource('user-feature-permissions', UserFeaturePermissionController::class)
-            ->names([
-                'index' => 'api.v1.user-feature-permissions.index',
-                'store' => 'api.v1.user-feature-permissions.store',
-                'show' => 'api.v1.user-feature-permissions.show',
-                'update' => 'api.v1.user-feature-permissions.update',
-                'destroy' => 'api.v1.user-feature-permissions.destroy',
-            ]);
-
+        
+        // User Feature Permission Management Routes
+        Route::prefix('user-feature-permissions')->group(function () {
+            Route::get('/', [UserFeaturePermissionController::class, 'index'])->name('api.v1.user-feature-permissions.index');
+            Route::post('/', [UserFeaturePermissionController::class, 'store'])->name('api.v1.user-feature-permissions.store');
+            Route::get('/{userFeaturePermission}', [UserFeaturePermissionController::class, 'show'])->name('api.v1.user-feature-permissions.show');
+            Route::put('/{userFeaturePermission}', [UserFeaturePermissionController::class, 'update'])->name('api.v1.user-feature-permissions.update');
+            Route::delete('/{userFeaturePermission}', [UserFeaturePermissionController::class, 'destroy'])->name('api.v1.user-feature-permissions.destroy');
+        });
+        
         // Pocket Expense CRUD Routes
-        Route::apiResource('pocket-expenses', PocketExpenseController::class)
-            ->names([
-                'index' => 'api.v1.pocket-expenses.index',
-                'store' => 'api.v1.pocket-expenses.store',
-                'show' => 'api.v1.pocket-expenses.show',
-                'update' => 'api.v1.pocket-expenses.update',
-                'destroy' => 'api.v1.pocket-expenses.destroy',
-            ]);
-
+        Route::prefix('pocket-expenses')->group(function () {
+            Route::get('/', [PocketExpenseController::class, 'index'])->name('api.v1.pocket-expenses.index');
+            Route::post('/', [PocketExpenseController::class, 'store'])->name('api.v1.pocket-expenses.store');
+            Route::get('/{pocketExpense}', [PocketExpenseController::class, 'show'])->name('api.v1.pocket-expenses.show');
+            Route::put('/{pocketExpense}', [PocketExpenseController::class, 'update'])->name('api.v1.pocket-expenses.update');
+            Route::delete('/{pocketExpense}', [PocketExpenseController::class, 'destroy'])->name('api.v1.pocket-expenses.destroy');
+            
+            // Expense approval endpoint
+            Route::post('/{pocketExpense}/approve', [PocketExpenseController::class, 'approve'])->name('api.v1.pocket-expenses.approve');
+        });
+        
         // Pocket Expense Source Configuration Routes
-        Route::apiResource('pocket-expense-sources', PocketExpenseSourceController::class)
-            ->names([
-                'index' => 'api.v1.pocket-expense-sources.index',
-                'store' => 'api.v1.pocket-expense-sources.store',
-                'show' => 'api.v1.pocket-expense-sources.show',
-                'update' => 'api.v1.pocket-expense-sources.update',
-                'destroy' => 'api.v1.pocket-expense-sources.destroy',
-            ]);
+        Route::prefix('pocket-expense-sources')->group(function () {
+            Route::get('/', [PocketExpenseSourceController::class, 'index'])->name('api.v1.pocket-expense-sources.index');
+            Route::post('/', [PocketExpenseSourceController::class, 'store'])->name('api.v1.pocket-expense-sources.store');
+            Route::get('/{pocketExpenseSourceClientConfig}', [PocketExpenseSourceController::class, 'show'])->name('api.v1.pocket-expense-sources.show');
+            Route::put('/{pocketExpenseSourceClientConfig}', [PocketExpenseSourceController::class, 'update'])->name('api.v1.pocket-expense-sources.update');
+            Route::delete('/{pocketExpenseSourceClientConfig}', [PocketExpenseSourceController::class, 'destroy'])->name('api.v1.pocket-expense-sources.destroy');
+        });
     });
-
-    // CSV Upload Route (omits /v1 prefix per SD-OOP_Pocket_expense.json spec)
+    
+    // CSV Upload Routes (special case - omits /v1 prefix per SD-OOP_Pocket_expense.json spec)
     Route::prefix('uploads')->group(function () {
-        Route::post('pocket-expense/csv', [PocketExpenseUploadController::class, 'uploadPocketExpenseCSV'])
-            ->name('api.uploads.pocket-expense.csv');
+        Route::prefix('pocket-expense')->group(function () {
+            Route::post('/csv', [PocketExpenseUploadController::class, 'uploadPocketExpenseCSV'])->name('api.uploads.pocket-expense.csv');
+            
+            // Upload status check endpoint
+            Route::get('/status/{uploadId}', [PocketExpenseUploadController::class, 'getUploadStatus'])->name('api.uploads.pocket-expense.status');
+        });
     });
 });
-
-/*
-|--------------------------------------------------------------------------
-| Health Check Route (if needed)
-|--------------------------------------------------------------------------
-|
-| Basic health check route for API monitoring
-|
-*/
-
-Route::get('/health', function () {
-    return response()->json([
-        'status' => 'ok',
-        'timestamp' => now()->toISOString(),
-        'service' => 'oop-expense-api'
-    ]);
-})->name('api.health');

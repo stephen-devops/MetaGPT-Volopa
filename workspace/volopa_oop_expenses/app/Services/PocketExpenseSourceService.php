@@ -3,69 +3,60 @@
 namespace App\Services;
 
 use App\Models\PocketExpenseSourceClientConfig;
-use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\DB;
-use Exception;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 
 /**
  * PocketExpenseSourceService
  * 
- * Business logic service for managing pocket expense sources.
- * Handles CRUD operations, client source limits, and default source seeding.
+ * Service class for managing pocket expense sources (client configurations).
+ * Handles CRUD operations, default source creation, and client-specific source management.
  */
 class PocketExpenseSourceService
 {
     /**
-     * Maximum allowed active expense sources per client as per system constraints.
-     */
-    private const MAX_SOURCES_PER_CLIENT = 20;
-
-    /**
-     * Default source names that are auto-created on feature enable.
-     */
-    private const DEFAULT_SOURCE_NAMES = [
-        'Cash',
-        'Corporate Card',
-        'Personal Card',
-    ];
-
-    /**
      * Create a new expense source for a client.
      *
      * @param array $data
+     * @param int $clientId
      * @return PocketExpenseSourceClientConfig
-     * @throws Exception
+     * @throws \Exception
      */
-    public function createSource(array $data): PocketExpenseSourceClientConfig
+    public function createSource(array $data, int $clientId): PocketExpenseSourceClientConfig
     {
-        // Validate client source limit before creating
-        if (isset($data['client_id']) && $data['client_id']) {
-            $this->validateClientSourceLimit($data['client_id']);
+        // Validate maximum 20 active expense sources per client constraint
+        $activeSourcesCount = PocketExpenseSourceClientConfig::forClient($clientId)
+            ->active()
+            ->count();
+            
+        if ($activeSourcesCount >= 20) {
+            throw new \Exception('Maximum 20 active expense sources per client limit reached');
         }
 
-        DB::beginTransaction();
-
-        try {
-            $source = new PocketExpenseSourceClientConfig();
-            $source->uuid = Str::uuid()->toString();
-            $source->client_id = $data['client_id'] ?? null;
-            $source->name = $data['name'];
-            $source->is_default = $data['is_default'] ?? false;
-            $source->deleted = 0;
-            $source->delete_time = null;
-            $source->create_time = now();
-            $source->update_time = now();
-
-            $source->save();
-
-            DB::commit();
-
-            return $source;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
+        // Check for unique source name per client constraint
+        $existingSource = PocketExpenseSourceClientConfig::forClient($clientId)
+            ->byName($data['name'])
+            ->active()
+            ->first();
+            
+        if ($existingSource) {
+            throw new \Exception("Source with name '{$data['name']}' already exists for this client");
         }
+
+        // Create the expense source
+        $sourceData = [
+            'uuid' => (string) Str::uuid(),
+            'client_id' => $clientId,
+            'name' => $data['name'],
+            'is_default' => $data['is_default'] ?? 0,
+            'deleted' => 0,
+            'delete_time' => null,
+            'create_time' => now(),
+            'update_time' => null,
+        ];
+
+        return PocketExpenseSourceClientConfig::create($sourceData);
     }
 
     /**
@@ -74,36 +65,35 @@ class PocketExpenseSourceService
      * @param PocketExpenseSourceClientConfig $source
      * @param array $data
      * @return PocketExpenseSourceClientConfig
-     * @throws Exception
+     * @throws \Exception
      */
     public function updateSource(PocketExpenseSourceClientConfig $source, array $data): PocketExpenseSourceClientConfig
     {
-        // Prevent editing of global 'Other' record as per system constraints
+        // Prevent editing of global 'Other' source as per constraints
         if ($source->isGlobalOther()) {
-            throw new Exception('Global "Other" record cannot be edited.');
+            throw new \Exception('Global "Other" record cannot be edited');
         }
 
-        DB::beginTransaction();
-
-        try {
-            if (isset($data['name'])) {
-                $source->name = $data['name'];
+        // Check for unique source name per client if name is being changed
+        if (isset($data['name']) && $data['name'] !== $source->name) {
+            $existingSource = PocketExpenseSourceClientConfig::forClient($source->client_id)
+                ->byName($data['name'])
+                ->active()
+                ->where('id', '!=', $source->id)
+                ->first();
+                
+            if ($existingSource) {
+                throw new \Exception("Source with name '{$data['name']}' already exists for this client");
             }
-
-            if (isset($data['is_default'])) {
-                $source->is_default = $data['is_default'];
-            }
-
-            $source->update_time = now();
-            $source->save();
-
-            DB::commit();
-
-            return $source;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
         }
+
+        // Update the source with provided data
+        $updateData = array_intersect_key($data, array_flip(['name', 'is_default']));
+        $updateData['update_time'] = now();
+
+        $source->update($updateData);
+        
+        return $source->fresh();
     }
 
     /**
@@ -111,112 +101,168 @@ class PocketExpenseSourceService
      *
      * @param PocketExpenseSourceClientConfig $source
      * @return bool
-     * @throws Exception
+     * @throws \Exception
      */
     public function deleteSource(PocketExpenseSourceClientConfig $source): bool
     {
-        // Prevent deletion of global 'Other' record as per system constraints
+        // Prevent deletion of global 'Other' source as per constraints
         if ($source->isGlobalOther()) {
-            throw new Exception('Global "Other" record cannot be deleted.');
+            throw new \Exception('Global "Other" record cannot be deleted');
         }
 
-        DB::beginTransaction();
+        return $source->softDelete();
+    }
 
-        try {
-            $result = $source->softDelete();
+    /**
+     * Get all active expense sources for a client.
+     * Includes the global 'Other' source.
+     *
+     * @param int $clientId
+     * @return EloquentCollection
+     */
+    public function getSourcesForClient(int $clientId): EloquentCollection
+    {
+        // Get client-specific active sources
+        $clientSources = PocketExpenseSourceClientConfig::forClient($clientId)
+            ->active()
+            ->orderBy('name')
+            ->get();
 
-            DB::commit();
+        // Get global 'Other' source
+        $globalOther = PocketExpenseSourceClientConfig::global()
+            ->byName('Other')
+            ->active()
+            ->first();
 
-            return $result;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
+        // Combine client sources with global 'Other' source
+        $allSources = $clientSources;
+        if ($globalOther) {
+            $allSources = $allSources->concat([$globalOther]);
+        }
+
+        // Sort by name for consistent ordering
+        return $allSources->sortBy('name')->values();
+    }
+
+    /**
+     * Seed default expense sources for a client when OOP feature is enabled.
+     * Creates 3 default sources: Cash, Corporate Card, Personal Card.
+     *
+     * @param int $clientId
+     * @return void
+     * @throws \Exception
+     */
+    public function seedDefaultSources(int $clientId): void
+    {
+        // Default sources to create as per constraints
+        $defaultSources = [
+            [
+                'name' => 'Cash',
+                'is_default' => 1,
+            ],
+            [
+                'name' => 'Corporate Card', 
+                'is_default' => 1,
+            ],
+            [
+                'name' => 'Personal Card',
+                'is_default' => 1,
+            ],
+        ];
+
+        foreach ($defaultSources as $sourceData) {
+            // Check if source already exists to avoid duplicates
+            $existingSource = PocketExpenseSourceClientConfig::forClient($clientId)
+                ->byName($sourceData['name'])
+                ->active()
+                ->first();
+
+            if (!$existingSource) {
+                try {
+                    $this->createSource($sourceData, $clientId);
+                } catch (\Exception $e) {
+                    // Log error but continue with other default sources
+                    // TODO: Implement proper logging mechanism
+                    continue;
+                }
+            }
         }
     }
 
     /**
-     * Get all active expense sources for a client (including global 'Other').
+     * Get default expense sources for a client.
      *
      * @param int $clientId
-     * @return Collection
+     * @return EloquentCollection
      */
-    public function getClientSources(int $clientId): Collection
+    public function getDefaultSources(int $clientId): EloquentCollection
     {
-        return PocketExpenseSourceClientConfig::availableForClient($clientId)
-            ->orderBy('is_default', 'desc')
-            ->orderBy('name', 'asc')
+        return PocketExpenseSourceClientConfig::forClient($clientId)
+            ->active()
+            ->default()
+            ->orderBy('name')
             ->get();
     }
 
     /**
-     * Seed default expense sources for a client.
-     * Creates the 3 default sources as per system constraints.
+     * Get non-default expense sources for a client.
      *
      * @param int $clientId
-     * @return void
-     * @throws Exception
+     * @return EloquentCollection
      */
-    public function seedDefaultSources(int $clientId): void
+    public function getNonDefaultSources(int $clientId): EloquentCollection
     {
-        DB::beginTransaction();
-
-        try {
-            foreach (self::DEFAULT_SOURCE_NAMES as $sourceName) {
-                // Check if source already exists for this client
-                $existingSource = PocketExpenseSourceClientConfig::where('client_id', $clientId)
-                    ->where('name', $sourceName)
-                    ->first();
-
-                if (!$existingSource) {
-                    $this->createSource([
-                        'client_id' => $clientId,
-                        'name' => $sourceName,
-                        'is_default' => true,
-                    ]);
-                }
-            }
-
-            DB::commit();
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        return PocketExpenseSourceClientConfig::forClient($clientId)
+            ->active()
+            ->nonDefault()
+            ->orderBy('name')
+            ->get();
     }
 
     /**
-     * Restore a soft-deleted expense source.
+     * Find an expense source by name for a client.
+     * Includes global 'Other' source in search.
      *
-     * @param PocketExpenseSourceClientConfig $source
-     * @return bool
-     * @throws Exception
+     * @param string $name
+     * @param int $clientId
+     * @return PocketExpenseSourceClientConfig|null
      */
-    public function restoreSource(PocketExpenseSourceClientConfig $source): bool
+    public function findSourceByName(string $name, int $clientId): ?PocketExpenseSourceClientConfig
     {
-        if (!$source->isDeleted()) {
-            return true; // Already active
+        // First check client-specific sources
+        $source = PocketExpenseSourceClientConfig::forClient($clientId)
+            ->byName($name)
+            ->active()
+            ->first();
+
+        // If not found and name is 'Other', check global source
+        if (!$source && $name === 'Other') {
+            $source = PocketExpenseSourceClientConfig::global()
+                ->byName('Other')
+                ->active()
+                ->first();
         }
 
-        // Validate client source limit before restoring
-        if ($source->client_id) {
-            $this->validateClientSourceLimit($source->client_id);
-        }
-
-        DB::beginTransaction();
-
-        try {
-            $result = $source->restore();
-
-            DB::commit();
-
-            return $result;
-        } catch (Exception $e) {
-            DB::rollBack();
-            throw $e;
-        }
+        return $source;
     }
 
     /**
-     * Get active source count for a client.
+     * Check if a client has reached the maximum number of active sources (20).
+     *
+     * @param int $clientId
+     * @return bool
+     */
+    public function hasReachedMaxSources(int $clientId): bool
+    {
+        $activeSourcesCount = PocketExpenseSourceClientConfig::forClient($clientId)
+            ->active()
+            ->count();
+
+        return $activeSourcesCount >= 20;
+    }
+
+    /**
+     * Get the count of active sources for a client.
      *
      * @param int $clientId
      * @return int
@@ -229,115 +275,42 @@ class PocketExpenseSourceService
     }
 
     /**
-     * Check if a client can add more sources.
+     * Restore a soft-deleted expense source.
      *
-     * @param int $clientId
+     * @param PocketExpenseSourceClientConfig $source
      * @return bool
+     * @throws \Exception
      */
-    public function canAddMoreSources(int $clientId): bool
+    public function restoreSource(PocketExpenseSourceClientConfig $source): bool
     {
-        return $this->getActiveSourceCount($clientId) < self::MAX_SOURCES_PER_CLIENT;
-    }
+        // Check if restoring would exceed the maximum sources limit
+        if ($this->hasReachedMaxSources($source->client_id)) {
+            throw new \Exception('Cannot restore source: Maximum 20 active sources per client limit would be exceeded');
+        }
 
-    /**
-     * Get sources that can be used in dropdowns (active only).
-     * Excludes soft-deleted sources as per system constraints.
-     *
-     * @param int $clientId
-     * @return Collection
-     */
-    public function getDropdownSources(int $clientId): Collection
-    {
-        return $this->getClientSources($clientId);
-    }
-
-    /**
-     * Find source by name for a client.
-     *
-     * @param int $clientId
-     * @param string $sourceName
-     * @return PocketExpenseSourceClientConfig|null
-     */
-    public function findSourceByName(int $clientId, string $sourceName): ?PocketExpenseSourceClientConfig
-    {
-        // Check client-specific sources first
-        $source = PocketExpenseSourceClientConfig::forClient($clientId)
+        // Check for name conflicts with existing active sources
+        $existingSource = PocketExpenseSourceClientConfig::forClient($source->client_id)
+            ->byName($source->name)
             ->active()
-            ->where('name', $sourceName)
             ->first();
-
-        // If not found, check global sources (like 'Other')
-        if (!$source) {
-            $source = PocketExpenseSourceClientConfig::global()
-                ->active()
-                ->where('name', $sourceName)
-                ->first();
+            
+        if ($existingSource) {
+            throw new \Exception("Cannot restore source: Source with name '{$source->name}' already exists");
         }
 
-        return $source;
+        return $source->restore();
     }
 
     /**
-     * Validate that a client hasn't exceeded the maximum source limit.
-     *
-     * @param int $clientId
-     * @return void
-     * @throws Exception
-     */
-    private function validateClientSourceLimit(int $clientId): void
-    {
-        if (!$this->canAddMoreSources($clientId)) {
-            throw new Exception(
-                "Client has reached the maximum limit of " . self::MAX_SOURCES_PER_CLIENT . " active expense sources."
-            );
-        }
-    }
-
-    /**
-     * Get default sources for initial client setup.
-     *
-     * @return array
-     */
-    public static function getDefaultSourceNames(): array
-    {
-        return self::DEFAULT_SOURCE_NAMES;
-    }
-
-    /**
-     * Get maximum allowed sources per client.
-     *
-     * @return int
-     */
-    public static function getMaxSourcesPerClient(): int
-    {
-        return self::MAX_SOURCES_PER_CLIENT;
-    }
-
-    /**
-     * Bulk update source order/priority.
-     * TODO: Implement if source ordering becomes a requirement.
-     *
-     * @param array $sourceOrderData
-     * @return bool
-     */
-    public function updateSourceOrder(array $sourceOrderData): bool
-    {
-        // TODO: Implement source ordering functionality if needed
-        // This would handle drag-and-drop reordering of sources in the UI
-        throw new Exception('Source ordering not yet implemented.');
-    }
-
-    /**
-     * Get source usage statistics.
-     * TODO: Implement if analytics on source usage is needed.
+     * Get expense sources available for CSV validation.
+     * Returns names of all active sources for a client including global 'Other'.
      *
      * @param int $clientId
      * @return array
      */
-    public function getSourceUsageStats(int $clientId): array
+    public function getSourceNamesForValidation(int $clientId): array
     {
-        // TODO: Implement source usage analytics
-        // This would return statistics on how often each source is used
-        throw new Exception('Source usage statistics not yet implemented.');
+        $sources = $this->getSourcesForClient($clientId);
+        return $sources->pluck('name')->toArray();
     }
 }

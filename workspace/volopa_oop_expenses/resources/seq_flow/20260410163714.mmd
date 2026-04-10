@@ -1,0 +1,107 @@
+%%{init: {'theme': 'default', 'themeVariables': { 'fontFamily': 'Inter' }}}%%
+
+sequenceDiagram
+    participant C as Client
+    participant MW as Oauth2UserClient
+    participant UFPC as UserFeaturePermissionController
+    participant UPS as UserPermissionService
+    participant PEC as PocketExpenseController
+    participant PES as PocketExpenseService
+    participant FXS as PocketExpenseFXService
+    participant PEUC as PocketExpenseUploadController
+    participant CSV as PocketExpenseCSVValidator
+    participant PEJ as ProcessExpenseUpload
+    participant DB as Database
+    participant Queue as Queue
+    
+    Note over C,Queue: User Permission Management Flow
+    C->>MW: POST /api/v1/user-feature-permissions
+    MW->>UFPC: authenticate and authorize
+    UFPC->>UPS: grantPermission(user_id, client_id, feature_id, grantor_id, manager_id)
+    UPS->>DB: create UserFeaturePermission record
+    DB-->>UPS: return permission
+    UPS-->>UFPC: return UserFeaturePermission
+    UFPC-->>C: 201 UserFeaturePermissionResource
+    
+    Note over C,Queue: Single Expense CRUD with FX Conversion Flow
+    C->>MW: POST /api/v1/pocket-expenses
+    MW->>PEC: authenticate and authorize
+    PEC->>FXS: convertAmount(amount, from_currency, to_currency, date, client_id)
+    FXS->>DB: query wallet base currency via join chain
+    DB-->>FXS: return base currency
+    FXS->>FXS: getFXRate(from_currency, to_currency, date)
+    FXS->>FXS: applyCommission(rate, commission_percent)
+    FXS-->>PEC: return converted amount
+    PEC->>PES: createExpense(data, user_id)
+    PES->>DB: begin transaction
+    PES->>DB: create PocketExpense record
+    PES->>DB: create PocketExpenseMetadata records
+    PES->>DB: commit transaction
+    DB-->>PES: return expense
+    PES-->>PEC: return PocketExpense
+    PEC-->>C: 201 PocketExpenseResource
+    
+    C->>MW: PUT /api/v1/pocket-expenses/{id}
+    MW->>PEC: authenticate and authorize
+    PEC->>PES: updateExpense(expense, data, user_id)
+    PES->>DB: begin transaction
+    PES->>DB: update PocketExpense record
+    PES->>DB: update/create PocketExpenseMetadata records
+    PES->>DB: commit transaction
+    DB-->>PES: return updated expense
+    PES-->>PEC: return PocketExpense
+    PEC-->>C: 200 PocketExpenseResource
+    
+    C->>MW: GET /api/v1/pocket-expenses
+    MW->>PEC: authenticate and authorize
+    PEC->>PES: getExpensesForUser(user_id, client_id)
+    PES->>DB: query expenses with metadata
+    DB-->>PES: return expense collection
+    PES-->>PEC: return Collection
+    PEC-->>C: 200 PocketExpenseResource collection
+    
+    C->>MW: DELETE /api/v1/pocket-expenses/{id}
+    MW->>PEC: authenticate and authorize
+    PEC->>PES: deleteExpense(expense, user_id)
+    PES->>DB: soft delete expense and metadata
+    DB-->>PES: return success
+    PES-->>PEC: return true
+    PEC-->>C: 204 No Content
+    
+    Note over C,Queue: CSV Batch Upload with Background Processing Flow
+    C->>MW: POST /api/uploads/pocket-expense/csv
+    MW->>PEUC: authenticate and authorize
+    PEUC->>PEUC: validate file and permissions
+    PEUC->>DB: create PocketExpenseFileUpload record (status='uploaded')
+    DB-->>PEUC: return upload record
+    PEUC->>CSV: validate(file_path, target_user_id, client_id, admin_id)
+    CSV->>CSV: preloadReferenceData(client_id)
+    CSV->>CSV: validateHeaders(headers)
+    CSV->>CSV: validateRow for each row
+    CSV-->>PEUC: return validation result
+    
+    alt validation failed
+        PEUC->>DB: update upload record (status='validation_failed', errors)
+        DB-->>PEUC: confirm update
+        PEUC-->>C: 422 validation errors
+    else validation passed
+        PEUC->>DB: bulk insert to PocketExpenseUploadsData (status='pending')
+        DB-->>PEUC: confirm insert
+        PEUC->>DB: update upload record (status='processing')
+        DB-->>PEUC: confirm update
+        PEUC->>Queue: dispatch ProcessExpenseUpload(upload_id)
+        Queue-->>PEUC: job queued
+        PEUC-->>C: 200 success response
+        
+        Note over PEJ: Background Processing
+        Queue->>PEJ: handle()
+        PEJ->>DB: fetch pending upload data in batches
+        DB-->>PEJ: return expense data
+        PEJ->>PES: create expenses via syncExpensesToMainService
+        PES->>DB: bulk create expenses with metadata
+        DB-->>PES: confirm creation
+        PES-->>PEJ: return success
+        PEJ->>DB: update PocketExpenseUploadsData (status='synced')
+        PEJ->>DB: update PocketExpenseFileUpload (status='completed')
+        DB-->>PEJ: confirm updates
+    end

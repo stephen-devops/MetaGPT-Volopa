@@ -12,37 +12,29 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('user_feature_permission', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('user_id');
-            $table->unsignedBigInteger('client_id');
-            $table->unsignedBigInteger('feature_id');
-            $table->unsignedBigInteger('grantor_id');
-            $table->unsignedBigInteger('manager_user_id')->nullable();
-            $table->boolean('is_enabled')->default(true);
-            
-            // Volopa legacy timestamp pattern
-            $table->dateTime('create_time')->default(DB::raw('CURRENT_TIMESTAMP'));
-            $table->dateTime('update_time')->nullable()->default(DB::raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+            $table->id()->comment('Primary key');
+            $table->unsignedBigInteger('user_id')->comment('Reference to users table');
+            $table->unsignedBigInteger('client_id')->comment('Reference to clients table');
+            $table->unsignedBigInteger('feature_id')->comment('Reference to features table');
+            $table->unsignedBigInteger('grantor_id')->comment('User who granted this permission');
+            $table->unsignedBigInteger('manager_user_id')->comment('User being managed');
+            $table->boolean('is_enabled')->default(true)->comment('Whether permission is active');
+            $table->timestamps();
             
             // Foreign key constraints
             $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
             $table->foreign('client_id')->references('id')->on('clients')->onDelete('cascade');
             $table->foreign('feature_id')->references('id')->on('features')->onDelete('cascade');
             $table->foreign('grantor_id')->references('id')->on('users')->onDelete('cascade');
-            $table->foreign('manager_user_id')->references('id')->on('users')->onDelete('set null');
+            $table->foreign('manager_user_id')->references('id')->on('users')->onDelete('cascade');
             
             // Unique constraint to prevent duplicate permissions
-            $table->unique(['user_id', 'client_id', 'feature_id'], 'unique_user_feature');
+            $table->unique(['user_id', 'client_id', 'feature_id'], 'unique_user_client_feature');
             
             // Indexes for performance
-            $table->index(['client_id', 'feature_id']);
-            $table->index(['grantor_id']);
-            $table->index(['manager_user_id']);
-            
-            // Table settings
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
+            $table->index(['client_id', 'feature_id'], 'idx_client_feature');
+            $table->index(['grantor_id'], 'idx_grantor');
+            $table->index(['manager_user_id'], 'idx_manager_user');
         });
     }
 

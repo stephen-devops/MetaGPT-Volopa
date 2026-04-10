@@ -251,7 +251,7 @@ if __name__ == "__main__":
         - Each role watches for specific messages (WritePRD, WriteDesign, WriteTasks, WriteCode, WriteTest)
         - Documents are passed via Message.instruct_content (file paths)
         - Engineer loads all previous documents for context
-        - QA Engineer loads requirements from industry/requirements/updated_req YAML files
+        - QA Engineer loads requirements from industry/requirements/ YAML files
         - DOS/DONTS constraints are embedded in Engineer's and QA's system prompts
     """
     asyncio.run(main())

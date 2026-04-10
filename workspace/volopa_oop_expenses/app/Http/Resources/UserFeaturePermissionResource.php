@@ -8,8 +8,8 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /**
  * UserFeaturePermissionResource
  * 
- * API resource transformer for UserFeaturePermission model.
- * Shapes the response data for user feature permission endpoints.
+ * API Resource for transforming UserFeaturePermission model data
+ * into consistent JSON responses while hiding internal fields.
  * 
  * @property \App\Models\UserFeaturePermission $resource
  */
@@ -31,51 +31,48 @@ class UserFeaturePermissionResource extends JsonResource
             'grantor_id' => $this->grantor_id,
             'manager_user_id' => $this->manager_user_id,
             'is_enabled' => $this->is_enabled,
-            'created_at' => $this->create_time?->toISOString(),
-            'updated_at' => $this->update_time?->toISOString(),
+            'created_at' => $this->created_at?->toISOString(),
+            'updated_at' => $this->updated_at?->toISOString(),
             
-            // Relationship data (conditionally loaded to prevent N+1 queries)
+            // Include related model data when loaded
             'user' => $this->whenLoaded('user', function () {
                 return [
                     'id' => $this->user->id,
-                    'name' => $this->user->name ?? null,
+                    'name' => $this->user->name ?? '',
+                    'username' => $this->user->username ?? '',
                 ];
             }),
             
             'client' => $this->whenLoaded('client', function () {
                 return [
                     'id' => $this->client->id,
-                    'name' => $this->client->name ?? null,
+                    'name' => $this->client->name ?? '',
                 ];
             }),
             
             'grantor' => $this->whenLoaded('grantor', function () {
                 return [
                     'id' => $this->grantor->id,
-                    'name' => $this->grantor->name ?? null,
+                    'name' => $this->grantor->name ?? '',
+                    'username' => $this->grantor->username ?? '',
                 ];
             }),
             
             'manager' => $this->whenLoaded('manager', function () {
-                return $this->manager ? [
-                    'id' => $this->manager->id,
-                    'name' => $this->manager->name ?? null,
-                ] : null;
-            }),
-            
-            // TODO: Add feature relationship data when Feature model is implemented
-            'feature' => $this->when($this->relationLoaded('feature'), function () {
-                // TODO: Replace with actual Feature model data structure
                 return [
-                    'id' => $this->feature_id,
-                    'name' => 'Feature #' . $this->feature_id, // Placeholder
+                    'id' => $this->manager->id,
+                    'name' => $this->manager->name ?? '',
+                    'username' => $this->manager->username ?? '',
                 ];
             }),
             
-            // Computed attributes for client convenience
-            'status' => $this->is_enabled ? 'enabled' : 'disabled',
-            'has_manager' => !is_null($this->manager_user_id),
-            'display_name' => $this->getDisplayName(),
+            // TODO: Include feature data when Feature model is available
+            'feature' => $this->whenLoaded('feature', function () {
+                return [
+                    'id' => $this->feature_id,
+                    // TODO: Add feature name and other relevant fields once Feature model is implemented
+                ];
+            }),
         ];
     }
     
@@ -89,8 +86,8 @@ class UserFeaturePermissionResource extends JsonResource
     {
         return [
             'meta' => [
-                'type' => 'user_feature_permission',
-                'version' => '1.0',
+                'resource_type' => 'user_feature_permission',
+                'api_version' => 'v1',
             ],
         ];
     }

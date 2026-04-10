@@ -4,29 +4,29 @@ namespace App\Services;
 
 use App\Models\OptPocketExpenseType;
 use App\Models\PocketExpenseSourceClientConfig;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 /**
  * PocketExpenseCSVValidator Service
  * 
- * Validates CSV files for batch expense upload with all-or-nothing validation approach.
- * Preloads reference data for efficient validation and provides detailed error reporting.
+ * Handles validation of CSV files for pocket expense uploads.
+ * Implements all-or-nothing validation where if any row fails, no expenses are created.
+ * Preloads reference data for performance and validates against platform constraints.
  */
 class PocketExpenseCSVValidator
 {
     /**
      * Expected CSV column headers in exact order
-     *
-     * @var array<string>
      */
-    private array $expectedHeaders = [
+    private const EXPECTED_HEADERS = [
         'Date',
         'Expense Type',
         'Currency Code',
         'Amount',
-        'Currency Equivalent Amount',
+        '{Currency} Equivalent Amount',
         'VAT %',
         'Merchant Name',
         'Description',
@@ -38,155 +38,164 @@ class PocketExpenseCSVValidator
     ];
 
     /**
-     * Preloaded reference data for validation
-     *
-     * @var array
+     * Maximum allowed CSV file rows (excluding header)
      */
-    private array $referenceData = [
-        'expense_types' => [],
-        'currencies' => [],
-        'countries' => [],
-        'sources' => []
+    private const MAX_CSV_ROWS = 200;
+
+    /**
+     * Maximum age of expenses in years
+     */
+    private const MAX_EXPENSE_AGE_YEARS = 3;
+
+    /**
+     * Maximum merchant name length as per DB constraint
+     */
+    private const MAX_MERCHANT_NAME_LENGTH = 180;
+
+    /**
+     * Allowed currency codes (3-letter ISO codes)
+     */
+    private const ALLOWED_CURRENCIES = [
+        'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'SEK', 'NOK', 'DKK',
+        'PLN', 'CZK', 'HUF', 'BGN', 'RON', 'HRK', 'RSD', 'BAM', 'MKD', 'ALL',
+        'TRY', 'RUB', 'UAH', 'BYN', 'MDL', 'GEL', 'AZN', 'AMD', 'KZT', 'UZS',
+        'KGS', 'TJS', 'TMT', 'MNT', 'CNY', 'HKD', 'TWD', 'KRW', 'THB', 'VND',
+        'IDR', 'MYR', 'SGD', 'PHP', 'INR', 'PKR', 'BDT', 'LKR', 'NPR', 'BTN',
+        'MVR', 'AFN', 'IRR', 'IQD', 'JOD', 'KWD', 'LBP', 'OMR', 'QAR', 'SAR',
+        'AED', 'BHD', 'YER', 'SYP', 'ILS', 'EGP', 'LYD', 'TND', 'DZD', 'MAD',
+        'CDF', 'AO', 'BWP', 'SZL', 'LSL', 'ZAR', 'NAD', 'MWK', 'ZMW', 'MZN',
+        'MGF', 'KMF', 'SCR', 'MUR', 'XOF', 'XAF', 'GHS', 'NGN', 'SLL', 'GMD',
+        'GNF', 'LRD', 'CIV', 'BIF', 'RWF', 'ETB', 'KES', 'UGX', 'TZS', 'SOS',
+        'DJF', 'ERN', 'SDG', 'SSP', 'XDR'
     ];
 
     /**
-     * Validation errors collected during processing
-     *
-     * @var array
+     * Preloaded reference data for validation
      */
+    private array $expenseTypes = [];
+    private array $clientSources = [];
     private array $validationErrors = [];
+    private array $validRows = [];
+    private int $clientId;
+    private int $targetUserId;
+    private int $adminId;
 
     /**
-     * Maximum date age in years as per system constraints
-     *
-     * @var int
+     * Initialize validator with context
      */
-    private int $maxDateAgeYears = 3;
+    public function __construct()
+    {
+        $this->validationErrors = [];
+        $this->validRows = [];
+        $this->clientId = 0;
+        $this->targetUserId = 0;
+        $this->adminId = 0;
+    }
 
     /**
-     * Maximum VAT percentage as per system constraints
+     * Validate CSV file for pocket expense upload
      *
-     * @var int
-     */
-    private int $maxVatPercentage = 100;
-
-    /**
-     * Maximum merchant name length as per system constraints
-     *
-     * @var int
-     */
-    private int $maxMerchantNameLength = 180;
-
-    /**
-     * Validate CSV file for batch expense upload
-     *
-     * @param string $filePath
-     * @param int $targetUserId
-     * @param int $clientId
-     * @param int $adminId
-     * @return array
+     * @param string $filePath Path to the uploaded CSV file
+     * @param int $targetUserId User for whom expenses will be created
+     * @param int $clientId Client context for validation
+     * @param int $adminId Admin user performing the upload
+     * @return array Validation result with success status and details
      */
     public function validate(string $filePath, int $targetUserId, int $clientId, int $adminId): array
     {
+        $this->clientId = $clientId;
+        $this->targetUserId = $targetUserId;
+        $this->adminId = $adminId;
         $this->validationErrors = [];
-        
+        $this->validRows = [];
+
         try {
             // Check if file exists
             if (!Storage::exists($filePath)) {
                 return [
-                    'valid' => false,
-                    'errors' => [
-                        [
-                            'line_number' => 0,
-                            'field' => 'file',
-                            'error' => 'File not found',
-                            'value' => $filePath
-                        ]
-                    ],
-                    'total_rows' => 0
-                ];
-            }
-
-            // Read file content
-            $fileContent = Storage::get($filePath);
-            $lines = str_getcsv($fileContent, "\n");
-            
-            if (empty($lines)) {
-                return [
-                    'valid' => false,
-                    'errors' => [
-                        [
-                            'line_number' => 0,
-                            'field' => 'file',
-                            'error' => 'File is empty',
-                            'value' => ''
-                        ]
-                    ],
-                    'total_rows' => 0
-                ];
-            }
-
-            // Check maximum row constraint (200 rows max + header)
-            if (count($lines) > 201) {
-                return [
-                    'valid' => false,
-                    'errors' => [
-                        [
-                            'line_number' => 0,
-                            'field' => 'file',
-                            'error' => 'CSV file exceeds maximum of 200 data rows',
-                            'value' => (count($lines) - 1) . ' rows found'
-                        ]
-                    ],
-                    'total_rows' => count($lines) - 1
-                ];
-            }
-
-            // Parse header row
-            $headers = str_getcsv($lines[0]);
-            
-            // Validate headers
-            if (!$this->validateHeaders($headers)) {
-                return [
-                    'valid' => false,
-                    'errors' => $this->validationErrors,
-                    'total_rows' => count($lines) - 1
+                    'success' => false,
+                    'message' => 'CSV file not found',
+                    'errors' => [['line_number' => 0, 'field' => 'file', 'error' => 'File not found', 'value' => $filePath]]
                 ];
             }
 
             // Preload reference data for validation
             $this->preloadReferenceData($clientId);
 
+            // Read and parse CSV file
+            $csvContent = Storage::get($filePath);
+            $csvLines = array_map('str_getcsv', explode("\n", trim($csvContent)));
+
+            // Validate file structure
+            if (count($csvLines) === 0) {
+                return [
+                    'success' => false,
+                    'message' => 'CSV file is empty',
+                    'errors' => [['line_number' => 0, 'field' => 'file', 'error' => 'Empty file', 'value' => '']]
+                ];
+            }
+
+            // Check maximum rows constraint (excluding header)
+            if (count($csvLines) > self::MAX_CSV_ROWS + 1) {
+                return [
+                    'success' => false,
+                    'message' => 'CSV file exceeds maximum allowed rows',
+                    'errors' => [['line_number' => 0, 'field' => 'file', 'error' => 'Exceeds maximum ' . self::MAX_CSV_ROWS . ' rows', 'value' => (string)(count($csvLines) - 1)]]
+                ];
+            }
+
+            // Validate headers
+            $headers = $csvLines[0] ?? [];
+            $headerValidation = $this->validateHeaders($headers);
+            if (!$headerValidation['valid']) {
+                return [
+                    'success' => false,
+                    'message' => 'Invalid CSV headers',
+                    'errors' => $headerValidation['errors']
+                ];
+            }
+
             // Validate each data row
-            for ($i = 1; $i < count($lines); $i++) {
-                $row = str_getcsv($lines[$i]);
+            for ($i = 1; $i < count($csvLines); $i++) {
+                $lineNumber = $i + 1; // Line numbers start from 1, including header
+                $rowData = $csvLines[$i];
                 
                 // Skip empty rows
-                if (empty(array_filter($row))) {
+                if (empty(array_filter($rowData))) {
                     continue;
                 }
+                
+                $rowErrors = $this->validateRow($rowData, $lineNumber);
+                if (!empty($rowErrors)) {
+                    $this->validationErrors = array_merge($this->validationErrors, $rowErrors);
+                } else {
+                    $this->validRows[] = $this->parseValidRow($rowData, $lineNumber);
+                }
+            }
 
-                $this->validateRow($row, $i + 1);
+            // All-or-nothing validation: if any row has errors, entire upload fails
+            if (!empty($this->validationErrors)) {
+                return [
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $this->validationErrors,
+                    'error_count' => count($this->validationErrors),
+                    'total_rows' => count($csvLines) - 1
+                ];
             }
 
             return [
-                'valid' => empty($this->validationErrors),
-                'errors' => $this->validationErrors,
-                'total_rows' => count($lines) - 1
+                'success' => true,
+                'message' => 'Validation successful',
+                'valid_rows' => $this->validRows,
+                'total_rows' => count($csvLines) - 1
             ];
 
         } catch (\Exception $e) {
             return [
-                'valid' => false,
-                'errors' => [
-                    [
-                        'line_number' => 0,
-                        'field' => 'file',
-                        'error' => 'File processing error: ' . $e->getMessage(),
-                        'value' => ''
-                    ]
-                ],
-                'total_rows' => 0
+                'success' => false,
+                'message' => 'Error processing CSV file: ' . $e->getMessage(),
+                'errors' => [['line_number' => 0, 'field' => 'file', 'error' => $e->getMessage(), 'value' => '']]
             ];
         }
     }
@@ -194,494 +203,437 @@ class PocketExpenseCSVValidator
     /**
      * Validate CSV headers against expected format
      *
-     * @param array $headers
-     * @return bool
+     * @param array $headers CSV header row
+     * @return array Validation result
      */
-    public function validateHeaders(array $headers): bool
+    public function validateHeaders(array $headers): array
     {
-        // Check if headers match exactly (case-sensitive)
-        if (count($headers) !== count($this->expectedHeaders)) {
-            $this->validationErrors[] = [
+        $errors = [];
+        
+        // Check if we have the expected number of columns
+        if (count($headers) !== count(self::EXPECTED_HEADERS)) {
+            $errors[] = [
                 'line_number' => 1,
                 'field' => 'headers',
-                'error' => 'Invalid number of columns. Expected ' . count($this->expectedHeaders) . ', got ' . count($headers),
-                'value' => implode(', ', $headers)
+                'error' => 'Expected ' . count(self::EXPECTED_HEADERS) . ' columns, got ' . count($headers),
+                'value' => implode(',', $headers)
             ];
-            return false;
         }
 
-        for ($i = 0; $i < count($this->expectedHeaders); $i++) {
-            if (trim($headers[$i]) !== $this->expectedHeaders[$i]) {
-                $this->validationErrors[] = [
+        // Check each header matches expected name exactly
+        for ($i = 0; $i < min(count($headers), count(self::EXPECTED_HEADERS)); $i++) {
+            $expectedHeader = self::EXPECTED_HEADERS[$i];
+            $actualHeader = trim($headers[$i] ?? '');
+            
+            // Special handling for currency equivalent column which varies by currency
+            if ($i === 4 && preg_match('/^[A-Z]{3} Equivalent Amount$/', $actualHeader)) {
+                continue; // Valid currency equivalent column
+            }
+            
+            if ($actualHeader !== $expectedHeader) {
+                $errors[] = [
                     'line_number' => 1,
-                    'field' => 'headers',
-                    'error' => 'Invalid header at column ' . ($i + 1) . '. Expected "' . $this->expectedHeaders[$i] . '", got "' . trim($headers[$i]) . '"',
-                    'value' => trim($headers[$i])
+                    'field' => 'header_' . ($i + 1),
+                    'error' => "Expected '$expectedHeader', got '$actualHeader'",
+                    'value' => $actualHeader
                 ];
-                return false;
             }
         }
 
-        return true;
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors
+        ];
     }
 
     /**
      * Validate a single CSV row
      *
-     * @param array $row
-     * @param int $lineNumber
-     * @return array
+     * @param array $row CSV row data
+     * @param int $lineNumber Line number for error reporting
+     * @return array Array of validation errors for this row
      */
     public function validateRow(array $row, int $lineNumber): array
     {
-        $rowErrors = [];
-
-        // Ensure row has correct number of columns
-        if (count($row) !== count($this->expectedHeaders)) {
-            $rowErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'row',
-                'error' => 'Invalid number of columns. Expected ' . count($this->expectedHeaders) . ', got ' . count($row),
-                'value' => implode(', ', $row)
-            ];
-            $this->validationErrors = array_merge($this->validationErrors, $rowErrors);
-            return $rowErrors;
+        $errors = [];
+        
+        // Ensure we have enough columns
+        while (count($row) < count(self::EXPECTED_HEADERS)) {
+            $row[] = '';
         }
 
-        // Map row values to column names
-        $data = array_combine($this->expectedHeaders, $row);
-
-        // Validate Date (required)
-        $this->validateDate($data['Date'], $lineNumber);
-
-        // Validate Expense Type (required)
-        $this->validateExpenseType($data['Expense Type'], $lineNumber);
-
-        // Validate Currency Code (required)
-        $this->validateCurrencyCode($data['Currency Code'], $lineNumber);
-
-        // Validate Amount (required)
-        $this->validateAmount($data['Amount'], $lineNumber);
-
-        // Validate Currency Equivalent Amount (optional)
-        if (!empty(trim($data['Currency Equivalent Amount']))) {
-            $this->validateCurrencyEquivalentAmount($data['Currency Equivalent Amount'], $lineNumber);
-        }
-
-        // Validate VAT % (optional)
-        if (!empty(trim($data['VAT %']))) {
-            $this->validateVatPercentage($data['VAT %'], $lineNumber);
-        }
-
-        // Validate Merchant Name (required)
-        $this->validateMerchantName($data['Merchant Name'], $lineNumber);
-
-        // Validate Description (optional)
-        // No specific validation needed for description
-
-        // Validate Merchant Address (optional)
-        // No specific validation needed for merchant address
-
-        // Validate Merchant Country (optional)
-        if (!empty(trim($data['Merchant Country']))) {
-            $this->validateMerchantCountry($data['Merchant Country'], $lineNumber);
-        }
-
-        // Validate Source (optional)
-        $this->validateSource($data['Source'], $data['Source Note'], $lineNumber);
-
-        // Validate Notes (optional)
-        $this->validateNotes($data['Notes'], $lineNumber);
-
-        return $rowErrors;
-    }
-
-    /**
-     * Preload reference data for efficient validation
-     *
-     * @param int $clientId
-     * @return void
-     */
-    public function preloadReferenceData(int $clientId): void
-    {
-        // Load expense types
-        $this->referenceData['expense_types'] = OptPocketExpenseType::pluck('option', 'id')->toArray();
-
-        // Load available currencies
-        // TODO: Replace with actual currency lookup when platform currency service is confirmed
-        $this->referenceData['currencies'] = [
-            'USD', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'CNY', 'SEK', 'NOK', 'DKK', 'NZD'
-        ];
-
-        // Load available countries
-        // TODO: Replace with actual country lookup when platform country service is confirmed
-        $this->referenceData['countries'] = [
-            'United States', 'United Kingdom', 'Canada', 'Australia', 'Germany', 'France', 
-            'Netherlands', 'Sweden', 'Norway', 'Denmark', 'Switzerland', 'Japan'
-        ];
-
-        // Load available sources for the client (including global 'Other')
-        $this->referenceData['sources'] = PocketExpenseSourceClientConfig::availableForClient($clientId)
-            ->pluck('name')
-            ->toArray();
-    }
-
-    /**
-     * Validate date field
-     *
-     * @param string $date
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateDate(string $date, int $lineNumber): void
-    {
-        $trimmedDate = trim($date);
-
-        if (empty($trimmedDate)) {
-            $this->validationErrors[] = [
+        // Validate Date (column 0) - required
+        $date = trim($row[0] ?? '');
+        if (empty($date)) {
+            $errors[] = [
                 'line_number' => $lineNumber,
                 'field' => 'Date',
                 'error' => 'Date is required',
                 'value' => $date
             ];
-            return;
-        }
-
-        // Parse date in DD/MM/YYYY format
-        try {
-            $parsedDate = Carbon::createFromFormat('d/m/Y', $trimmedDate);
-            
-            // Check if date is not older than 3 years
-            $minDate = Carbon::now()->subYears($this->maxDateAgeYears);
-            
-            if ($parsedDate->lt($minDate)) {
-                $this->validationErrors[] = [
+        } else {
+            $dateValidation = $this->validateDate($date);
+            if (!$dateValidation['valid']) {
+                $errors[] = [
                     'line_number' => $lineNumber,
                     'field' => 'Date',
-                    'error' => 'Date must not be older than ' . $this->maxDateAgeYears . ' years',
+                    'error' => $dateValidation['error'],
                     'value' => $date
                 ];
             }
-
-            // Check if date is not in the future
-            if ($parsedDate->gt(Carbon::now())) {
-                $this->validationErrors[] = [
-                    'line_number' => $lineNumber,
-                    'field' => 'Date',
-                    'error' => 'Date cannot be in the future',
-                    'value' => $date
-                ];
-            }
-
-        } catch (\Exception $e) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Date',
-                'error' => 'Invalid date format. Expected DD/MM/YYYY',
-                'value' => $date
-            ];
         }
-    }
 
-    /**
-     * Validate expense type field
-     *
-     * @param string $expenseType
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateExpenseType(string $expenseType, int $lineNumber): void
-    {
-        $trimmedExpenseType = trim($expenseType);
-
-        if (empty($trimmedExpenseType)) {
-            $this->validationErrors[] = [
+        // Validate Expense Type (column 1) - required
+        $expenseType = trim($row[1] ?? '');
+        if (empty($expenseType)) {
+            $errors[] = [
                 'line_number' => $lineNumber,
                 'field' => 'Expense Type',
                 'error' => 'Expense Type is required',
                 'value' => $expenseType
             ];
-            return;
+        } else {
+            if (!isset($this->expenseTypes[$expenseType])) {
+                $errors[] = [
+                    'line_number' => $lineNumber,
+                    'field' => 'Expense Type',
+                    'error' => 'Invalid expense type',
+                    'value' => $expenseType
+                ];
+            }
         }
 
-        if (!in_array($trimmedExpenseType, $this->referenceData['expense_types'])) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Expense Type',
-                'error' => 'Invalid expense type. Allowed values: ' . implode(', ', $this->referenceData['expense_types']),
-                'value' => $expenseType
-            ];
-        }
-    }
-
-    /**
-     * Validate currency code field
-     *
-     * @param string $currencyCode
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateCurrencyCode(string $currencyCode, int $lineNumber): void
-    {
-        $trimmedCurrencyCode = trim($currencyCode);
-
-        if (empty($trimmedCurrencyCode)) {
-            $this->validationErrors[] = [
+        // Validate Currency Code (column 2) - required
+        $currency = trim($row[2] ?? '');
+        if (empty($currency)) {
+            $errors[] = [
                 'line_number' => $lineNumber,
                 'field' => 'Currency Code',
                 'error' => 'Currency Code is required',
-                'value' => $currencyCode
+                'value' => $currency
             ];
-            return;
+        } else {
+            if (!in_array(strtoupper($currency), self::ALLOWED_CURRENCIES)) {
+                $errors[] = [
+                    'line_number' => $lineNumber,
+                    'field' => 'Currency Code',
+                    'error' => 'Invalid currency code',
+                    'value' => $currency
+                ];
+            }
         }
 
-        if (strlen($trimmedCurrencyCode) !== 3) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Currency Code',
-                'error' => 'Currency Code must be exactly 3 characters',
-                'value' => $currencyCode
-            ];
-            return;
-        }
-
-        if (!in_array(strtoupper($trimmedCurrencyCode), $this->referenceData['currencies'])) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Currency Code',
-                'error' => 'Invalid currency code. Allowed values: ' . implode(', ', $this->referenceData['currencies']),
-                'value' => $currencyCode
-            ];
-        }
-    }
-
-    /**
-     * Validate amount field
-     *
-     * @param string $amount
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateAmount(string $amount, int $lineNumber): void
-    {
-        $trimmedAmount = trim($amount);
-
-        if (empty($trimmedAmount)) {
-            $this->validationErrors[] = [
+        // Validate Amount (column 3) - required
+        $amount = trim($row[3] ?? '');
+        if (empty($amount)) {
+            $errors[] = [
                 'line_number' => $lineNumber,
                 'field' => 'Amount',
                 'error' => 'Amount is required',
                 'value' => $amount
             ];
-            return;
+        } else {
+            if (!is_numeric($amount)) {
+                $errors[] = [
+                    'line_number' => $lineNumber,
+                    'field' => 'Amount',
+                    'error' => 'Amount must be numeric',
+                    'value' => $amount
+                ];
+            } elseif ((float)$amount <= 0) {
+                $errors[] = [
+                    'line_number' => $lineNumber,
+                    'field' => 'Amount',
+                    'error' => 'Amount must be greater than zero',
+                    'value' => $amount
+                ];
+            }
         }
 
-        if (!is_numeric($trimmedAmount)) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Amount',
-                'error' => 'Amount must be numeric',
-                'value' => $amount
-            ];
-            return;
+        // Validate VAT % (column 5) - optional
+        $vat = trim($row[5] ?? '');
+        if (!empty($vat)) {
+            $vatValidation = $this->validateVat($vat);
+            if (!$vatValidation['valid']) {
+                $errors[] = [
+                    'line_number' => $lineNumber,
+                    'field' => 'VAT %',
+                    'error' => $vatValidation['error'],
+                    'value' => $vat
+                ];
+            }
         }
 
-        $numericAmount = (float) $trimmedAmount;
-
-        if ($numericAmount == 0) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Amount',
-                'error' => 'Amount cannot be zero',
-                'value' => $amount
-            ];
-        }
-    }
-
-    /**
-     * Validate currency equivalent amount field
-     *
-     * @param string $currencyEquivalentAmount
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateCurrencyEquivalentAmount(string $currencyEquivalentAmount, int $lineNumber): void
-    {
-        $trimmedAmount = trim($currencyEquivalentAmount);
-
-        if (!is_numeric($trimmedAmount)) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Currency Equivalent Amount',
-                'error' => 'Currency Equivalent Amount must be numeric',
-                'value' => $currencyEquivalentAmount
-            ];
-        }
-    }
-
-    /**
-     * Validate VAT percentage field
-     *
-     * @param string $vatPercentage
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateVatPercentage(string $vatPercentage, int $lineNumber): void
-    {
-        $trimmedVat = trim($vatPercentage);
-
-        // Strip % sign if present
-        $cleanVat = str_replace('%', '', $trimmedVat);
-
-        if (!is_numeric($cleanVat)) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'VAT %',
-                'error' => 'VAT % must be numeric',
-                'value' => $vatPercentage
-            ];
-            return;
-        }
-
-        $numericVat = (float) $cleanVat;
-
-        if ($numericVat < 0 || $numericVat > $this->maxVatPercentage) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'VAT %',
-                'error' => 'VAT % must be between 0 and ' . $this->maxVatPercentage,
-                'value' => $vatPercentage
-            ];
-        }
-    }
-
-    /**
-     * Validate merchant name field
-     *
-     * @param string $merchantName
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateMerchantName(string $merchantName, int $lineNumber): void
-    {
-        $trimmedMerchantName = trim($merchantName);
-
-        if (empty($trimmedMerchantName)) {
-            $this->validationErrors[] = [
+        // Validate Merchant Name (column 6) - required
+        $merchantName = trim($row[6] ?? '');
+        if (empty($merchantName)) {
+            $errors[] = [
                 'line_number' => $lineNumber,
                 'field' => 'Merchant Name',
                 'error' => 'Merchant Name is required',
                 'value' => $merchantName
             ];
-            return;
-        }
-
-        if (strlen($trimmedMerchantName) > $this->maxMerchantNameLength) {
-            $this->validationErrors[] = [
+        } elseif (strlen($merchantName) > self::MAX_MERCHANT_NAME_LENGTH) {
+            $errors[] = [
                 'line_number' => $lineNumber,
                 'field' => 'Merchant Name',
-                'error' => 'Merchant Name cannot exceed ' . $this->maxMerchantNameLength . ' characters',
+                'error' => 'Merchant Name exceeds maximum length of ' . self::MAX_MERCHANT_NAME_LENGTH . ' characters',
                 'value' => $merchantName
             ];
         }
-    }
 
-    /**
-     * Validate merchant country field
-     *
-     * @param string $merchantCountry
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateMerchantCountry(string $merchantCountry, int $lineNumber): void
-    {
-        $trimmedCountry = trim($merchantCountry);
-
-        if (!in_array($trimmedCountry, $this->referenceData['countries'])) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Merchant Country',
-                'error' => 'Invalid country. Please use a valid country name',
-                'value' => $merchantCountry
-            ];
-        }
-    }
-
-    /**
-     * Validate source and source note fields
-     *
-     * @param string $source
-     * @param string $sourceNote
-     * @param int $lineNumber
-     * @return void
-     */
-    private function validateSource(string $source, string $sourceNote, int $lineNumber): void
-    {
-        $trimmedSource = trim($source);
-        $trimmedSourceNote = trim($sourceNote);
-
-        if (!empty($trimmedSource)) {
-            if (!in_array($trimmedSource, $this->referenceData['sources'])) {
-                $this->validationErrors[] = [
+        // Validate Source (column 10) - optional but if provided must be valid
+        $source = trim($row[10] ?? '');
+        $sourceNote = trim($row[11] ?? '');
+        
+        if (!empty($source)) {
+            if (!in_array($source, $this->clientSources)) {
+                $errors[] = [
                     'line_number' => $lineNumber,
                     'field' => 'Source',
-                    'error' => 'Invalid source. Allowed values: ' . implode(', ', $this->referenceData['sources']),
+                    'error' => 'Invalid expense source',
                     'value' => $source
                 ];
             }
-
-            // Check if Source Note is required when Source = Other
-            if ($trimmedSource === 'Other' && empty($trimmedSourceNote)) {
-                $this->validationErrors[] = [
+            
+            // If source is "Other", Source Note is required
+            if ($source === 'Other' && empty($sourceNote)) {
+                $errors[] = [
                     'line_number' => $lineNumber,
                     'field' => 'Source Note',
-                    'error' => 'Source Note is required when Source is "Other"',
+                    'error' => 'Source Note is required when Source is Other',
                     'value' => $sourceNote
                 ];
             }
         }
+
+        // Validate Notes (column 12) - optional, check for SQL injection patterns
+        $notes = trim($row[12] ?? '');
+        if (!empty($notes)) {
+            $notesValidation = $this->validateNotes($notes);
+            if (!$notesValidation['valid']) {
+                $errors[] = [
+                    'line_number' => $lineNumber,
+                    'field' => 'Notes',
+                    'error' => $notesValidation['error'],
+                    'value' => $notes
+                ];
+            }
+        }
+
+        return $errors;
     }
 
     /**
-     * Validate notes field
+     * Preload reference data for validation
      *
-     * @param string $notes
-     * @param int $lineNumber
+     * @param int $clientId Client ID for scoping reference data
      * @return void
      */
-    private function validateNotes(string $notes, int $lineNumber): void
+    public function preloadReferenceData(int $clientId): void
     {
-        $trimmedNotes = trim($notes);
+        // Load expense types
+        $expenseTypeRecords = OptPocketExpenseType::all();
+        $this->expenseTypes = [];
+        foreach ($expenseTypeRecords as $type) {
+            $this->expenseTypes[$type->option] = $type;
+        }
 
-        // TODO: Implement actual DB limit checking when notes field constraints are confirmed
-        // For now, using a reasonable default limit
-        $maxNotesLength = 1000;
+        // Load client expense sources (including global "Other")
+        $clientSourceRecords = PocketExpenseSourceClientConfig::active()
+            ->where(function ($query) use ($clientId) {
+                $query->where('client_id', $clientId)
+                      ->orWhereNull('client_id'); // Include global sources
+            })
+            ->get();
+            
+        $this->clientSources = $clientSourceRecords->pluck('name')->toArray();
+    }
 
-        if (strlen($trimmedNotes) > $maxNotesLength) {
-            $this->validationErrors[] = [
-                'line_number' => $lineNumber,
-                'field' => 'Notes',
-                'error' => 'Notes cannot exceed ' . $maxNotesLength . ' characters',
-                'value' => $notes
+    /**
+     * Get validation errors
+     *
+     * @return array Array of validation errors
+     */
+    public function getValidationErrors(): array
+    {
+        return $this->validationErrors;
+    }
+
+    /**
+     * Get valid rows
+     *
+     * @return array Array of valid parsed rows
+     */
+    public function getValidRows(): array
+    {
+        return $this->validRows;
+    }
+
+    /**
+     * Validate date format and constraints
+     *
+     * @param string $date Date string to validate
+     * @return array Validation result
+     */
+    private function validateDate(string $date): array
+    {
+        try {
+            // Parse date in DD/MM/YYYY format
+            $parsedDate = Carbon::createFromFormat('d/m/Y', $date);
+            
+            if (!$parsedDate) {
+                return [
+                    'valid' => false,
+                    'error' => 'Date format must be DD/MM/YYYY'
+                ];
+            }
+
+            // Check if date is not older than 3 years
+            $threeYearsAgo = Carbon::now()->subYears(self::MAX_EXPENSE_AGE_YEARS);
+            if ($parsedDate->lt($threeYearsAgo)) {
+                return [
+                    'valid' => false,
+                    'error' => 'Date cannot be older than 3 years'
+                ];
+            }
+
+            // Check if date is not in the future
+            if ($parsedDate->gt(Carbon::now())) {
+                return [
+                    'valid' => false,
+                    'error' => 'Date cannot be in the future'
+                ];
+            }
+
+            return ['valid' => true];
+
+        } catch (\Exception $e) {
+            return [
+                'valid' => false,
+                'error' => 'Invalid date format. Expected DD/MM/YYYY'
+            ];
+        }
+    }
+
+    /**
+     * Validate VAT percentage
+     *
+     * @param string $vat VAT string to validate
+     * @return array Validation result
+     */
+    private function validateVat(string $vat): array
+    {
+        // Strip % sign if present
+        $vatValue = str_replace('%', '', $vat);
+        
+        if (!is_numeric($vatValue)) {
+            return [
+                'valid' => false,
+                'error' => 'VAT must be numeric'
             ];
         }
 
-        // TODO: Implement SQL injection prevention when specific requirements are confirmed
-        // Basic check for potential SQL injection patterns
+        $vatNumeric = (float)$vatValue;
+        if ($vatNumeric < 0 || $vatNumeric > 100) {
+            return [
+                'valid' => false,
+                'error' => 'VAT must be between 0 and 100'
+            ];
+        }
+
+        return ['valid' => true];
+    }
+
+    /**
+     * Validate notes field for SQL injection and length
+     *
+     * @param string $notes Notes string to validate
+     * @return array Validation result
+     */
+    private function validateNotes(string $notes): array
+    {
+        // Basic SQL injection pattern detection
         $suspiciousPatterns = [
-            'DROP TABLE', 'DELETE FROM', 'INSERT INTO', 'UPDATE ', 'SELECT ', '--', ';--', '/*', '*/'
+            '/(\b(select|insert|update|delete|drop|create|alter|exec|execute|union|script)\b)/i',
+            '/[\'";].*(--)/',
+            '/\/\*.*\*\//',
+            '/\bor\b.*\d+.*=.*\d+/i',
+            '/\band\b.*\d+.*=.*\d+/i'
         ];
 
         foreach ($suspiciousPatterns as $pattern) {
-            if (stripos($trimmedNotes, $pattern) !== false) {
-                $this->validationErrors[] = [
-                    'line_number' => $lineNumber,
-                    'field' => 'Notes',
-                    'error' => 'Notes contain invalid characters or patterns',
-                    'value' => $notes
+            if (preg_match($pattern, $notes)) {
+                return [
+                    'valid' => false,
+                    'error' => 'Notes contain potentially harmful content'
                 ];
-                break;
             }
         }
+
+        // Check reasonable length limit (65535 for TEXT field)
+        if (strlen($notes) > 65535) {
+            return [
+                'valid' => false,
+                'error' => 'Notes exceed maximum length'
+            ];
+        }
+
+        return ['valid' => true];
+    }
+
+    /**
+     * Parse a valid CSV row into structured expense data
+     *
+     * @param array $row CSV row data
+     * @param int $lineNumber Line number for reference
+     * @return array Structured expense data
+     */
+    private function parseValidRow(array $row, int $lineNumber): array
+    {
+        // Ensure we have enough columns
+        while (count($row) < count(self::EXPECTED_HEADERS)) {
+            $row[] = '';
+        }
+
+        $expenseType = trim($row[1]);
+        $currency = strtoupper(trim($row[2]));
+        $amount = (float)trim($row[3]);
+        
+        // Apply amount sign based on expense type
+        $expenseTypeRecord = $this->expenseTypes[$expenseType] ?? null;
+        if ($expenseTypeRecord && $expenseTypeRecord->amount_sign === 'negative') {
+            $amount = -abs($amount);
+        } else {
+            $amount = abs($amount);
+        }
+
+        // Parse VAT percentage (strip % sign)
+        $vatPercent = trim($row[5] ?? '');
+        $vatAmount = null;
+        if (!empty($vatPercent)) {
+            $vatAmount = (float)str_replace('%', '', $vatPercent);
+        }
+
+        return [
+            'line_number' => $lineNumber,
+            'date' => Carbon::createFromFormat('d/m/Y', trim($row[0]))->format('Y-m-d'),
+            'expense_type' => $expenseType,
+            'currency' => $currency,
+            'amount' => $amount,
+            'equivalent_amount' => !empty(trim($row[4])) ? (float)trim($row[4]) : null,
+            'vat_amount' => $vatAmount,
+            'merchant_name' => trim($row[6]),
+            'merchant_description' => !empty(trim($row[7])) ? trim($row[7]) : null,
+            'merchant_address' => !empty(trim($row[8])) ? trim($row[8]) : null,
+            'merchant_country' => !empty(trim($row[9])) ? trim($row[9]) : null,
+            'source' => !empty(trim($row[10])) ? trim($row[10]) : null,
+            'source_note' => !empty(trim($row[11])) ? trim($row[11]) : null,
+            'notes' => !empty(trim($row[12])) ? trim($row[12]) : null,
+            'user_id' => $this->targetUserId,
+            'client_id' => $this->clientId,
+            'created_by_user_id' => $this->adminId,
+            'status' => 'submitted'
+        ];
     }
 }

@@ -13,33 +13,34 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('pocket_expense_metadata', function (Blueprint $table) {
-            $table->id();
-            $table->unsignedBigInteger('pocket_expense_id');
+            $table->increments('id')->comment('Primary key');
+            $table->unsignedInteger('pocket_expense_id')->comment('Reference to pocket_expense table');
             $table->enum('metadata_type', [
                 'category',
                 'tracking_code_type_1',
-                'tracking_code_type_2',
+                'tracking_code_type_2', 
                 'project',
                 'additional_field',
                 'file',
                 'expense_source'
-            ]);
-            $table->unsignedBigInteger('transaction_category_id')->nullable();
-            $table->unsignedBigInteger('tracking_code_id')->nullable();
-            $table->unsignedBigInteger('project_id')->nullable();
-            $table->unsignedBigInteger('file_store_id')->nullable();
-            $table->unsignedBigInteger('expense_source_id')->nullable();
-            $table->unsignedBigInteger('additional_field_id')->nullable();
-            $table->unsignedBigInteger('user_id')->nullable();
-            $table->json('details_json')->nullable();
+            ])->comment('Type of metadata being stored');
+            $table->unsignedInteger('transaction_category_id')->nullable()->comment('Reference to transaction_category table');
+            $table->unsignedInteger('tracking_code_id')->nullable()->comment('Reference to tracking_codes table');
+            $table->unsignedInteger('project_id')->nullable()->comment('Reference to configurable_projects table');
+            $table->unsignedInteger('file_store_id')->nullable()->comment('Reference to file_store table');
+            $table->unsignedInteger('expense_source_id')->nullable()->comment('Reference to pocket_expense_source_client_config table');
+            $table->unsignedInteger('additional_field_id')->nullable()->comment('Reference to expense_additional_field table');
+            $table->unsignedBigInteger('user_id')->comment('Reference to users table');
+            $table->json('details_json')->nullable()->comment('Additional metadata in JSON format');
+            $table->dateTime('create_time')->default(DB::raw('CURRENT_TIMESTAMP'))->comment('Record creation timestamp');
+            $table->dateTime('update_time')->nullable()->default(null)->comment('Record update timestamp');
+            $table->tinyInteger('deleted')->default(0)->comment('Soft delete flag');
+            $table->dateTime('delete_time')->nullable()->default(null)->comment('Soft delete timestamp');
             
-            // Volopa flag-based soft delete pattern
-            $table->tinyInteger('deleted')->default(0);
-            $table->dateTime('delete_time')->nullable();
-            
-            // Volopa legacy timestamp pattern
-            $table->dateTime('create_time')->default(DB::raw('CURRENT_TIMESTAMP'));
-            $table->dateTime('update_time')->nullable()->default(DB::raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
+            // Set table engine and charset according to constraints
+            $table->engine = 'InnoDB';
+            $table->charset = 'utf8mb4';
+            $table->collation = 'utf8mb4_unicode_ci';
             
             // Foreign key constraints
             $table->foreign('pocket_expense_id')->references('id')->on('pocket_expense')->onDelete('cascade');
@@ -49,27 +50,28 @@ return new class extends Migration
             $table->foreign('file_store_id')->references('id')->on('file_store')->onDelete('set null');
             $table->foreign('expense_source_id')->references('id')->on('pocket_expense_source_client_config')->onDelete('set null');
             $table->foreign('additional_field_id')->references('id')->on('expense_additional_field')->onDelete('set null');
-            $table->foreign('user_id')->references('id')->on('users')->onDelete('set null');
+            $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
             
-            // Unique constraint to prevent duplicate metadata types per expense
+            // Unique constraint to prevent duplicate metadata per expense and type
             $table->unique(['pocket_expense_id', 'metadata_type', 'deleted'], 'unique_expense_metadata_type');
             
             // Indexes for performance
-            $table->index(['pocket_expense_id', 'metadata_type']);
-            $table->index(['transaction_category_id']);
-            $table->index(['tracking_code_id']);
-            $table->index(['project_id']);
-            $table->index(['file_store_id']);
-            $table->index(['expense_source_id']);
-            $table->index(['additional_field_id']);
-            $table->index(['user_id']);
-            $table->index(['deleted']);
-            
-            // Table settings
-            $table->engine = 'InnoDB';
-            $table->charset = 'utf8mb4';
-            $table->collation = 'utf8mb4_unicode_ci';
+            $table->index(['pocket_expense_id'], 'idx_pocket_expense');
+            $table->index(['metadata_type'], 'idx_metadata_type');
+            $table->index(['user_id'], 'idx_user');
+            $table->index(['deleted'], 'idx_deleted');
+            $table->index(['expense_source_id'], 'idx_expense_source');
         });
+        
+        // Add trigger for update_time on update
+        DB::unprepared('
+            CREATE TRIGGER pocket_expense_metadata_update_time_trigger
+            BEFORE UPDATE ON pocket_expense_metadata
+            FOR EACH ROW
+            BEGIN
+                SET NEW.update_time = CURRENT_TIMESTAMP;
+            END
+        ');
     }
 
     /**
@@ -77,6 +79,9 @@ return new class extends Migration
      */
     public function down(): void
     {
+        // Drop trigger first
+        DB::unprepared('DROP TRIGGER IF EXISTS pocket_expense_metadata_update_time_trigger');
+        
         Schema::dropIfExists('pocket_expense_metadata');
     }
 };

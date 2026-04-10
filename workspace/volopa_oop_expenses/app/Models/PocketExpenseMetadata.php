@@ -5,15 +5,13 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Builder;
-use Database\Factories\PocketExpenseMetadataFactory;
 
 /**
  * PocketExpenseMetadata Model
  * 
- * Stores metadata for pocket expenses including categories, tracking codes, projects,
- * files, expense sources, and additional fields. Supports different metadata types
- * with specific reference IDs and soft delete functionality.
+ * Manages metadata associated with pocket expenses including categories,
+ * tracking codes, projects, files, expense sources, and additional fields.
+ * Uses flag-based soft delete pattern.
  * 
  * @property int $id
  * @property int $pocket_expense_id
@@ -24,12 +22,12 @@ use Database\Factories\PocketExpenseMetadataFactory;
  * @property int|null $file_store_id
  * @property int|null $expense_source_id
  * @property int|null $additional_field_id
- * @property int|null $user_id
- * @property array|null $details_json
+ * @property int $user_id
+ * @property string|null $details_json
+ * @property \Illuminate\Support\Carbon $create_time
+ * @property \Illuminate\Support\Carbon|null $update_time
  * @property int $deleted
- * @property \DateTime|null $delete_time
- * @property \DateTime $create_time
- * @property \DateTime|null $update_time
+ * @property \Illuminate\Support\Carbon|null $delete_time
  */
 class PocketExpenseMetadata extends Model
 {
@@ -43,11 +41,26 @@ class PocketExpenseMetadata extends Model
     protected $table = 'pocket_expense_metadata';
 
     /**
-     * Disable Laravel's default timestamps as we use Volopa legacy pattern
+     * Indicates if the model should be timestamped.
+     * This table uses custom timestamp columns.
      *
      * @var bool
      */
     public $timestamps = false;
+
+    /**
+     * The name of the "created at" column.
+     *
+     * @var string
+     */
+    const CREATED_AT = 'create_time';
+
+    /**
+     * The name of the "updated at" column.
+     *
+     * @var string
+     */
+    const UPDATED_AT = 'update_time';
 
     /**
      * The attributes that are mass assignable.
@@ -65,6 +78,10 @@ class PocketExpenseMetadata extends Model
         'additional_field_id',
         'user_id',
         'details_json',
+        'create_time',
+        'update_time',
+        'deleted',
+        'delete_time',
     ];
 
     /**
@@ -83,11 +100,11 @@ class PocketExpenseMetadata extends Model
         'expense_source_id' => 'integer',
         'additional_field_id' => 'integer',
         'user_id' => 'integer',
-        'details_json' => 'array',
-        'deleted' => 'integer',
-        'delete_time' => 'datetime',
+        'details_json' => 'json',
         'create_time' => 'datetime',
         'update_time' => 'datetime',
+        'deleted' => 'integer',
+        'delete_time' => 'datetime',
     ];
 
     /**
@@ -98,91 +115,102 @@ class PocketExpenseMetadata extends Model
     protected $hidden = [];
 
     /**
-     * Get the pocket expense this metadata belongs to.
+     * Get the pocket expense that owns this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function pocketExpense(): BelongsTo
     {
-        return $this->belongsTo(PocketExpense::class, 'pocket_expense_id');
+        return $this->belongsTo(PocketExpense::class, 'pocket_expense_id', 'id');
     }
 
     /**
-     * Get the transaction category (when metadata_type is 'category').
-     * 
-     * TODO: Replace with actual TransactionCategory model when available
+     * Get the transaction category associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function transactionCategory(): BelongsTo
     {
-        // TODO: Implement actual TransactionCategory model relationship
-        return $this->belongsTo(TransactionCategory::class, 'transaction_category_id');
+        // TODO: Implement TransactionCategory model relationship when TransactionCategory model is available
+        // For now, this is a placeholder for the foreign key constraint
+        return $this->belongsTo(TransactionCategory::class, 'transaction_category_id', 'id');
     }
 
     /**
-     * Get the tracking code (when metadata_type is tracking_code_type_1 or tracking_code_type_2).
-     * 
-     * TODO: Replace with actual TrackingCode model when available
+     * Get the tracking code associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function trackingCode(): BelongsTo
     {
-        // TODO: Implement actual TrackingCode model relationship
-        return $this->belongsTo(TrackingCode::class, 'tracking_code_id');
+        // TODO: Implement TrackingCode model relationship when TrackingCode model is available
+        // For now, this is a placeholder for the foreign key constraint
+        return $this->belongsTo(TrackingCode::class, 'tracking_code_id', 'id');
     }
 
     /**
-     * Get the project (when metadata_type is 'project').
-     * 
-     * TODO: Replace with actual ConfigurableProject model when available
+     * Get the project associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function project(): BelongsTo
     {
-        // TODO: Implement actual ConfigurableProject model relationship
-        return $this->belongsTo(ConfigurableProject::class, 'project_id');
+        // TODO: Implement ConfigurableProject model relationship when ConfigurableProject model is available
+        // For now, this is a placeholder for the foreign key constraint
+        return $this->belongsTo(ConfigurableProject::class, 'project_id', 'id');
     }
 
     /**
-     * Get the file store (when metadata_type is 'file').
-     * 
-     * TODO: Replace with actual FileStore model when available
+     * Get the file store associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function fileStore(): BelongsTo
     {
-        // TODO: Implement actual FileStore model relationship
-        return $this->belongsTo(FileStore::class, 'file_store_id');
+        // TODO: Implement FileStore model relationship when FileStore model is available
+        // For now, this is a placeholder for the foreign key constraint
+        return $this->belongsTo(FileStore::class, 'file_store_id', 'id');
     }
 
     /**
-     * Get the expense source (when metadata_type is 'expense_source').
+     * Get the expense source associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function expenseSource(): BelongsTo
     {
-        return $this->belongsTo(PocketExpenseSourceClientConfig::class, 'expense_source_id');
+        return $this->belongsTo(PocketExpenseSourceClientConfig::class, 'expense_source_id', 'id');
     }
 
     /**
-     * Get the additional field (when metadata_type is 'additional_field').
-     * 
-     * TODO: Replace with actual ExpenseAdditionalField model when available
+     * Get the additional field associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function additionalField(): BelongsTo
     {
-        // TODO: Implement actual ExpenseAdditionalField model relationship
-        return $this->belongsTo(ExpenseAdditionalField::class, 'additional_field_id');
+        // TODO: Implement ExpenseAdditionalField model relationship when ExpenseAdditionalField model is available
+        // For now, this is a placeholder for the foreign key constraint
+        return $this->belongsTo(ExpenseAdditionalField::class, 'additional_field_id', 'id');
     }
 
     /**
      * Get the user associated with this metadata.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
      */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'user_id');
+        return $this->belongsTo(User::class, 'user_id', 'id');
     }
 
     /**
-     * Scope a query to only include non-deleted metadata.
+     * Scope a query to only include active (non-deleted) metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeActive(Builder $query): Builder
+    public function scopeActive($query)
     {
         return $query->where('deleted', 0);
     }
@@ -190,117 +218,129 @@ class PocketExpenseMetadata extends Model
     /**
      * Scope a query to only include deleted metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeDeleted(Builder $query): Builder
+    public function scopeDeleted($query)
     {
         return $query->where('deleted', 1);
     }
 
     /**
-     * Scope a query to only include metadata for a specific expense.
+     * Scope a query to filter by metadata type.
      *
-     * @param Builder $query
-     * @param int $expenseId
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param string $type
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeForExpense(Builder $query, int $expenseId): Builder
+    public function scopeByType($query, string $type)
     {
-        return $query->where('pocket_expense_id', $expenseId);
+        return $query->where('metadata_type', $type);
     }
 
     /**
-     * Scope a query to only include metadata of a specific type.
+     * Scope a query to filter by pocket expense.
      *
-     * @param Builder $query
-     * @param string $metadataType
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $pocketExpenseId
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeOfType(Builder $query, string $metadataType): Builder
+    public function scopeForPocketExpense($query, int $pocketExpenseId)
     {
-        return $query->where('metadata_type', $metadataType);
+        return $query->where('pocket_expense_id', $pocketExpenseId);
     }
 
     /**
-     * Scope a query to only include category metadata.
+     * Scope a query to filter by user.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @param int $userId
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeCategory(Builder $query): Builder
+    public function scopeForUser($query, int $userId)
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    /**
+     * Scope a query to filter by category metadata.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeCategory($query)
     {
         return $query->where('metadata_type', 'category');
     }
 
     /**
-     * Scope a query to only include tracking code type 1 metadata.
+     * Scope a query to filter by tracking code type 1 metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeTrackingCodeType1(Builder $query): Builder
+    public function scopeTrackingCodeType1($query)
     {
         return $query->where('metadata_type', 'tracking_code_type_1');
     }
 
     /**
-     * Scope a query to only include tracking code type 2 metadata.
+     * Scope a query to filter by tracking code type 2 metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeTrackingCodeType2(Builder $query): Builder
+    public function scopeTrackingCodeType2($query)
     {
         return $query->where('metadata_type', 'tracking_code_type_2');
     }
 
     /**
-     * Scope a query to only include project metadata.
+     * Scope a query to filter by project metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeProject(Builder $query): Builder
+    public function scopeProject($query)
     {
         return $query->where('metadata_type', 'project');
     }
 
     /**
-     * Scope a query to only include additional field metadata.
+     * Scope a query to filter by file metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeAdditionalField(Builder $query): Builder
-    {
-        return $query->where('metadata_type', 'additional_field');
-    }
-
-    /**
-     * Scope a query to only include file metadata.
-     *
-     * @param Builder $query
-     * @return Builder
-     */
-    public function scopeFile(Builder $query): Builder
+    public function scopeFile($query)
     {
         return $query->where('metadata_type', 'file');
     }
 
     /**
-     * Scope a query to only include expense source metadata.
+     * Scope a query to filter by expense source metadata.
      *
-     * @param Builder $query
-     * @return Builder
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
      */
-    public function scopeExpenseSource(Builder $query): Builder
+    public function scopeExpenseSource($query)
     {
         return $query->where('metadata_type', 'expense_source');
     }
 
     /**
-     * Check if this metadata is currently active (not soft deleted).
+     * Scope a query to filter by additional field metadata.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    public function scopeAdditionalField($query)
+    {
+        return $query->where('metadata_type', 'additional_field');
+    }
+
+    /**
+     * Check if this metadata is active (not deleted).
      *
      * @return bool
      */
@@ -310,7 +350,7 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Check if this metadata is soft deleted.
+     * Check if this metadata is deleted.
      *
      * @return bool
      */
@@ -320,18 +360,7 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Check if this metadata is of a specific type.
-     *
-     * @param string $type
-     * @return bool
-     */
-    public function isType(string $type): bool
-    {
-        return $this->metadata_type === $type;
-    }
-
-    /**
-     * Check if this metadata is for category.
+     * Check if this metadata is of category type.
      *
      * @return bool
      */
@@ -341,17 +370,27 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Check if this metadata is for tracking code (type 1 or 2).
+     * Check if this metadata is of tracking code type 1.
      *
      * @return bool
      */
-    public function isTrackingCode(): bool
+    public function isTrackingCodeType1(): bool
     {
-        return in_array($this->metadata_type, ['tracking_code_type_1', 'tracking_code_type_2']);
+        return $this->metadata_type === 'tracking_code_type_1';
     }
 
     /**
-     * Check if this metadata is for project.
+     * Check if this metadata is of tracking code type 2.
+     *
+     * @return bool
+     */
+    public function isTrackingCodeType2(): bool
+    {
+        return $this->metadata_type === 'tracking_code_type_2';
+    }
+
+    /**
+     * Check if this metadata is of project type.
      *
      * @return bool
      */
@@ -361,7 +400,7 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Check if this metadata is for file.
+     * Check if this metadata is of file type.
      *
      * @return bool
      */
@@ -371,7 +410,7 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Check if this metadata is for expense source.
+     * Check if this metadata is of expense source type.
      *
      * @return bool
      */
@@ -381,7 +420,7 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Check if this metadata is for additional field.
+     * Check if this metadata is of additional field type.
      *
      * @return bool
      */
@@ -391,7 +430,7 @@ class PocketExpenseMetadata extends Model
     }
 
     /**
-     * Soft delete this metadata by setting deleted flag and delete_time.
+     * Soft delete this metadata by setting deleted flag and timestamp.
      *
      * @return bool
      */
@@ -399,13 +438,12 @@ class PocketExpenseMetadata extends Model
     {
         $this->deleted = 1;
         $this->delete_time = now();
-        $this->update_time = now();
-
+        
         return $this->save();
     }
 
     /**
-     * Restore this metadata by clearing deleted flag and delete_time.
+     * Restore this metadata by removing deleted flag and timestamp.
      *
      * @return bool
      */
@@ -413,116 +451,32 @@ class PocketExpenseMetadata extends Model
     {
         $this->deleted = 0;
         $this->delete_time = null;
-        $this->update_time = now();
-
+        
         return $this->save();
     }
 
     /**
-     * Get the reference ID based on metadata type.
+     * Get the details as an array.
      *
-     * @return int|null
+     * @return array|null
      */
-    public function getReferenceId(): ?int
+    public function getDetailsArray(): ?array
     {
-        return match ($this->metadata_type) {
-            'category' => $this->transaction_category_id,
-            'tracking_code_type_1', 'tracking_code_type_2' => $this->tracking_code_id,
-            'project' => $this->project_id,
-            'file' => $this->file_store_id,
-            'expense_source' => $this->expense_source_id,
-            'additional_field' => $this->additional_field_id,
-            default => null,
-        };
+        if ($this->details_json === null) {
+            return null;
+        }
+
+        return is_array($this->details_json) ? $this->details_json : json_decode($this->details_json, true);
     }
 
     /**
-     * Set the reference ID based on metadata type.
+     * Set the details from an array.
      *
-     * @param int $referenceId
+     * @param array|null $details
      * @return void
      */
-    public function setReferenceId(int $referenceId): void
+    public function setDetailsArray(?array $details): void
     {
-        match ($this->metadata_type) {
-            'category' => $this->transaction_category_id = $referenceId,
-            'tracking_code_type_1', 'tracking_code_type_2' => $this->tracking_code_id = $referenceId,
-            'project' => $this->project_id = $referenceId,
-            'file' => $this->file_store_id = $referenceId,
-            'expense_source' => $this->expense_source_id = $referenceId,
-            'additional_field' => $this->additional_field_id = $referenceId,
-            default => null,
-        };
-    }
-
-    /**
-     * Get the display name for this metadata.
-     *
-     * @return string
-     */
-    public function getDisplayName(): string
-    {
-        $typeName = ucwords(str_replace('_', ' ', $this->metadata_type));
-        $referenceId = $this->getReferenceId();
-        
-        return "{$typeName}" . ($referenceId ? " (ID: {$referenceId})" : "");
-    }
-
-    /**
-     * Create a new factory instance for the model.
-     *
-     * @return PocketExpenseMetadataFactory
-     */
-    protected static function newFactory(): PocketExpenseMetadataFactory
-    {
-        return PocketExpenseMetadataFactory::new();
-    }
-
-    /**
-     * Boot the model.
-     */
-    protected static function boot(): void
-    {
-        parent::boot();
-
-        // Set create_time on creation
-        static::creating(function ($model) {
-            if (is_null($model->create_time)) {
-                $model->create_time = now();
-            }
-            if (is_null($model->update_time)) {
-                $model->update_time = now();
-            }
-        });
-
-        // Update update_time on updating
-        static::updating(function ($model) {
-            $model->update_time = now();
-        });
-    }
-
-    /**
-     * Get validation rules for metadata type and reference validation.
-     *
-     * @return array
-     */
-    public static function getValidationRules(): array
-    {
-        return [
-            'pocket_expense_id' => ['required', 'integer', 'exists:pocket_expense,id'],
-            'metadata_type' => [
-                'required', 
-                'string', 
-                'in:category,tracking_code_type_1,tracking_code_type_2,project,additional_field,file,expense_source'
-            ],
-            'transaction_category_id' => ['nullable', 'integer', 'exists:transaction_category,id'],
-            'tracking_code_id' => ['nullable', 'integer', 'exists:tracking_codes,id'],
-            'project_id' => ['nullable', 'integer', 'exists:configurable_projects,id'],
-            'file_store_id' => ['nullable', 'integer', 'exists:file_store,id'],
-            'expense_source_id' => ['nullable', 'integer', 'exists:pocket_expense_source_client_config,id'],
-            'additional_field_id' => ['nullable', 'integer', 'exists:expense_additional_field,id'],
-            'user_id' => ['nullable', 'integer', 'exists:users,id'],
-            'details_json' => ['nullable', 'array'],
-        ];
+        $this->details_json = $details;
     }
 }

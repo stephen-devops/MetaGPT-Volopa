@@ -13,48 +13,36 @@ return new class extends Migration
     public function up(): void
     {
         Schema::create('opt_pocket_expense_type', function (Blueprint $table) {
-            $table->id();
-            $table->string('option', 100);
-            $table->enum('amount_sign', ['positive', 'negative'])->default('negative');
+            $table->increments('id')->comment('Primary key');
+            $table->string('option', 128)->comment('Expense type name');
+            $table->enum('amount_sign', ['positive', 'negative'])->default('negative')->comment('Sign applied to amount based on expense type');
             
-            // Volopa legacy timestamp pattern
-            $table->dateTime('create_time')->default(DB::raw('CURRENT_TIMESTAMP'));
-            $table->dateTime('update_time')->nullable()->default(DB::raw('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'));
-            
-            // Unique constraint on option to prevent duplicates
-            $table->unique('option');
-            
-            // Table settings
+            // Set table engine and charset
             $table->engine = 'InnoDB';
             $table->charset = 'utf8mb4';
             $table->collation = 'utf8mb4_unicode_ci';
+            
+            // Index for performance
+            $table->index(['option'], 'idx_expense_type_option');
         });
         
-        // Insert seed data as per system constraints
+        // Insert seed data for expense types
         DB::table('opt_pocket_expense_type')->insert([
             [
                 'option' => 'ATM Withdrawal',
-                'amount_sign' => 'negative',
-                'create_time' => now(),
-                'update_time' => now()
+                'amount_sign' => 'negative'
             ],
             [
-                'option' => 'Point of Sale',
-                'amount_sign' => 'negative',
-                'create_time' => now(),
-                'update_time' => now()
+                'option' => 'Point of Sale', 
+                'amount_sign' => 'negative'
             ],
             [
                 'option' => 'Fee & Charges',
-                'amount_sign' => 'negative',
-                'create_time' => now(),
-                'update_time' => now()
+                'amount_sign' => 'negative'
             ],
             [
                 'option' => 'Refund from Merchant',
-                'amount_sign' => 'positive',
-                'create_time' => now(),
-                'update_time' => now()
+                'amount_sign' => 'positive'
             ]
         ]);
     }

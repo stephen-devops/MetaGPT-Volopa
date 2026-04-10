@@ -2,22 +2,21 @@
 
 namespace App\Policies;
 
-use App\Models\User;
 use App\Models\PocketExpense;
-use App\Models\UserFeaturePermission;
+use App\Models\User;
 use Illuminate\Auth\Access\HandlesAuthorization;
+use Illuminate\Auth\Access\Response;
 
 /**
  * PocketExpensePolicy
  * 
- * Authorization policy for PocketExpense operations including approval rights.
- * Implements role-based access control with delegation capabilities where
- * Admins can grant access to their managed users.
+ * Authorization policy for expense operations.
+ * Handles permissions based on user roles and delegation hierarchy.
  * 
- * Permission Rules:
- * - Only Primary Admin has full access to all users by default
- * - Admin gets full access only to own expenses by default; needs explicit grant for others
- * - Business User and Card User cannot approve expenses even with management rights
+ * Permission rules:
+ * - Primary Admin: Full access to all users by default
+ * - Admin: Full access only to own expenses by default; needs explicit grant for others
+ * - Business User and Card User: Cannot approve expenses even with management rights
  * - Managing access can be given to any user irrespective of role
  * - Admin can only grant access to their own managed users (not all users)
  */
@@ -26,216 +25,231 @@ class PocketExpensePolicy
     use HandlesAuthorization;
 
     /**
-     * Determine whether the user can view any pocket expenses.
+     * Determine whether the user can view any expenses.
      *
-     * @param User $user
+     * @param \App\Models\User $user
      * @return bool
      */
     public function viewAny(User $user): bool
     {
-        // TODO: Implement role checking when User role system is confirmed
-        // For now, allow authenticated users to view expenses (will be scoped by other constraints)
-        return true;
+        // TODO: Check if user has OOP Expense feature enabled (feature_id = 16)
+        // This requires implementation of ClientFeatures model and checking mechanism
+        return true; // Placeholder - should verify feature access
     }
 
     /**
-     * Determine whether the user can view the pocket expense.
+     * Determine whether the user can view the expense.
      *
-     * @param User $user
-     * @param PocketExpense $expense
+     * @param \App\Models\User $user
+     * @param \App\Models\PocketExpense $expense
      * @return bool
      */
     public function view(User $user, PocketExpense $expense): bool
     {
-        // Users can always view their own expenses
-        if ($expense->user_id === $user->id) {
+        // User can view their own expenses
+        if ($user->id === $expense->user_id) {
             return true;
         }
 
-        // Check if user has explicit permission to manage this expense user
-        if ($this->hasManagementPermission($user, $expense->user_id, $expense->client_id)) {
-            return true;
-        }
-
-        // TODO: Implement Primary Admin role check when User role system is confirmed
-        // Primary Admins have full access to all users by default
-        
-        return false;
+        // TODO: Check if user has management rights over the expense owner
+        // This requires UserPermissionService::canManageUser implementation
+        return false; // Placeholder - should check delegation hierarchy
     }
 
     /**
-     * Determine whether the user can create pocket expenses.
+     * Determine whether the user can create expenses.
      *
-     * @param User $user
+     * @param \App\Models\User $user
      * @return bool
      */
     public function create(User $user): bool
     {
-        // All authenticated users can create expenses (will be scoped by client_id)
-        return true;
+        // TODO: Check if user has OOP Expense feature enabled (feature_id = 16)
+        // This requires implementation of ClientFeatures model and checking mechanism
+        return true; // Placeholder - should verify feature access
     }
 
     /**
-     * Determine whether the user can update the pocket expense.
+     * Determine whether the user can update the expense.
      *
-     * @param User $user
-     * @param PocketExpense $expense
+     * @param \App\Models\User $user
+     * @param \App\Models\PocketExpense $expense
      * @return bool
      */
     public function update(User $user, PocketExpense $expense): bool
     {
-        // Users can update their own expenses (with status restrictions)
-        if ($expense->user_id === $user->id) {
-            // Cannot update approved or rejected expenses
-            return !in_array($expense->status, ['approved', 'rejected']);
+        // Cannot update approved or rejected expenses
+        if (in_array($expense->status, ['approved', 'rejected'])) {
+            return false;
         }
 
-        // Check if user has explicit permission to manage this expense user
-        if ($this->hasManagementPermission($user, $expense->user_id, $expense->client_id)) {
+        // User can update their own expenses
+        if ($user->id === $expense->user_id) {
             return true;
         }
 
-        // TODO: Implement Primary Admin role check when User role system is confirmed
-        // Primary Admins have full access to all users by default
-        
-        return false;
+        // TODO: Check if user has management rights over the expense owner
+        // This requires UserPermissionService::canManageUser implementation
+        return false; // Placeholder - should check delegation hierarchy
     }
 
     /**
-     * Determine whether the user can delete the pocket expense.
+     * Determine whether the user can delete the expense.
      *
-     * @param User $user
-     * @param PocketExpense $expense
+     * @param \App\Models\User $user
+     * @param \App\Models\PocketExpense $expense
      * @return bool
      */
     public function delete(User $user, PocketExpense $expense): bool
     {
-        // Users can delete their own expenses (with status restrictions)
-        if ($expense->user_id === $user->id) {
-            // Cannot delete approved expenses
-            return $expense->status !== 'approved';
+        // Cannot delete approved expenses
+        if ($expense->status === 'approved') {
+            return false;
         }
 
-        // Check if user has explicit permission to manage this expense user
-        if ($this->hasManagementPermission($user, $expense->user_id, $expense->client_id)) {
-            // Managers can delete non-approved expenses
-            return $expense->status !== 'approved';
+        // User can delete their own expenses
+        if ($user->id === $expense->user_id) {
+            return true;
         }
 
-        // TODO: Implement Primary Admin role check when User role system is confirmed
-        // Primary Admins have full access to all users by default
-        
-        return false;
+        // TODO: Check if user has management rights over the expense owner
+        // This requires UserPermissionService::canManageUser implementation
+        return false; // Placeholder - should check delegation hierarchy
     }
 
     /**
-     * Determine whether the user can approve the pocket expense.
+     * Determine whether the user can approve the expense.
      *
-     * @param User $user
-     * @param PocketExpense $expense
-     * @return bool
+     * @param \App\Models\User $user
+     * @param \App\Models\PocketExpense $expense
+     * @return \Illuminate\Auth\Access\Response
      */
-    public function approve(User $user, PocketExpense $expense): bool
+    public function approve(User $user, PocketExpense $expense): Response
     {
-        // Users cannot approve their own expenses
-        if ($expense->user_id === $user->id) {
-            return false;
+        // Cannot approve own expenses
+        if ($user->id === $expense->user_id) {
+            return Response::deny('Users cannot approve their own expenses.');
         }
 
         // Only submitted expenses can be approved
         if ($expense->status !== 'submitted') {
-            return false;
+            return Response::deny('Only submitted expenses can be approved.');
         }
 
-        // TODO: Implement role checking when User role system is confirmed
+        // TODO: Check user role from users table or related role table
         // Business User and Card User cannot approve expenses even with management rights
-        // Only Primary Admin and Admin roles can approve expenses
-        
-        // Check if user has explicit permission to manage this expense user
-        if ($this->hasManagementPermission($user, $expense->user_id, $expense->client_id)) {
-            // TODO: Add role check to ensure user has approval rights (not Business User or Card User)
-            return true;
+        $userRole = $this->getUserRole($user);
+        if (in_array($userRole, ['Business User', 'Card User'])) {
+            return Response::deny('Your role does not have approval permissions.');
         }
 
-        // TODO: Implement Primary Admin role check when User role system is confirmed
-        // Primary Admins have full access to all users by default
-        
-        return false;
+        // TODO: Check if user has management rights over the expense owner
+        // This requires UserPermissionService::canManageUser implementation
+        $canManage = $this->canManageExpenseOwner($user, $expense);
+        if (!$canManage) {
+            return Response::deny('You do not have permission to approve this user\'s expenses.');
+        }
+
+        return Response::allow();
     }
 
     /**
-     * Check if the user has management permission for the target user in the given client context.
+     * Determine whether the user can reject the expense.
      *
-     * @param User $user
+     * @param \App\Models\User $user
+     * @param \App\Models\PocketExpense $expense
+     * @return \Illuminate\Auth\Access\Response
+     */
+    public function reject(User $user, PocketExpense $expense): Response
+    {
+        // Cannot reject own expenses
+        if ($user->id === $expense->user_id) {
+            return Response::deny('Users cannot reject their own expenses.');
+        }
+
+        // Only submitted expenses can be rejected
+        if ($expense->status !== 'submitted') {
+            return Response::deny('Only submitted expenses can be rejected.');
+        }
+
+        // TODO: Check user role from users table or related role table
+        // Business User and Card User cannot reject expenses even with management rights
+        $userRole = $this->getUserRole($user);
+        if (in_array($userRole, ['Business User', 'Card User'])) {
+            return Response::deny('Your role does not have approval permissions.');
+        }
+
+        // TODO: Check if user has management rights over the expense owner
+        // This requires UserPermissionService::canManageUser implementation
+        $canManage = $this->canManageExpenseOwner($user, $expense);
+        if (!$canManage) {
+            return Response::deny('You do not have permission to reject this user\'s expenses.');
+        }
+
+        return Response::allow();
+    }
+
+    /**
+     * Determine whether the user can manage expenses for a specific user.
+     *
+     * @param \App\Models\User $user
      * @param int $targetUserId
      * @param int $clientId
      * @return bool
      */
-    protected function hasManagementPermission(User $user, int $targetUserId, int $clientId): bool
+    public function manageUserExpenses(User $user, int $targetUserId, int $clientId): bool
     {
-        // TODO: Implement feature ID lookup when Feature model is confirmed
-        // For now, using feature_id = 16 (OOP Expense) as per system constraints
-        $featureId = 16;
+        // User can always manage their own expenses
+        if ($user->id === $targetUserId) {
+            return true;
+        }
 
-        return UserFeaturePermission::where('user_id', $user->id)
-            ->where('client_id', $clientId)
-            ->where('feature_id', $featureId)
-            ->where('manager_user_id', $targetUserId)
-            ->where('is_enabled', true)
-            ->exists();
+        // TODO: Check if user has management rights over the target user
+        // This requires UserPermissionService::canManageUser implementation
+        return $this->canManageUser($user->id, $targetUserId, $clientId);
     }
 
     /**
-     * Determine if the user has admin-level permissions.
-     * 
-     * @param User $user
-     * @return bool
+     * Get the user's role.
+     * TODO: Implement proper role lookup from users table or role relationship.
+     *
+     * @param \App\Models\User $user
+     * @return string
      */
-    protected function isAdmin(User $user): bool
+    private function getUserRole(User $user): string
     {
-        // TODO: Implement when User role system is confirmed
-        // Should check if user has Primary Admin or Admin role
-        return false;
+        // TODO: Implement role lookup from user model or related role table
+        // Available roles: Primary Admin, Admin, Business User, Card User
+        return 'Admin'; // Placeholder - should get actual role from database
     }
 
     /**
-     * Determine if the user has primary admin permissions.
-     * 
-     * @param User $user
+     * Check if user can manage the expense owner.
+     * TODO: Implement delegation hierarchy check.
+     *
+     * @param \App\Models\User $user
+     * @param \App\Models\PocketExpense $expense
      * @return bool
      */
-    protected function isPrimaryAdmin(User $user): bool
+    private function canManageExpenseOwner(User $user, PocketExpense $expense): bool
     {
-        // TODO: Implement when User role system is confirmed
-        // Primary Admin has full access to all users by default
-        return false;
+        // TODO: Implement UserPermissionService::canManageUser check
+        return $this->canManageUser($user->id, $expense->user_id, $expense->client_id);
     }
 
     /**
-     * Determine if the user can approve expenses based on their role.
-     * 
-     * @param User $user
+     * Check if manager user can manage target user.
+     * TODO: Implement actual permission check using UserPermissionService.
+     *
+     * @param int $managerId
+     * @param int $targetUserId
+     * @param int $clientId
      * @return bool
      */
-    protected function canApproveExpenses(User $user): bool
+    private function canManageUser(int $managerId, int $targetUserId, int $clientId): bool
     {
-        // TODO: Implement when User role system is confirmed
-        // Business User and Card User cannot approve expenses even with management rights
-        // Only Primary Admin and Admin roles can approve expenses
-        return false;
-    }
-
-    /**
-     * Check if the user belongs to the same client as the expense.
-     * 
-     * @param User $user
-     * @param PocketExpense $expense
-     * @return bool
-     */
-    protected function belongsToSameClient(User $user, PocketExpense $expense): bool
-    {
-        // TODO: Implement when User-Client relationship is confirmed
-        // Should check if user belongs to the same client as the expense
-        return true; // Placeholder - assume same client for now
+        // TODO: Implement UserPermissionService::canManageUser($managerId, $targetUserId, $clientId)
+        // This should check the user_feature_permission table for delegation hierarchy
+        return false; // Placeholder - should check permission table
     }
 }

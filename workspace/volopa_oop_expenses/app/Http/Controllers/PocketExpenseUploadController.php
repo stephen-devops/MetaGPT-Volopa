@@ -4,19 +4,21 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\UploadPocketExpenseCSVRequest;
 use App\Services\PocketExpenseCSVValidator;
-use App\Jobs\ProcessExpenseUpload;
 use App\Models\PocketExpenseFileUpload;
+use App\Jobs\ProcessExpenseUpload;
+use App\Http\Resources\PocketExpenseUploadResource;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 
 /**
  * PocketExpenseUploadController
  * 
- * Handles CSV file upload for batch expense processing.
- * Performs synchronous validation with all-or-nothing approach,
- * then dispatches background job for main service sync.
+ * Handles CSV file uploads for pocket expenses with synchronous validation
+ * and asynchronous processing via Laravel queues.
  */
 class PocketExpenseUploadController extends Controller
 {
@@ -38,7 +40,7 @@ class PocketExpenseUploadController extends Controller
     }
 
     /**
-     * Upload and validate CSV file for pocket expense batch processing.
+     * Upload and validate CSV file for pocket expenses.
      * 
      * Route: POST /api/uploads/pocket-expense/csv
      * Content-Type: multipart/form-data
@@ -48,31 +50,21 @@ class PocketExpenseUploadController extends Controller
      */
     public function uploadPocketExpenseCSV(UploadPocketExpenseCSVRequest $request): JsonResponse
     {
-        DB::beginTransaction();
-        
         try {
-            // Get validated request data
-            $validatedData = $request->validated();
+            // Get validated input data
             $file = $request->file('file');
-            $userId = (int) $validatedData['user_id'];
-            $expenseUserId = (int) $validatedData['expense_user_id'];
-            $clientId = (int) $validatedData['client_id'];
+            $userId = $request->integer('user_id'); // Admin user
+            $expenseUserId = $request->integer('expense_user_id'); // Target user for expenses
+            $clientId = $request->integer('client_id');
 
-            // Generate unique file path for storage
+            // Store the uploaded file
             $fileName = $file->getClientOriginalName();
-            $uniqueFileName = Str::uuid() . '_' . $fileName;
-            $storagePath = 'pocket-expense-uploads/' . $uniqueFileName;
+            $filePath = $file->store('pocket-expense-uploads', 'local');
+            $fullFilePath = Storage::path($filePath);
 
-            // Store file to configured storage path
-            $filePath = $file->storeAs('pocket-expense-uploads', $uniqueFileName);
-
-            if (!$filePath) {
-                throw new \Exception('Failed to store uploaded file');
-            }
-
-            // Create upload record with initial status
+            // Create upload record with 'uploaded' status
             $upload = PocketExpenseFileUpload::create([
-                'uuid' => Str::uuid()->toString(),
+                'uuid' => (string) Str::uuid(),
                 'user_id' => $expenseUserId,
                 'client_id' => $clientId,
                 'created_by_user_id' => $userId,
@@ -83,14 +75,13 @@ class PocketExpenseUploadController extends Controller
                 'validation_errors' => null,
                 'status' => 'uploaded',
                 'uploaded_at' => now(),
+                'validated_at' => null,
+                'processed_at' => null,
             ]);
 
-            // Get absolute file path for validation
-            $absoluteFilePath = Storage::path($filePath);
-
-            // Perform synchronous validation
+            // Perform synchronous CSV validation
             $validationResult = $this->csvValidator->validate(
-                $absoluteFilePath,
+                $fullFilePath,
                 $expenseUserId,
                 $clientId,
                 $userId
@@ -100,109 +91,117 @@ class PocketExpenseUploadController extends Controller
             $upload->update([
                 'total_records' => $validationResult['total_rows'],
                 'valid_records' => $validationResult['valid_rows'],
-                'validation_errors' => $validationResult['errors'] ?? null,
                 'validated_at' => now(),
             ]);
 
-            // Check if validation failed (all-or-nothing approach)
+            // Check if validation failed
             if (!$validationResult['success']) {
-                $upload->update(['status' => 'validation_failed']);
-                
-                DB::commit();
+                $upload->update([
+                    'status' => 'validation_failed',
+                    'validation_errors' => json_encode($validationResult['errors']),
+                ]);
 
                 return response()->json([
                     'success' => false,
                     'message' => 'Validation failed',
                     'upload_id' => $upload->id,
                     'total_rows' => $validationResult['total_rows'],
-                    'error_count' => count($validationResult['errors']),
+                    'error_count' => $validationResult['error_count'],
                     'errors' => $validationResult['errors'],
                 ], 422);
             }
 
-            // Validation passed - update status and prepare for processing
-            $upload->update([
-                'status' => 'validation_passed',
-            ]);
+            // Validation passed - bulk insert to PocketExpenseUploadsData table
+            DB::transaction(function () use ($upload, $validationResult) {
+                $validRows = $validationResult['valid_data'];
+                $uploadsData = [];
 
-            // Store validated expense data for processing
-            $this->storeValidatedExpenseData($upload->id, $validationResult['validated_data']);
+                foreach ($validRows as $lineNumber => $rowData) {
+                    $uploadsData[] = [
+                        'upload_id' => $upload->id,
+                        'line_number' => $lineNumber,
+                        'status' => 'pending',
+                        'expense_data' => json_encode($rowData),
+                        'created_at' => now(),
+                        'updated_at' => now(),
+                    ];
+                }
 
-            // Update upload status to processing
-            $upload->update(['status' => 'processing']);
+                // Bulk insert upload data records
+                DB::table('pocket_expense_uploads_data')->insert($uploadsData);
 
-            // Dispatch background job for main service sync
+                // Update upload status to processing
+                $upload->update([
+                    'status' => 'processing',
+                ]);
+            });
+
+            // Dispatch background job for processing expenses
             ProcessExpenseUpload::dispatch($upload->id)->onQueue('expense-processing');
-
-            DB::commit();
 
             return response()->json([
                 'success' => true,
-                'message' => 'File validated successfully. Expenses are being processed.',
+                'message' => 'File validated successfully. Expenses are being created.',
                 'upload_id' => $upload->id,
                 'total_rows' => $validationResult['total_rows'],
             ], 200);
 
         } catch (\Exception $e) {
-            DB::rollback();
-
-            // Clean up uploaded file if processing failed
-            if (isset($filePath) && Storage::exists($filePath)) {
-                Storage::delete($filePath);
-            }
-
-            // Log error for debugging
-            \Log::error('CSV upload failed', [
-                'error' => $e->getMessage(),
-                'user_id' => $validatedData['user_id'] ?? null,
-                'expense_user_id' => $validatedData['expense_user_id'] ?? null,
-                'client_id' => $validatedData['client_id'] ?? null,
+            // Log the error for debugging
+            \Log::error('CSV Upload Error', [
+                'message' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
             ]);
 
+            // Return generic error response without exposing internal details
             return response()->json([
                 'success' => false,
-                'message' => 'File upload and validation failed. Please try again.',
-                'upload_id' => $upload->id ?? null,
+                'message' => 'An error occurred while processing the upload. Please try again.',
+                'upload_id' => null,
                 'total_rows' => 0,
                 'error_count' => 1,
-                'errors' => [
-                    [
-                        'line_number' => 0,
-                        'field' => 'file',
-                        'error' => 'System error during processing',
-                        'value' => 'N/A'
-                    ]
-                ],
-            ], 422);
+                'errors' => [],
+            ], 500);
         }
     }
 
     /**
-     * Store validated expense data for background processing.
+     * Get the status of a specific upload.
      * 
      * @param int $uploadId
-     * @param array $validatedData
-     * @return void
+     * @return JsonResponse
      */
-    private function storeValidatedExpenseData(int $uploadId, array $validatedData): void
+    public function getUploadStatus(int $uploadId): JsonResponse
     {
-        $batchData = [];
-        $now = now();
+        try {
+            // TODO: Add authorization check to ensure user can view this upload
+            // This should check if the authenticated user is the admin who uploaded
+            // or has permission to manage the target user's expenses
 
-        foreach ($validatedData as $lineNumber => $expenseData) {
-            $batchData[] = [
+            $upload = PocketExpenseFileUpload::findOrFail($uploadId);
+
+            return response()->json([
+                'success' => true,
+                'data' => new PocketExpenseUploadResource($upload),
+            ], 200);
+
+        } catch (\Illuminate\Database\Eloquent\ModelNotFoundException $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Upload not found.',
+            ], 404);
+        } catch (\Exception $e) {
+            \Log::error('Get Upload Status Error', [
                 'upload_id' => $uploadId,
-                'line_number' => $lineNumber,
-                'status' => 'pending',
-                'expense_data' => json_encode($expenseData),
-                'created_at' => $now,
-                'updated_at' => $now,
-            ];
-        }
+                'message' => $e->getMessage(),
+            ]);
 
-        // Bulk insert for performance
-        if (!empty($batchData)) {
-            DB::table('pocket_expense_uploads_data')->insert($batchData);
+            return response()->json([
+                'success' => false,
+                'message' => 'An error occurred while retrieving upload status.',
+            ], 500);
         }
     }
 }

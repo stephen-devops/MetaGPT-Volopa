@@ -216,7 +216,7 @@ requirements:
           action: "On error, user can review errors and download as CSV"
 
   inherited_behaviors:
-    - "All API endpoints require OAuth2 authentication via middleware"
+    - "All API endpoints require OAuth2 authentication via Oauth2UserClient interface as middleware"
     - "All data is scoped to a client (multi-tenancy)"
     - "User roles (Primary Admin, Admin, Business User, Card User) are platform-wide"
     - "Feature enablement is controlled via Sales/Ops through Admin.Volopa"
@@ -923,6 +923,11 @@ interfaces:
   api_routes:
     file: "routes/api.php"
     file_origin: EXISTING
+    middleware:
+      - name: "Oauth2UserClient"
+        origin: EXISTING
+        applied_at: "route group level via Route::middleware(['Oauth2UserClient'])"
+        note: "Controllers MUST NOT call $this->middleware() in constructors — Oauth2UserClient is applied at the route group level only"
     endpoints:
       - method: "POST"
         path: "/api/uploads/pocket-expense/csv"
