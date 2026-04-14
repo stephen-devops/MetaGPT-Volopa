@@ -1,120 +1,223 @@
-# Quick Start Guide - Volopa Mass Payments Laravel Roles
+# Quick Start Guide - Volopa OOP Expenses (MetaGPT for Legacy Systems)
 
-## 🚀 Ready in 3 Steps
+## What This Is
 
-### Step 1: Verify Installation
+This project extends MetaGPT with Laravel-specific roles that generate a full API codebase
+for Volopa's Out-of-Pocket (OOP) Expenses feature. The real goal is broader: proving that
+MetaGPT can be scaled to produce code that integrates with an existing legacy platform —
+not greenfield, but brownfield. Volopa OOP is the first case study.
+
+The key insight is **YAML context injection**. Instead of letting the LLM invent
+requirements, two structured YAML files feed every role with domain rules, platform
+constraints, database schemas, API contracts, and existing-system interfaces. A third
+YAML (`environment_artifacts.yaml`) acts as a RAG substitute — a static symbol registry
+for the live codebase until a real repository search is wired up.
+
+---
+
+## Ready in 3 Steps
+
+### Step 1: Install and verify
+
 ```bash
-# Ensure MetaGPT is installed
 pip install -r requirements.txt
 
 # Verify all 5 roles are importable
-python -c "from industry.roles import LaravelProductManager, LaravelArchitect, LaravelProjectManager, LaravelEngineer, LaravelQaEngineer; print('✅ All 5 roles imported successfully')"
+python -c "from industry.roles import LaravelProductManager, LaravelArchitect, LaravelProjectManager, LaravelEngineer, LaravelQaEngineer; print('All 5 roles imported successfully')"
 ```
 
-### Step 2: Configure MetaGPT
+### Step 2: Configure LLM
+
 ```bash
-# Check if config exists
-ls config/config2.yaml
+# Copy the example config
+cp config/config2.example.yaml config/config2.yaml
 
-# If not, initialize it
-metagpt --init-config
-
-# Edit config/config2.yaml with your LLM API keys
-# Example:
-# llm:
-#   api_type: "openai"
-#   model: "gpt-4-turbo"
-#   api_key: "YOUR_API_KEY"
+# Edit config/config2.yaml and add your API key:
+#   llm:
+#     api_type: "openai"
+#     model: "gpt-4o"
+#     base_url: "https://api.openai.com/v1"
+#     api_key: "YOUR_API_KEY"
 ```
 
-### Step 3: Run Example
+### Step 3: Run
+
 ```bash
-# Run the Volopa Mass Payments workflow (5 roles working sequentially)
-python industry/run_volopa_mass_payments.py
+python industry/run_volopa_oop_expenses.py
+```
 
-# Watch the output - you'll see:
-# 1. LaravelProductManager creating PRD (loads user_requirements.json)
-# 2. LaravelArchitect creating System Design (loads architectural_requirements.json)
-# 3. LaravelProjectManager creating Task Breakdown (loads user_requirements.json)
-# 4. LaravelEngineer writing Laravel code (loads architectural + technical requirements)
-# 5. LaravelQaEngineer writing PHPUnit tests (loads ALL 3 JSON files)
+The script cleans the workspace, resets git state for the output directory, clears
+cached team storage, then runs 5 roles sequentially in 5 rounds. Output lands in
+`workspace/volopa_oop_expenses/`.
 
-# Results will be in:
-# workspace/volopa_mass_payments/
+---
+
+## Project Layout
+
+```
+industry/
+  roles/
+    laravel_product_manager.py   # Joshua  - PRD from YAML requirements
+    laravel_architect.py         # Danny   - System design, ER, API contracts
+    laravel_project_manager.py   # Manuel  - Task breakdown, dependency ordering
+    laravel_engineer.py          # Lucas   - Laravel code generation
+    laravel_qa_engineer.py       # Darius  - PHPUnit test generation
+    __init__.py                  # Exports all 5 roles
+  actions/
+    laravel_write_prd.py         # LaravelWritePRD action
+    laravel_write_prd_an.py      # ActionNode schema for PRD
+    laravel_design_api.py        # LaravelWriteDesign action
+    laravel_design_api_an.py     # ActionNode schema for design
+    laravel_write_code.py        # LaravelWriteCode action
+  utils/
+    context_reader.py            # ContextReader - shared YAML accessor
+    evidence_injector.py         # Injects evidence into prompts
+    check_plan_dispatcher.py     # Verification protocol logic
+    repo_verifier.py             # Repository correctness checks
+  requirements/
+    project_context.yaml         # Feature-specific: requirements, flows, interfaces, constraints
+    environment_context.yaml     # Platform-wide: standards, dos/donts, existing tables/models
+    environment_artifacts.yaml   # RAG substitute: existing codebase symbols
+    SD-OOP_User_Management_System.pdf
+    SD-OOP_Pocket_expense.pdf
+    SD-OOP_Expense_single_data_capturing.pdf
+  run_volopa_oop_expenses.py     # Entry point
+  dos_and_donts.pdf              # Platform coding standards reference
+  Volopa - Proposed Architecture.pdf
 ```
 
 ---
 
-## 📁 What You'll Get
+## YAML Context Files (the core mechanism)
 
-After running, check these directories:
+All roles load context through `ContextReader` (`industry/utils/context_reader.py`),
+which lazy-loads and caches YAML data. Roles call methods like `get_dos_and_donts()`,
+`get_database_tables("full")`, `get_flows()`, etc. to inject structured text into
+their system prompts.
 
-```bash
-workspace/volopa_mass_payments/
-├── docs/
-│   ├── requirement.txt              # Original requirement
-│   ├── prd/
-│   │   └── volopa_mass_payments.md  # ✅ From LaravelProductManager
-│   ├── system_design/
-│   │   └── volopa_mass_payments.md  # ✅ From LaravelArchitect
-│   └── task/
-│       └── volopa_mass_payments.json # ✅ From LaravelProjectManager
-├── app/
-│   ├── Http/
-│   │   ├── Controllers/              # ✅ From LaravelEngineer
-│   │   ├── Requests/
-│   │   └── Resources/
-│   ├── Models/
-│   ├── Services/
-│   └── Policies/
-└── tests/
-    └── Feature/                      # ✅ From LaravelQaEngineer
-        ├── MassPaymentFileTest.php
-        ├── PaymentInstructionTest.php
-        ├── MultiTenantIsolationTest.php
-        └── ...
+### project_context.yaml
+
+Feature-scoped rules for OOP Expenses:
+
+- `intent` — objectives, business rationale, success criteria
+- `requirements` — REQ-001 through REQ-012, user journeys
+- `constraints` — file limits, validation rules, permission hierarchy, FX rules
+- `decisions` — architectural decisions (DEC-001+), unresolved questions
+- `flows` — end-to-end flows (CSV upload, single capture, permission delegation)
+- `interfaces` — database tables (new + existing), controllers, services, models,
+  API routes, CSV column schema, response schemas, permission matrix
+
+### environment_context.yaml
+
+Platform-wide standards that apply to any Volopa feature:
+
+- `intent` — platform purpose, mental model (Client -> route -> controller -> FormRequest -> service -> model -> Resource -> JSON), design principles
+- `constraints` — dos and donts (routing, validation, controller logic, resources, testing, auth), verification protocol, Laravel task conventions
+- `decisions` — platform-level architectural decisions
+- `interfaces` — existing database tables, models, middleware, endpoints, user roles, FX query contract
+
+### environment_artifacts.yaml
+
+Static symbol registry (stopgap for live RAG). Lists existing table names, model
+classes, middleware, routes, and infrastructure so the LLM avoids collisions and
+re-implements correctly against the real codebase.
+
+---
+
+## Workflow (5 rounds)
+
+| Round | Role | Action | Input | Output |
+|-------|------|--------|-------|--------|
+| 1 | LaravelProductManager (Joshua) | PrepareDocuments + LaravelWritePRD | User idea + YAML context | `docs/prd/volopa_oop_expenses.md` |
+| 2 | LaravelArchitect (Danny) | LaravelWriteDesign | PRD + YAML context | `docs/system_design/volopa_oop_expenses.md` |
+| 3 | LaravelProjectManager (Manuel) | WriteTasks | System design + YAML context | `docs/task/volopa_oop_expenses.json` |
+| 4 | LaravelEngineer (Lucas) | LaravelWriteCode | Design + tasks + YAML context | `app/**/*.php`, `database/**/*.php`, `routes/api.php` |
+| 5 | LaravelQaEngineer (Darius) | WriteTest | All code + YAML context | `tests/Feature/**/*Test.php` |
+
+Each role subscribes to the previous role's output message and adds YAML-derived
+constraints to its system prompt before acting.
+
+---
+
+## Output Structure
+
+```
+workspace/volopa_oop_expenses/
+  .src_workspace                            # Prevents nested directory creation
+  docs/
+    requirement.txt                         # Original idea text
+    prd/
+      volopa_oop_expenses.md                # PRD (from ProductManager)
+    system_design/
+      volopa_oop_expenses.md                # System design (from Architect)
+    task/
+      volopa_oop_expenses.json              # Task breakdown (from ProjectManager)
+  app/
+    Http/
+      Controllers/Api/V1/                   # API controllers
+      Requests/                             # Form request validation
+      Resources/                            # API resources
+    Models/                                 # Eloquent models
+    Services/                               # Business logic services
+    Policies/                               # Authorization policies
+  database/
+    migrations/                             # Laravel migrations
+    factories/                              # Test factories
+  routes/
+    api.php                                 # API route definitions
+  tests/
+    Feature/                                # PHPUnit feature tests
 ```
 
 ---
 
-## 🎯 Using the Roles Programmatically
+## Using the Roles Programmatically
 
-### Simple Example
 ```python
 import asyncio
-from metagpt.team import Team
-from metagpt.context import Context
 from metagpt.config2 import config
+from metagpt.context import Context, AttrDict
+from metagpt.team import Team
 
 from industry.roles import (
     LaravelProductManager,
     LaravelArchitect,
     LaravelProjectManager,
     LaravelEngineer,
-    LaravelQaEngineer
+    LaravelQaEngineer,
 )
 
 async def main():
-    # Setup
-    ctx = Context(config=config)
-    company = Team(context=ctx)
+    workspace_path = "workspace/volopa_oop_expenses"
 
-    # Hire complete Laravel team (all 5 roles with JSON requirements auto-loading)
+    config.update_via_cli(
+        project_path=workspace_path,
+        project_name="volopa_oop_expenses",
+        inc=False,
+        reqa_file="",
+        max_auto_summarize_code=0,
+    )
+
+    ctx = Context(
+        config=config,
+        kwargs=AttrDict(project_path=workspace_path),
+    )
+
+    company = Team(context=ctx, use_mgx=False)
     company.hire([
-        LaravelProductManager(),   # Loads user_requirements.json
-        LaravelArchitect(),        # Loads architectural_requirements.json
-        LaravelProjectManager(),   # Loads user_requirements.json
-        LaravelEngineer(),         # Loads architectural + technical requirements
-        LaravelQaEngineer()        # Loads ALL 3 JSON files
+        LaravelProductManager(context=ctx),
+        LaravelArchitect(context=ctx),
+        LaravelProjectManager(context=ctx),
+        LaravelEngineer(context=ctx),
+        LaravelQaEngineer(context=ctx),
     ])
+    company.invest(investment=10.0)
 
-    # Budget for LLM calls (increased for 5 roles)
-    company.invest(investment=15.0)
-
-    # Run (8 rounds for complete workflow including tests)
     await company.run(
-        n_round=8,
-        idea="Build a Laravel API for managing payments"
+        n_round=5,
+        idea="Build the Volopa OOP Expenses API System using Laravel 10+ with PHP 8.2+.",
+        send_to="",
+        auto_archive=True,
     )
 
 asyncio.run(main())
@@ -122,224 +225,55 @@ asyncio.run(main())
 
 ---
 
-## 🔍 Viewing the Output
+## Troubleshooting
 
-### PRD (Product Requirements Document)
-```bash
-cat workspace/volopa_mass_payments/docs/prd/volopa_mass_payments.md
-```
+### "unknown origin" ValueError from Engineer
 
-### System Design
-```bash
-cat workspace/volopa_mass_payments/docs/system_design/volopa_mass_payments.md
-```
+`engineer.py:319` uses forward-slash path constants (`docs/task`) but `Path.parent`
+on Windows produces backslashes. The custom `LaravelEngineer` overrides
+`_new_coding_context` to catch the ValueError and return None (skip).
 
-### Task Breakdown
-```bash
-cat workspace/volopa_mass_payments/docs/task/volopa_mass_payments.json | jq .
-```
+### Token overflow during code generation
 
-### Generated Code
-```bash
-find workspace/volopa_mass_payments/app -name "*.php"
-```
+`WriteCode.get_codes()` includes the full source of every sibling file as context.
+By file ~30+ this exceeds 200K tokens. `LaravelEngineer` monkey-patches `get_codes`
+with `_size_limited_get_codes()` — full source up to 100K chars, then filenames-only.
 
-### Generated Tests
-```bash
-# View all test files
-find workspace/volopa_mass_payments/tests/Feature -name "*Test.php"
+### Double code generation (all files regenerated)
 
-# View a specific test
-cat workspace/volopa_mass_payments/tests/Feature/MassPaymentFileTest.php
-```
+If `max_react_loop > 1`, the Engineer's `_think()` reads `rc.news[0]` without
+consuming it, so the same WriteTasks message triggers `_new_code_actions()` on
+every iteration. Fix: `max_react_loop=1` (already set in `LaravelEngineer`).
 
----
+### Pydantic serialization errors
 
-## ⚙️ Customizing the Workflow
+Custom objects stored as `self.xxx` on Role subclasses fail Pydantic serialization.
+Keep them as local variables in `__init__` and pass to methods as parameters.
 
-### Change the Requirement
-Edit `industry/run_volopa_mass_payments.py`:
-```python
-idea = """
-Your custom requirement here...
-"""
-```
+### JSONDecodeError when injecting evidence
 
-### Adjust Budget
-```python
-company.invest(investment=20.0)  # $20 for more complex projects with all 5 roles
-```
+Evidence text must be injected into `design_doc.content`, not `task_doc.content`.
+The task document is parsed by `WriteCode.get_codes()` via `json.loads()` — appending
+non-JSON text to it causes the error.
 
-### Change Number of Rounds
-```python
-await company.run(
-    n_round=10,  # More rounds for complex projects (minimum 6 for all 5 roles)
-    idea=idea
-)
-```
+### Module not found: industry.roles
 
-### Use Only Specific Roles
-```python
-# Example: Skip testing phase (only 4 roles)
-company.hire([
-    LaravelProductManager(),
-    LaravelArchitect(),
-    LaravelProjectManager(),
-    LaravelEngineer()
-])
+Run from the project root. The run script adds the project root to `sys.path`
+automatically. If importing manually, ensure you are in `MetaGPT-Volopa/`.
 
-await company.run(n_round=5, idea=idea)
+### No API key configured
 
-# Example: Only PRD and Design (2 roles)
-company.hire([
-    LaravelProductManager(),
-    LaravelArchitect()
-])
-
-await company.run(n_round=3, idea=idea)
-```
+Check `config/config2.yaml` exists and has a valid `api_key` under `llm:`.
 
 ---
 
-## 🐛 Troubleshooting
+## Reference Files
 
-### Issue: "Module not found: industry.roles"
-```bash
-# Ensure you're in the project root
-cd /path/to/MetaGPT-Volopa
-
-# Verify __init__.py exists
-ls industry/roles/__init__.py
-```
-
-### Issue: "No API key configured"
-```bash
-# Check config
-cat config/config2.yaml
-
-# Set API key
-export OPENAI_API_KEY="your-key-here"
-# or edit config/config2.yaml
-```
-
-### Issue: "Roles not responding"
-```python
-# Check role subscriptions
-from industry.roles import LaravelProductManager
-pm = LaravelProductManager()
-print(pm.rc.watch)  # Should show subscribed messages
-```
-
-### Issue: "Empty output directories"
-```bash
-# Check logs for errors
-tail -f logs/metagpt.log
-
-# Verify roles are executing
-# You should see log entries like:
-# "LaravelPM: to do WritePRD"
-# "LaravelArchitect: to do WriteDesign"
-```
-
----
-
-## 📚 Learn More
-
-- **Comprehensive Documentation**: `industry/roles/README.md` (12KB guide)
-- **Implementation Details**: `industry/IMPLEMENTATION_SUMMARY.md`
-- **DOS/DONTS Reference**: `industry/dos_and_donts.pdf`
-- **Workflow Diagram**: `industry/volopaProcess.md`
-- **Intent Allocation**: `industry/massPaymentsVolopaAgents.txt`
-
----
-
-## 🎓 Understanding the Workflow
-
-### 1. UserRequirement → LaravelProductManager
-- **Input**: Your `idea` string
-- **JSON Loaded**: `user_requirements.json` (42 functional requirements)
-- **Process**: Analyzes requirements, transforms JSON into comprehensive PRD
-- **Output**: PRD with user stories, requirements pool, competitive analysis
-- **Message**: `WritePRD` with file path
-
-### 2. LaravelProductManager → LaravelArchitect
-- **Input**: PRD document
-- **JSON Loaded**: `architectural_requirements.json` (design patterns, DOS/DONTS)
-- **Process**: Designs Laravel architecture, data models, API endpoints
-- **Output**: System Design with file list, class diagrams, sequence diagrams
-- **Message**: `WriteDesign` with file path
-
-### 3. LaravelArchitect → LaravelProjectManager
-- **Input**: System Design document
-- **JSON Loaded**: `user_requirements.json` (task breakdown statistics)
-- **Process**: Breaks down into dependency-ordered tasks (40+ files)
-- **Output**: Task Breakdown with file list, dependencies, packages
-- **Message**: `WriteTasks` with file path
-
-### 4. LaravelProjectManager → LaravelEngineer
-- **Input**: System Design + Task Breakdown
-- **JSON Loaded**: `architectural_requirements.json` + `technical_requirements.json`
-- **Process**: Writes Laravel code following loaded DOS/DONTS patterns
-- **Output**: Laravel source files (controllers, services, models, migrations, etc.)
-- **Message**: `WriteCode` with file paths
-
-### 5. LaravelEngineer → LaravelQaEngineer
-- **Input**: All generated code + All documentation
-- **JSON Loaded**: **ALL 3** JSON files (functional + architectural + technical)
-- **Process**: Writes comprehensive PHPUnit tests validating all requirements
-- **Output**: Feature tests with 100% coverage (15-20 test files)
-- **Message**: `WriteTest` with file paths
-
----
-
-## ✅ Success Checklist
-
-After running, verify all 5 roles completed successfully:
-
-- [ ] `workspace/volopa_mass_payments/` directory exists
-- [ ] `docs/prd/volopa_mass_payments.md` was created (ProductManager ✓)
-- [ ] `docs/system_design/volopa_mass_payments.md` was created (Architect ✓)
-- [ ] `docs/task/volopa_mass_payments.json` was created (ProjectManager ✓)
-- [ ] `app/` directory contains 40+ PHP files (Engineer ✓)
-- [ ] `tests/Feature/` directory contains 15-20 test files (QaEngineer ✓)
-- [ ] No errors in logs
-- [ ] All JSON requirements loaded properly (check logs for "Loaded requirements from JSON")
-
----
-
-## 🚦 Next Steps
-
-1. **Review outputs**: Check the generated PRD, Design, Code, and Tests
-2. **Run tests**: Execute PHPUnit tests to verify code quality
-   ```bash
-   cd workspace/volopa_mass_payments
-   ./vendor/bin/phpunit tests/Feature/
-   ```
-3. **Validate JSON loading**: Check that all roles properly loaded requirements
-4. **Customize roles**: Edit role files to add Volopa-specific logic
-5. **Add RAG**: Implement SearchCodeBase for querying Volopa examples
-6. **Iterate**: Run with different requirements to test robustness
-
----
-
-## 💡 Tips
-
-- **Start small**: Test with a simple requirement first
-- **Check logs**: MetaGPT logs are very verbose and helpful for debugging
-- **JSON requirements**: All roles automatically load requirements - no manual setup needed
-- **Test coverage**: QaEngineer validates 100% of requirements from all 3 JSON files
-- **Iterate**: The roles improve with better prompts and context
-- **Budget wisely**: 5 roles use more LLM tokens ($15-20 recommended)
-- **Version control**: Commit outputs to track improvements
-- **Round count**: Minimum 6 rounds for all 5 roles (8-10 recommended for complex projects)
-
----
-
-## 🤝 Need Help?
-
-1. Read `industry/roles/README.md` for detailed documentation
-2. Check MetaGPT docs: [https://docs.deepwisdom.ai/](https://docs.deepwisdom.ai/)
-3. Review example outputs in workspace/
-4. Look at role source code for implementation details
-
-**Happy coding! 🎉**
+| File | Description |
+|------|-------------|
+| `industry/dos_and_donts.pdf` | Platform coding standards (source for YAML constraints) |
+| `industry/Volopa - Proposed Architecture.pdf` | Architecture reference |
+| `industry/requirements/SD-OOP_User_Management_System.pdf` | User management spec (source PDF) |
+| `industry/requirements/SD-OOP_Pocket_expense.pdf` | Pocket expense spec (source PDF) |
+| `industry/requirements/SD-OOP_Expense_single_data_capturing.pdf` | Single expense spec (source PDF) |
+| `industry/roles/README.md` | Role documentation (partially outdated) |
